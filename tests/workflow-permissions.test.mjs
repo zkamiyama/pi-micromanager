@@ -121,3 +121,28 @@ test("Deny never creates approval or authorizes a later operation",()=>{
       "qc-code-1",HEAD,pub).decision,"deny");
   }finally{x.close();}
 });
+
+test("Git commit ask is admitted before the modifying Pi Run, bound to Task attempt and revision",()=>{
+  const x=fixture({actions:{"git.commit":"ask"}});
+  try{
+    // The fixture Task is already QC-passed. Rework is the only way to have
+    // another ready attempt; create an independent fresh workflow here.
+    let other=x.workflows.create("p","o",{...workflow,id:"new-attempt",
+      permissions:{actions:{"git.commit":"ask"}}});
+    x.ledger.save("p","o","new-attempt",config);
+    const proof=x.permission.ensureCommit("p","o","new-attempt","code",1,"worker");
+    assert.equal(proof.decision,"ask");
+    assert.equal(proof.approval.headSha,"pre-commit");
+    assert.equal(proof.approval.runId,"impl-code-1");
+    assert.equal(proof.approval.target,"worker");
+    assert.equal(x.permission.ensureCommit("p","o","new-attempt","code",1,"worker")
+      .approval.id,proof.approval.id);
+    assert.equal(x.permission.decide("p","o",proof.approval.id,"approved").state,"approved");
+    assert.equal(x.permission.ensureCommit("p","o","new-attempt","code",1,"worker")
+      .decision,"allow");
+    other=x.workflows.act("p","o","new-attempt",other.revision,"start",
+      {type:"start",taskId:"code"});
+    assert.throws(()=>x.permission.decide("p","o",proof.approval.id,"approved"),
+      /Commit approval no longer matches/);
+  }finally{x.close();}
+});
