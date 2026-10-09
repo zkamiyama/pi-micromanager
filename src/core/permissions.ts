@@ -1,6 +1,6 @@
 /** Deterministic workflow action permissions. */
 export const PERMISSION_ACTIONS=[
-  "git.commit","git.push","github.pr.create","github.pr.merge","deploy.production",
+  "git.commit","git.integrate","git.push","github.pr.create","github.pr.merge","deploy.production",
 ] as const;
 export type PermissionAction=typeof PERMISSION_ACTIONS[number];
 export type PermissionDecision="allow"|"ask"|"deny";
