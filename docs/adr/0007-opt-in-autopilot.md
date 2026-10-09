@@ -94,7 +94,11 @@ no new model turn. This closes the gap where settlement reached the server
 but the report event did not. A mismatched runId, missing report or unsettled
 turn proof cannot satisfy the finalization gate. A missing Session, unknown
 delivery, conflicting report or ambiguous idle state **pauses** rather than
-restarting an attempt. Workflow transitions are idempotent under durable
+restarting an attempt. Final interrupted/settled events are sticky, so
+late buffered text/tools cannot reclassify an aborted QC as successful.
+On server plugin shutdown, the executor refuses new ticks, drains
+in-flight verification before SQLite disposal, and gates native Session
+creation/configuration/prompt delivery on the host lifetime signal. Workflow transitions are idempotent under durable
 command IDs; a Run can be sealed after crash recovery only if its specific
 workflow transition and evidence were committed.
 
