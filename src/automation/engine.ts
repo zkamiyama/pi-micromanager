@@ -10,6 +10,8 @@ export interface LaunchJob {
   runId:string;workspaceId:string;seat:Seat;kind:JobKind;model:ModelProfile;prompt:string;
   /** Exact snapshot a read-only QC worker must inspect. */
   headSha?:string;
+  /** QC-passed upstream commits that must be ancestors of a dependent writer. */
+  requiredAncestors?:string[];
 }
 export interface Verification {
   headSha:string;clean:boolean;testsPassed:boolean;details:string;
@@ -238,8 +240,15 @@ export class AutopilotEngine {
           if(note)sources.push(b.runId+": "+note.slice(0,950));
         }
       }
+      const requiredAncestors=next.kind==="implementation"?
+        task.spec.dependsOn.flatMap(dep=>{
+          const source=current.tasks[dep.taskId];
+          return source?.spec.kind==="implementation"&&source.lastQc?.verdict==="pass"?
+            [source.lastQc.headSha]:[];
+        }):[];
       await this.port.launch({projectId:p,orchestraWorkspaceId:o,workflowId,
         taskId:next.taskId,runId:next.runId,seat:next.seat,kind:next.kind,workspaceId,
+        ...(requiredAncestors.length?{requiredAncestors}:{}),
         model:task.spec.model?(()=>{
           const raw=task.spec.model!;
           const cut=raw.indexOf("/");
