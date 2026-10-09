@@ -97,7 +97,7 @@ Autopilot verifies that its worktree HEAD actually contains the parent's
 QC-passed commit. If not, it pauses so you can explicitly integrate upstream
 changes; it never auto-cherry-picks, merges, or silently skips dependencies.
 
-The scheduler runs in the PI WEB server-plugin lifetime (not as a separate operating-system service). It restores active Run identity on restart from persisted companion turn entries where possible; uncertain delivery remains blocked until reconciled. Real-provider/auth/GUI integration testing is deferred. See [ADR-0007](docs/adr/0007-opt-in-autopilot.md) for recovery and trust boundaries.
+The scheduler runs in the PI WEB server-plugin lifetime (not as a separate operating-system service). It restores active Run identity on restart from persisted companion turn entries where possible. If a settled Pi Session's typed QC/plan report notification is lost, the host reconnects to **that same Session read-only** to recover the durable report; wrong-Run reports and unknown turn states cause a safe pause, not a retry. Uncertain command delivery remains blocked until reconciled. Public-host-capability mock integration tests cover actual Session launch, bounded host tests, QC transitions, typed Sol proposal approval and lost report replay. Authenticated real-provider/GUI E2E is still deferred. See [ADR-0007](docs/adr/0007-opt-in-autopilot.md) for recovery and trust boundaries.
 
 ## Orchestra canvas controls
 
