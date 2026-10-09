@@ -106,6 +106,14 @@ export class AgentRegistry {
     return this.db.prepare("SELECT "+fields+" FROM execution_runs WHERE project_id=? AND orchestra_workspace_id=?"+
       where+" ORDER BY updated_at DESC LIMIT 200").all(projectId,orchestraWorkspaceId) as unknown as AgentBinding[];
   }
+  /** Unbounded SQL existence check; never depend on the 200-item UI listing
+   * when enforcing workspace leases before reading evidence or writing ADRs. */
+  hasUnsealedWorkspace(projectId:string,workspaceId:string):boolean{
+    identity(projectId,"projectId");identity(workspaceId,"workspaceId");
+    return Boolean(this.db.prepare("SELECT 1 AS present FROM execution_runs "+
+      "WHERE project_id=? AND workspace_id=? AND phase NOT IN ('sealed','failed') "+
+      "LIMIT 1").get(projectId,workspaceId));
+  }
   get(projectId:string,orchestraWorkspaceId:string,sessionId:string):AgentBinding {
     identity(sessionId,"sessionId");
     const record=this.db.prepare("SELECT "+fields+
