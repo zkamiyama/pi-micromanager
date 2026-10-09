@@ -23,6 +23,7 @@ import { ScreenshotEvidence } from "../automation/screenshots.js";
 import { AdrPromotion } from "../automation/adr-promotion.js";
 import { PermissionLedger } from "../automation/permissions.js";
 import { PublicationManager } from "../automation/publication.js";
+import { AutomaticIntegrator } from "../automation/convergence.js";
 import { classifyRecoveredRun } from "../automation/recovery.js";
 import type { AutopilotRecord } from "../automation/ledger.js";
 
@@ -66,6 +67,11 @@ const plugin:PiWebServerPlugin={
   const publisher=new PublicationManager({
     path:join(host.dataDirectory,"publication.sqlite"),host,
     workflows:store,agents,ledger,permissions,
+    workspaces:()=>workspaces,
+  });
+  const convergence=new AutomaticIntegrator({
+    path:join(host.dataDirectory,"git-convergence.sqlite"),
+    host,workflows:store,agents,ledger,permissions,
     workspaces:()=>workspaces,
   });
   const screenshots=new ScreenshotEvidence({
@@ -276,6 +282,7 @@ const plugin:PiWebServerPlugin={
       replaySettledReport,
     }),
     publish:(record,workflow)=>publisher.step(record,workflow),
+    converge:(record,workflow)=>convergence.step(record,workflow),
     authorizeImplementation:(record,_workflow,taskId,nextAttempt)=>{
       const workspaceId=record.config.workspaces[taskId];
       if(!workspaceId)throw new Error("Missing linked implementation Workspace");
@@ -468,7 +475,8 @@ const plugin:PiWebServerPlugin={
           case "auto.permissions":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             return j({approvals:permissions.list(p,o,workflowId),
-              publication:publisher.list(p,o,workflowId)});
+              publication:publisher.list(p,o,workflowId),
+              convergence:convergence.list(p,o,workflowId)});
           }
           case "auto.permission.decide":{
             const input=object(ctx.input),approvalId=id(input.approvalId);
@@ -786,7 +794,7 @@ const plugin:PiWebServerPlugin={
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       for(const bridge of live.values())bridge.stop();
-      live.clear();viewers.clear();publisher.close();permissions.close();adr.close();screenshots.close();retention.close();provisioner.close();integration.close();ledger.close();agents.close();store.close();
+      live.clear();viewers.clear();convergence.close();publisher.close();permissions.close();adr.close();screenshots.close();retention.close();provisioner.close();integration.close();ledger.close();agents.close();store.close();
     },
   };
  },
