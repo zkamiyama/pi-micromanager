@@ -11,15 +11,15 @@ import type {WorkflowInstance} from "../core/workflow.js";
 import type {AgentRegistry} from "../runtime/registry.js";
 import type {AutopilotLedger,AutopilotRecord,PublicationConfig} from "./ledger.js";
 import {automationScope} from "./ledger.js";
-import {git,gitValue,requireCleanGit,type GitHost} from "./git.js";
+import {git,gitValue,requireAncestor,requireCleanGit,type GitHost} from "./git.js";
 import type {PermissionLedger} from "./permissions.js";
 import type {PermissionAction} from "../core/permissions.js";
 
-type PublicationAction="git.push"|"github.pr.create";
+type PublicationAction="git.push"|"github.pr.create"|"github.pr.ready"|"github.pr.merge";
 export interface PublishedOperation {
   id:string;workflowId:string;taskId:string;action:PublicationAction;
   qcRunId:string;sha:string;branch:string;destination:string;
-  state:"reserved"|"completed";result:string;createdAt:string;updatedAt:string;
+  state:"reserved"|"scheduled"|"completed";result:string;createdAt:string;updatedAt:string;
 }
 interface OperationRow extends PublishedOperation {scope:string;fingerprint:string}
 interface PublicationOptions {
@@ -50,6 +50,10 @@ function publicRepo(url:string):string{
 }
 interface PrResult {number:number;url:string;headRefName:string;
   baseRefName:string;isDraft:boolean;state:string;headRefOid:string}
+interface FinalPrState {
+  number:number;url:string;headRefOid:string;baseRefName:string;
+  isDraft:boolean;state:string;autoMergeRequest:unknown;
+}
 export class PublicationManager {
   private readonly db:DatabaseSync;
   constructor(private readonly options:PublicationOptions){
@@ -102,6 +106,12 @@ export class PublicationManager {
   private complete(row:OperationRow,result:string):void{
     if(result.length>500)throw new Error("Publication result exceeds 500 characters");
     this.db.prepare("UPDATE publication_operations SET state='completed',result=?,updated_at=?"+
+      " WHERE id=? AND state IN ('reserved','scheduled')")
+      .run(result,new Date().toISOString(),row.id);
+  }
+  private scheduled(row:OperationRow,result:string):void{
+    if(result.length>500)throw new Error("Publication scheduling receipt exceeds 500 characters");
+    this.db.prepare("UPDATE publication_operations SET state='scheduled',result=?,updated_at=?"+
       " WHERE id=? AND state='reserved'")
       .run(result,new Date().toISOString(),row.id);
   }
@@ -157,6 +167,105 @@ export class PublicationManager {
       return pr as unknown as PrResult;
     }).filter(pr=>pr.headRefName===branch);
   }
+  private async finalPrState(path:string,repo:string,number:number):Promise<FinalPrState>{
+    const raw=await this.gh(path,["pr","view",String(number),"--repo",repo,
+      "--json","number,url,headRefOid,baseRefName,isDraft,state,autoMergeRequest"]);
+    const p:unknown=JSON.parse(raw);
+    if(!p||typeof p!=="object"||Array.isArray(p))throw new Error("Invalid GitHub PR state");
+    const row=p as Record<string,unknown>;
+    if(row.number!==number||typeof row.url!=="string"||
+      typeof row.headRefOid!=="string"||typeof row.baseRefName!=="string"||
+      typeof row.isDraft!=="boolean"||typeof row.state!=="string"||
+      !Object.hasOwn(row,"autoMergeRequest"))
+      throw new Error("Incomplete GitHub PR merge state");
+    return row as unknown as FinalPrState;
+  }
+  private async completeFinalPR(record:AutopilotRecord,taskId:string,
+    qcRunId:string,sha:string,path:string,branch:string,repo:string,
+    destination:string):Promise<"acted"|"waiting"|"none">{
+    const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
+    const pub=record.config.publication!;
+    if(!record.config.finalization?.autoMerge)return "none";
+    const approval=this.options.permissions.ensure(p,o,w,taskId,
+      "github.pr.merge",qcRunId,sha,pub);
+    if(approval.decision==="deny")return "none";
+    if(approval.decision==="ask")return "waiting";
+    const prs=await this.pullRequests(path,repo,branch);
+    if(prs.length!==1||prs[0]?.headRefOid!==sha||
+      prs[0]?.baseRefName!==pub.baseBranch||
+      !["OPEN","MERGED"].includes(prs[0]!.state))
+      throw new Error("Final PR branch/base/head changed or is missing");
+    const number=prs[0]!.number;
+    const inspected=await this.finalPrState(path,repo,number);
+    if(inspected.headRefOid!==sha||inspected.baseRefName!==pub.baseBranch||
+      inspected.url!==prs[0]!.url)
+      throw new Error("Final GitHub PR identity changed");
+    const ready=this.existing(p,o,w,taskId,"github.pr.ready",qcRunId);
+    const merge=this.existing(p,o,w,taskId,"github.pr.merge",qcRunId);
+    if(inspected.state==="MERGED"){
+      const merged=this.reserve(p,o,w,taskId,"github.pr.merge",
+        qcRunId,sha,branch,destination);
+      if(merged.state!=="completed")this.complete(merged,inspected.url);
+      return merge?.state==="completed"?"none":"acted";
+    }
+    if(inspected.state!=="OPEN")
+      throw new Error("PR is closed or no longer eligible for automatic merge");
+    if(inspected.isDraft){
+      if(ready)throw new Error("Uncertain PR ready promotion; inspect GitHub rather than replaying");
+      // No ready-to-review transition is allowed until merge policy consent.
+      const receipt=this.reserve(p,o,w,taskId,"github.pr.ready",
+        qcRunId,sha,branch,destination);
+      this.assertAdmitted(record);
+      await this.gh(path,["pr","ready",String(number),"--repo",repo]);
+      const after=await this.finalPrState(path,repo,number);
+      if(after.isDraft||after.headRefOid!==sha||after.baseRefName!==pub.baseBranch)
+        throw new Error("GitHub did not prove matching PR is ready");
+      this.complete(receipt,after.url);
+      return "acted";
+    }
+    if(!ready){
+      const recovered=this.reserve(p,o,w,taskId,"github.pr.ready",
+        qcRunId,sha,branch,destination);
+      this.complete(recovered,inspected.url);
+      return "acted";
+    }
+    if(ready.state==="reserved"){
+      this.complete(ready,inspected.url);
+      return "acted";
+    }
+    if(inspected.autoMergeRequest!==null){
+      const receipt=this.reserve(p,o,w,taskId,"github.pr.merge",
+        qcRunId,sha,branch,destination);
+      if(receipt.state==="reserved")this.scheduled(receipt,inspected.url);
+      return "waiting";
+    }
+    if(merge)
+      throw new Error("PR auto-merge is not active after a reserved or scheduled request");
+    const receipt=this.reserve(p,o,w,taskId,"github.pr.merge",
+      qcRunId,sha,branch,destination);
+    this.assertAdmitted(record);
+    if(this.options.agents.hasUnsealedWorkspace(p,
+      record.config.finalization.workspaceId)||
+      await requireCleanGit(this.options.host,path)!==sha||
+      await this.remoteSha(path,pub,branch)!==sha)
+      throw new Error("Final PR source was modified before scheduling merge");
+    // --auto uses repository branch protection and required status checks.
+    // No --admin, --delete-branch, or forced merge.
+    await this.gh(path,["pr","merge",String(number),"--repo",repo,
+      "--auto","--merge"]);
+    const after=await this.finalPrState(path,repo,number);
+    if(after.headRefOid!==sha||after.baseRefName!==pub.baseBranch)
+      throw new Error("Final PR moved during automatic merge");
+    if(after.state==="MERGED"){
+      this.complete(receipt,after.url);
+      return "acted";
+    }
+    if(after.state==="OPEN"&&after.autoMergeRequest!==null){
+      this.scheduled(receipt,after.url);
+      return "waiting";
+    }
+    throw new Error("GitHub merge result is uncertain; do not repeat without proof");
+  }
   /** At most one external side effect per tick, after all QC/permission gates. */
   async step(record:AutopilotRecord,workflow:WorkflowInstance):Promise<"acted"|"waiting"|"none">{
     const pub=record.config.publication;
@@ -164,6 +273,8 @@ export class PublicationManager {
     this.assertAdmitted(record);
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     for(const task of Object.values(workflow.tasks)){
+      if(record.config.finalization&&
+        task.spec.systemPurpose!=="final-integration")continue;
       if(task.spec.kind!=="implementation"||
         !["passed","integrated"].includes(task.status)||task.lastQc?.verdict!=="pass")continue;
       const qc=task.lastQc,session=this.options.agents.getRun(p,o,w,qc.runId);
@@ -174,7 +285,8 @@ export class PublicationManager {
       const evidence=this.options.ledger.evidence(session);
       if(!evidence||evidence.ref!==session.evidenceRef||evidence.sessionId!==session.sessionId)
         throw new Error("QC evidence mismatch at publication");
-      const workspaceId=record.config.workspaces[task.spec.id];
+      const workspaceId=task.spec.systemPurpose==="final-integration"?
+        record.config.finalization?.workspaceId:record.config.workspaces[task.spec.id];
       if(!workspaceId)throw new Error("Missing implementation workspace for publication");
       if(this.options.agents.hasUnsealedWorkspace(p,workspaceId))
         throw new Error("Implementation workspace is still leased by an active Run");
@@ -187,6 +299,17 @@ export class PublicationManager {
         throw new Error("Publication Workspace authority changed");
       const sha=await requireCleanGit(this.options.host,target.path);
       if(sha!==qc.headSha)throw new Error("Publication source Git HEAD differs from QC-pass commit");
+      if(task.spec.systemPurpose==="final-integration"){
+        for(const source of Object.values(workflow.tasks)){
+          if(source.spec.kind!=="implementation"||
+            source.spec.systemPurpose==="final-integration")continue;
+          if(!["passed","integrated"].includes(source.status)||
+            source.lastQc?.verdict!=="pass")
+            throw new Error("Final publish source Task has no QC PASS");
+          await requireAncestor(this.options.host,target.path,
+            source.lastQc.headSha,sha);
+        }
+      }
       const branch=await gitValue(this.options.host,target.path,
         ["symbolic-ref","--quiet","--short","HEAD"]);
       if(!safeBranch(branch)||branch===pub.baseBranch||
@@ -242,7 +365,13 @@ export class PublicationManager {
       if(previous&&previous.fingerprint!==fingerprint("github.pr.create",
         qc.runId,sha,branch,dest))
         throw new Error("GitHub PR target changed after reservation");
-      if(previous?.state==="completed")continue;
+      if(previous?.state==="completed"){
+        if(task.spec.systemPurpose==="final-integration"&&
+          record.config.finalization?.autoMerge)
+          return this.completeFinalPR(record,task.spec.id,qc.runId,sha,
+            target.path,branch,repo,dest);
+        continue;
+      }
       // An existing identical Draft PR is proof even if the previous gh call
       // returned uncertain. A missing PR after reservation needs a human.
       const prList=await this.pullRequests(target.path,repo,branch);
