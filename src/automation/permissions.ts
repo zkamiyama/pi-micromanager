@@ -27,6 +27,12 @@ function commitSubject(taskId:string,runId:string,revision:number,workspaceId:st
   return createHash("sha256").update(JSON.stringify([
     "git.commit",taskId,runId,revision,workspaceId])).digest("hex");
 }
+function integrationSubject(sourceId:string,runId:string,sha:string,
+  targetTaskId:string,targetWorkspaceId:string,targetHead:string):string{
+  return createHash("sha256").update(JSON.stringify([
+    "git.integrate",sourceId,runId,sha,targetTaskId,targetWorkspaceId,targetHead]))
+    .digest("hex");
+}
 function subject(action:PermissionAction,taskId:string,runId:string,
   sha:string,pub:PublicationConfig):string{
   return createHash("sha256").update(JSON.stringify([
@@ -85,6 +91,51 @@ export class PermissionLedger {
     return {decision:row.state==="approved"?"allow":
       row.state==="rejected"?"deny":"ask",approval:row};
   }
+  /** Only a QC-passed upstream commit may fast-forward a yet-unstarted
+   * dependent worker Worktree. An 'ask' approval binds BOTH exact SHAs and
+   * the target Task/Workspace, not just a human-readable branch name. */
+  ensureIntegration(p:string,o:string,workflowId:string,sourceTaskId:string,
+    runId:string,sourceSha:string,targetTaskId:string,
+    targetWorkspaceId:string,targetHead:string):PermissionOutcome{
+    const workflow=this.workflows.get(p,o,workflowId);
+    const parent=workflow.tasks[sourceTaskId],child=workflow.tasks[targetTaskId];
+    const configured=this.settings.get(p,o,workflowId)?.config.workspaces[targetTaskId];
+    if(!parent||parent.spec.kind!=="implementation"||
+      !["passed","integrated"].includes(parent.status)||
+      parent.lastQc?.verdict!=="pass"||
+      parent.lastQc.runId!==runId||parent.lastQc.headSha!==sourceSha||
+      !child||child.spec.kind!=="implementation"||
+      !child.spec.dependsOn.some(d=>d.taskId===sourceTaskId)||
+      !["blocked","ready"].includes(child.status)||child.attempts!==0||
+      !targetWorkspaceId||configured!==targetWorkspaceId||
+      !/^[0-9a-f]{40,64}$/.test(targetHead))
+      throw new Error("Git integration permission requires exact QC and unstarted dependent Workspace");
+    const decision=permissionDecision(workflow.definition.permissions,"git.integrate");
+    if(decision!=="ask")return {decision};
+    const scope=automationScope(p,o);
+    const fingerprint=integrationSubject(sourceTaskId,runId,sourceSha,
+      targetTaskId,targetWorkspaceId,targetHead);
+    const existing=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
+      " WHERE scope=? AND workflow_id=? AND task_id=? AND action='git.integrate'"+
+      " AND fingerprint=?").get(scope,workflowId,sourceTaskId,fingerprint)
+      as ApprovalRow|undefined;
+    if(existing)return {decision:existing.state==="approved"?"allow":
+      existing.state==="rejected"?"deny":"ask",approval:existing};
+    const id=randomUUID(),at=new Date().toISOString();
+    const target=JSON.stringify([targetTaskId,targetWorkspaceId,targetHead]);
+    this.db.prepare(`INSERT INTO workflow_approvals
+      (id,scope,workflow_id,task_id,action,run_id,head_sha,target,
+      fingerprint,state,created_at,updated_at)
+      VALUES(?,?,?,?,'git.integrate',?,?,?,?,'pending',?,?)
+      ON CONFLICT(scope,workflow_id,task_id,action,fingerprint) DO NOTHING`)
+      .run(id,scope,workflowId,sourceTaskId,runId,sourceSha,target,fingerprint,at,at);
+    const row=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
+      " WHERE scope=? AND workflow_id=? AND task_id=? AND action='git.integrate'"+
+      " AND fingerprint=?").get(scope,workflowId,sourceTaskId,fingerprint)
+      as unknown as ApprovalRow;
+    return {decision:row.state==="approved"?"allow":
+      row.state==="rejected"?"deny":"ask",approval:row};
+  }
   ensure(p:string,o:string,workflowId:string,taskId:string,
     action:PermissionAction,runId:string,headSha:string,
     publication:PublicationConfig):PermissionOutcome{
@@ -133,6 +184,27 @@ export class PermissionLedger {
         config.workspaces[row.taskId]!==row.target||row.headSha!=="pre-commit"||
         commitSubject(row.taskId,row.runId,workflow.revision,row.target)!==row.fingerprint)
         throw new Error("Commit approval no longer matches the ready Task/revision/workspace");
+    }else if(row.action==="git.integrate"){
+      let target:unknown;
+      try{target=JSON.parse(row.target);}catch{
+        throw new Error("Invalid stored integration approval target");
+      }
+      if(!Array.isArray(target)||target.length!==3||
+        target.some(v=>typeof v!=="string"))
+        throw new Error("Invalid stored integration target");
+      const [targetTaskId,targetWorkspaceId,targetHead]=target as string[];
+      const child=workflow.tasks[targetTaskId!];
+      if(!task||task.spec.kind!=="implementation"||
+        !["passed","integrated"].includes(task.status)||
+        task.lastQc?.verdict!=="pass"||
+        task.lastQc.runId!==row.runId||task.lastQc.headSha!==row.headSha||
+        !child||child.spec.kind!=="implementation"||
+        !child.spec.dependsOn.some(d=>d.taskId===row.taskId)||
+        child.attempts!==0||!["blocked","ready"].includes(child.status)||
+        config.workspaces[targetTaskId!]!==targetWorkspaceId||
+        integrationSubject(row.taskId,row.runId,row.headSha,targetTaskId!,
+          targetWorkspaceId!,targetHead!)!==row.fingerprint)
+        throw new Error("Integration approval no longer matches QC and dependent Task/Workspace");
     }else {
       const pub=config.publication;
       if(!pub||!task||!["passed","integrated"].includes(task.status)||
