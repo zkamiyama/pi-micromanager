@@ -252,6 +252,14 @@ export class AdrPromotion {
     if(current.head!==row.targetHead||
       this.filePath(current.workspace.path,row.filename)!==row.target_path)
       throw new Error("ADR Git target changed since review");
+    // Host Workspace resolution is asynchronous. Close the admission race
+    // before the non-atomic file write with synchronous authoritative checks.
+    const latest=this.evidence(p,o,row.workflowId);
+    if(latest.sourceDigest!==row.sourceDigest||
+      latest.workflow.revision!==row.workflowRevision)
+      throw new Error("ADR evidence changed while validating the target");
+    if(this.opt.agents.hasUnsealedWorkspace(p,row.targetWorkspaceId))
+      throw new Error("ADR review target became busy during staging");
     this.opt.host.lifetimeSignal.throwIfAborted();
     const reserved=this.db.prepare("UPDATE adr_drafts SET state='reserved'"+
       " WHERE id=? AND state='prepared'").run(id);
