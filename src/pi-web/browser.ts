@@ -33,6 +33,13 @@ interface State {
   autopilotConfigured: boolean;
   autopilotConfigFor?:string;
   workflowDraft:string;
+  worktreeTaskId:string;
+  worktreeWorkspaceId:string;
+  worktreeStatus:string;
+  worktreePlan?:{
+    id:string;workflowId:string;taskId:string;path:string;branch:string;
+    baseSha:string;stage:"prepared"|"reserved"|"created";expiresAt:number;
+  };
   integrationTargetWorkspaceId:string;
   integrationStatus:string;
   integrationPreview?:{
@@ -74,6 +81,7 @@ function stateFor(context: WorkspacePanelContext): State {
       goalStatus:goalRef?"A prior goal proposal can be checked":"No proposal in progress",
       goalProposalText:"",goalProposalReady:false,
       ...(goalRef?{goalRef}:{}),
+      worktreeTaskId:"",worktreeWorkspaceId:"",worktreeStatus:"",
       integrationTargetWorkspaceId:"",integrationStatus:"",
       workflowDraft:JSON.stringify({
         id:"custom-feature",title:"Custom development workflow",maxQcRounds:5,
@@ -109,7 +117,10 @@ const plugin: PiWebPlugin = {
         state.workflows = result as WorkflowInstance[];
         const id = workflowId ?? state.selected?.definition.id ?? state.workflows[0]?.definition.id;
         if (id) {
-          if (state.selected?.definition.id !== id) delete state.selectedTaskId;
+          if (state.selected?.definition.id !== id){
+            delete state.selectedTaskId;delete state.worktreePlan;
+            state.worktreeTaskId="";state.worktreeStatus="";
+          }
           state.selected = await send(context, "get", id) as WorkflowInstance;
           try{
             const auto=await send(context,"auto.status",{workflowId:id}) as
@@ -249,6 +260,42 @@ const plugin: PiWebPlugin = {
         }
       }catch(error){state.autopilotStatus=String(error);}
       finally{state.busy=false;context.host.requestRender();}
+    }
+
+    async function managedWorktreeCommand(context:WorkspacePanelContext,
+      action:"preview"|"create"|"inspect"){
+      const state=stateFor(context),workflow=state.selected;
+      if(!workflow||state.busy||state.autopilotEnabled)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const proof=await send(context,"auto.worktree."+action,action==="preview"?
+          {workflowId:workflow.definition.id,taskId:state.worktreeTaskId}:
+          {planId:state.worktreePlan?.id}) as NonNullable<State["worktreePlan"]>;
+        if(proof.workflowId!==workflow.definition.id||proof.taskId!==state.worktreeTaskId)
+          throw new Error("Managed Git worktree scope mismatch");
+        state.worktreePlan=proof;
+        state.worktreeStatus=proof.stage==="created"?
+          "Created and verified. In PI WEB select this new linked Worktree, copy its Workspace ID, "+
+          "then insert that ID into the Autopilot configuration.":
+          proof.stage==="prepared"?"Git Worktree planned. Review its branch, base SHA and path before creating.":
+          "Creation reserved; if the host response was uncertain, inspect it. Do not issue another Git add.";
+      }catch(error){state.worktreeStatus="Worktree operation refused: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    function setWorktreeWorkspaceId(context:WorkspacePanelContext){
+      const state=stateFor(context),proof=state.worktreePlan;
+      if(!proof||proof.stage!=="created"||!state.worktreeWorkspaceId.trim()||
+        proof.workflowId!==state.selected?.definition.id)return;
+      try{
+        const config=JSON.parse(state.autopilotDraft) as
+          {workspaces?:Record<string,string>;[key:string]:unknown};
+        config.workspaces??={};
+        config.workspaces[proof.taskId]=state.worktreeWorkspaceId.trim();
+        state.autopilotDraft=JSON.stringify(config,null,2);
+        state.worktreeStatus="Workspace ID staged in the JSON configuration. "+
+          "Save Autopilot configuration separately before starting execution.";
+      }catch(error){state.worktreeStatus="Invalid configuration JSON: "+String(error);}
+      context.host.requestRender();
     }
     async function integrationCommand(context:WorkspacePanelContext,taskId:string,
       action:"preview"|"confirm"){
@@ -526,6 +573,57 @@ const plugin: PiWebPlugin = {
                 <button ?disabled=${state.busy} @click=${()=>void importWorkflow(context)}>
                   Validate and save Workflow</button>
               </details>
+
+              ${w?html`<details class="mm-managed-worktree">
+                <summary><strong>Manage isolated Git Worktree</strong> · preview before creating</summary>
+                <p>Create a new Task branch and linked Git Worktree in Micromanager's own data
+                  directory. PI WEB discovers Git Worktrees automatically, but its public
+                  capability does not provide Workspace registration. After creation, select
+                  the new workspace in PI WEB and enter its ID below. No Worktree is deleted automatically.</p>
+                <label>Unstarted implementation Task
+                  <select aria-label="Task for managed Git Worktree" .value=${state.worktreeTaskId}
+                    ?disabled=${state.busy||state.autopilotEnabled}
+                    @change=${(e:Event)=>{
+                      state.worktreeTaskId=(e.target as HTMLSelectElement).value;
+                      delete state.worktreePlan;state.worktreeStatus="";context.host.requestRender();
+                    }}>
+                    <option value="">Choose Task</option>
+                    ${Object.values(w.tasks).filter(t=>t.spec.kind==="implementation"&&t.attempts===0)
+                      .map(t=>html`<option value=${t.spec.id}>${t.spec.title}</option>`)}
+                  </select>
+                </label>
+                <div class="mm-actions">
+                  <button ?disabled=${state.busy||state.autopilotEnabled||!state.worktreeTaskId}
+                    @click=${()=>void managedWorktreeCommand(context,"preview")}>
+                    Preview Worktree</button>
+                  <button ?disabled=${state.busy||state.autopilotEnabled||
+                    state.worktreePlan?.stage!=="prepared"}
+                    @click=${()=>void managedWorktreeCommand(context,"create")}>
+                    Create reviewed Git Worktree</button>
+                  <button ?disabled=${state.busy||!state.worktreePlan||
+                    state.worktreePlan.stage==="prepared"}
+                    @click=${()=>void managedWorktreeCommand(context,"inspect")}>
+                    Inspect reserved Worktree</button>
+                </div>
+                ${state.worktreePlan?html`<div class="mm-worktree-proof">
+                  <p>Stage: ${state.worktreePlan.stage}</p>
+                  <p>Branch: <code>${state.worktreePlan.branch}</code></p>
+                  <p>Base SHA: <code>${state.worktreePlan.baseSha}</code></p>
+                  <p>Owned path: <code>${state.worktreePlan.path}</code></p>
+                  ${state.worktreePlan.stage==="created"?html`
+                    <label>Discovered PI WEB Workspace ID
+                      <input maxlength="128" placeholder="Copy from PI WEB Worktree details"
+                        .value=${state.worktreeWorkspaceId}
+                        @input=${(e:Event)=>{
+                          state.worktreeWorkspaceId=(e.target as HTMLInputElement).value;
+                          context.host.requestRender();
+                        }}/></label>
+                    <button ?disabled=${!state.worktreeWorkspaceId.trim()||state.busy}
+                      @click=${()=>setWorktreeWorkspaceId(context)}>
+                      Insert ID into Autopilot configuration</button>`:null}
+                </div>`:null}
+                <p role="status" aria-live="polite">${state.worktreeStatus}</p>
+              </details>`:null}
               <details class="mm-autopilot">
                 <summary><strong>Autopilot · Real Orchestrator</strong>
                   <span>${state.autopilotEnabled?"● Running":"○ Paused / offline"}</span></summary>
@@ -617,6 +715,19 @@ const styles = `
   .mm-goal-credentials input{width:100%;box-sizing:border-box;background:var(--pi-surface);
     color:inherit;border:1px solid var(--pi-border-muted);border-radius:6px;padding:6px;}
 
+
+  .mm-managed-worktree{border:1px solid var(--pi-border-muted);border-radius:8px;
+    background:var(--pi-surface);padding:10px;margin:12px 0;}
+  .mm-managed-worktree summary{cursor:pointer;}
+  .mm-managed-worktree p{font-size:12px;color:var(--pi-muted);overflow-wrap:anywhere;}
+  .mm-managed-worktree label{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    font-size:12px;margin:8px 0;}
+  .mm-managed-worktree input,.mm-managed-worktree select{color:inherit;
+    background:var(--pi-surface);border:1px solid var(--pi-border-muted);
+    border-radius:6px;padding:6px;min-width:160px;max-width:100%;}
+  .mm-worktree-proof{margin:8px 0;padding:8px;border:1px dashed var(--pi-border-muted);
+    border-radius:8px;}
+  .mm-worktree-proof code{overflow-wrap:anywhere;font-size:11px;}
   .mm-integration{border:1px solid var(--pi-border-muted);background:var(--pi-surface);
     border-radius:8px;padding:10px;margin:12px 0;font-size:12px;}
   .mm-integration p{color:var(--pi-muted);overflow-wrap:anywhere;}
