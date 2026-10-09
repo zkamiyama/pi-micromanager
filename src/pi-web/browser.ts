@@ -4,6 +4,8 @@ import type { PiWebPlugin, WorkspacePanelContext } from "@jmfederico/pi-web/plug
 import type { WorkflowAction, WorkflowDefinition, WorkflowInstance, TaskState, Role } from "../core/workflow.js";
 import type { WorkflowJournal } from "../automation/journal.js";
 import type { RetentionPreview } from "../automation/retention.js";
+import type { ApprovalRequest } from "../automation/permissions.js";
+import type { PublishedOperation } from "../automation/publication.js";
 import type { AdrDraft, AdrFields } from "../automation/adr-promotion.js";
 
 const DEMO: WorkflowDefinition = {
@@ -44,6 +46,9 @@ interface State {
   interventionDraft: string;
   autopilotDraft: string;
   autopilotStatus: string;
+  permissionStatus:string;
+  approvalRequests:ApprovalRequest[];
+  publishedOperations:PublishedOperation[];
   autopilotEnabled: boolean;
   autopilotConfigured: boolean;
   autopilotConfigFor?:string;
@@ -95,8 +100,11 @@ function stateFor(context: WorkspacePanelContext): State {
           implementer:{provider:"",model:""},qc:{provider:"",model:""},
           planner:{provider:"",model:""},architect:{provider:"",model:""},
         },test:{file:"npm",args:["test"],timeoutMs:60000},maxAttempts:5,
+        publication:{remote:"origin",baseBranch:"main",draft:true},
       },null,2),
       autopilotStatus:"Not configured",autopilotEnabled:false,autopilotConfigured:false,
+      permissionStatus:"No permission decisions loaded",
+      approvalRequests:[],publishedOperations:[],
       goalText:"",goalProvider:"",goalModel:"",goalEffort:"",
       goalStatus:goalRef?"A prior goal proposal can be checked":"No proposal in progress",
       goalProposalText:"",goalProposalReady:false,
@@ -106,6 +114,7 @@ function stateFor(context: WorkspacePanelContext): State {
       workflowDraft:JSON.stringify({
         id:"custom-feature",title:"Custom development workflow",maxQcRounds:5,
         maxParallelByRole:{planner:1,implementer:2,reviewer:2,architect:2},
+        permissions:{default:"allow",actions:{"github.pr.merge":"ask","deploy.production":"ask"}},
         tasks:[{id:"feature",title:"REPLACE: specific development Task",
           description:"REPLACE: state the exact repository change required",
           acceptanceCriteria:["REPLACE: define an independently testable acceptance condition"],
@@ -139,6 +148,8 @@ const plugin: PiWebPlugin = {
         if (id) {
           if (state.selected?.definition.id !== id){
             delete state.journal;delete state.retentionPreview;
+             state.approvalRequests=[];state.publishedOperations=[];
+             state.permissionStatus="Select Load permissions to review current requests";
             delete state.screenshotPreview;
             delete state.adrDraft;state.adrStatus="";
             state.screenshotRunId="";state.screenshotStatus="";
@@ -370,6 +381,30 @@ const plugin: PiWebPlugin = {
         }
       }catch(error){s.retentionStatus="Retention refused: "+String(error);}
       finally{s.busy=false;context.host.requestRender();}
+    }
+    async function permissionCommand(context:WorkspacePanelContext,
+      kind:"load"|"approved"|"rejected",approvalId?:string){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(state.busy||!workflowId)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        if(kind!=="load"){
+          if(!approvalId)throw new Error("Select an exact permission request");
+          const receipt=await send(context,"auto.permission.decide",{
+            approvalId,decision:kind,
+          }) as ApprovalRequest;
+          state.permissionStatus=receipt.state+" "+receipt.action+
+            " for QC "+receipt.headSha.slice(0,12)+
+            ". This decision cannot be reused for another commit.";
+        }
+        const latest=await send(context,"auto.permissions",{workflowId}) as {
+          approvals:ApprovalRequest[];publication:PublishedOperation[];
+        };
+        state.approvalRequests=latest.approvals;
+        state.publishedOperations=latest.publication;
+        if(kind==="load")state.permissionStatus="Loaded persisted publication decisions.";
+      }catch(error){state.permissionStatus="Permissions unavailable: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
     }
     async function autopilotCommand(context:WorkspacePanelContext,operation:"configure"|"start"|"pause"){
       const state=stateFor(context),workflowId=state.selected?.definition.id;
@@ -762,8 +797,12 @@ const plugin: PiWebPlugin = {
               <details class="mm-autopilot">
                 <summary><strong>Autopilot · Real Orchestrator</strong>
                   <span>${state.autopilotEnabled?"● Running":"○ Paused / offline"}</span></summary>
-                <p>Supply exact Pi models, existing linked Git Worktree workspace IDs per Task,
-                  and a real test argv. Automated launches remain under deterministic DAG/QC gates.</p>
+                <p>YOLO by default: a configured publication target automatically pushes
+                  QC-approved commits and creates Draft GitHub PRs. Workflow permissions can
+                  override git.push / github.pr.create to ask or deny. Merge and production
+                  deployment are separate approval-gated operations. Choose the correct remote,
+                  base branch and credentials. Legacy configurations never push unexpectedly.
+                  Exact models, linked Worktrees and host tests are still required.</p>
                 <label for="mm-auto-config">Autopilot configuration (JSON)</label>
                 <textarea id="mm-auto-config" rows="12" spellcheck="false"
                   .value=${state.autopilotDraft} ?disabled=${state.busy||state.autopilotEnabled}
@@ -777,6 +816,37 @@ const plugin: PiWebPlugin = {
                     @click=${()=>void autopilotCommand(context,"pause")}>Pause admission</button>
                 </div>
                 <p role="status" aria-live="polite">${state.autopilotStatus}</p>
+                <section class="mm-permissions">
+                  <strong>Workflow permissions · allow / ask / deny</strong>
+                  <p>Default: ${w?.definition.permissions?.default??"allow"} (YOLO).
+                    Merge and deployment default to ask. Edit the Workflow definition JSON
+                    before import to change decisions. The host publisher checks the
+                    policy; strong Pi shell restrictions require an OS sandbox.</p>
+                  <button ?disabled=${state.busy||!w}
+                    @click=${()=>void permissionCommand(context,"load")}>
+                    Load publication & approvals</button>
+                  ${state.approvalRequests.map(a=>html`
+                    <article class="mm-permission-request">
+                      <p><strong>${a.action}</strong> · ${a.state} · Task ${a.taskId}</p>
+                      <p>QC ${a.runId} · <code>${a.headSha}</code></p>
+                      <p>Destination: ${a.target}</p>
+                      ${a.state==="pending"?html`<div class="mm-actions">
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void permissionCommand(context,"approved",a.id)}>
+                          Approve this exact commit</button>
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void permissionCommand(context,"rejected",a.id)}>
+                          Deny</button>
+                      </div>`:null}
+                    </article>`)}
+                  ${state.publishedOperations.map(x=>html`
+                    <article class="mm-permission-request">
+                      <p>${x.action} · ${x.state} · Task ${x.taskId}</p>
+                      <p>Commit <code>${x.sha}</code></p>
+                      ${x.result?html`<p>${x.result}</p>`:null}
+                    </article>`)}
+                  <p role="status">${state.permissionStatus}</p>
+                </section>
               </details>
               <nav aria-label="Views">${(["cockpit", "dag", "kanban", "journal"] as const).map(view => html`
                 <button class=${state.view === view ? "selected" : ""} @click=${() => { state.view = view; context.host.requestRender(); }}>${view.toUpperCase()}</button>
@@ -1075,6 +1145,12 @@ const styles = `
   .mm-workflow-import textarea{width:100%;box-sizing:border-box;resize:vertical;margin:8px 0;
     background:var(--pi-surface);color:inherit;border:1px solid var(--pi-border-muted);
     border-radius:6px;padding:8px;font:12px ui-monospace,monospace;}
+  .mm-permissions{border-top:1px solid var(--pi-border-muted);padding:10px 0;margin:12px 0 0;}
+  .mm-permissions strong{font-size:13px;}
+  .mm-permission-request{padding:9px;border:1px solid var(--pi-border-muted);
+    border-radius:8px;margin:8px 0;}
+  .mm-permission-request code{font-size:11px;overflow-wrap:anywhere;}
+  .mm-permission-request p{font-size:12px;overflow-wrap:anywhere;}
   .mm-autopilot {border:1px solid var(--pi-border-muted);background:var(--pi-surface);
     border-radius:9px;padding:11px;margin:12px 0;}
   .mm-autopilot summary {cursor:pointer;display:flex;align-items:center;gap:10px;justify-content:space-between;}
