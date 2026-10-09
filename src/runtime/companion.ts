@@ -4,7 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
-import { REPORT_CHANNEL, type RunReport } from "../automation/report.js";
+import { REPORT_CHANNEL, parseRunReport, type RunReport } from "../automation/report.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   CONTROL_CHANNEL, RECEIPT_CHANNEL, ACTIVITY_CHANNEL, parseRuntimeControl,
@@ -16,6 +16,7 @@ const receiptEntry = "pi-micromanager:receipt";
 const claimEntry = "pi-micromanager:claim";
 const jobEntry = "pi-micromanager:job:v1";
 const reportEntry = "pi-micromanager:report:v1";
+const turnStateEntry = "pi-micromanager:turn-state:v1";
 const safeReadTools=new Set(["read","grep","find","ls","mm_qc_report","mm_task_report","mm_plan_intervention"]);
 function digest(control: RuntimeControl): string {
   return createHash("sha256").update(JSON.stringify(control)).digest("hex");
@@ -31,6 +32,8 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
   let lastEmitAt = 0;
   let job:RunJobContext|undefined;
   let recorded:RunReport|undefined;
+  let turnSettled:boolean|undefined;
+  let turnInterrupted:boolean|undefined;
   const receipts = new Map<string, StoredReceipt>();
   const claims = new Map<string, string>();
 
@@ -45,7 +48,7 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
   function reloadReceipts(context: ExtensionContext): void {
     receipts.clear();
     claims.clear();
-    job=undefined;recorded=undefined;
+    job=undefined;recorded=undefined;turnSettled=undefined;turnInterrupted=undefined;
     // Custom entries do not enter the model context; this is a bounded
     // command receipt and an uncertain-send marker, not a duplicated transcript.
     for (const entry of context.sessionManager.getEntries()) {
@@ -57,9 +60,21 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
         continue;
       }
       if(entry.customType===reportEntry){
+        const parsed=parseRunReport(entry.data);
+        if(parsed)recorded=parsed;
+        continue;
+      }
+      if(entry.customType===turnStateEntry){
         const data:unknown=entry.data;
-        if(data&&typeof data==="object"&&"runId" in data&&"kind" in data)
-          recorded=data as RunReport;
+        if(data&&typeof data==="object"&&!Array.isArray(data)&&
+          "runId" in data&&typeof data.runId==="string"&&
+          "settled" in data&&typeof data.settled==="boolean"&&
+          "interrupted" in data&&typeof data.interrupted==="boolean"){
+          if(!job||data.runId===job.runId){
+            turnSettled=data.settled;
+            turnInterrupted=data.interrupted;
+          }
+        }
         continue;
       }
       if (entry.customType !== claimEntry && entry.customType !== receiptEntry) continue;
@@ -76,11 +91,25 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
     }
   }
   pi.on("session_start", (_event, context) => { ctx = context; reloadReceipts(context); });
-  pi.on("session_shutdown", () => { ctx = undefined;job=undefined;recorded=undefined;receipts.clear(); claims.clear(); });
+  pi.on("session_shutdown", () => { ctx = undefined;job=undefined;recorded=undefined;turnSettled=undefined;turnInterrupted=undefined;receipts.clear(); claims.clear(); });
 
-  pi.on("agent_start", () => { lastPublicText = ""; activity("agent_started", "Agent started"); });
-  pi.on("agent_settled", event =>
-    activity("agent_settled", event.aborted ? "Agent interrupted" : "Agent settled"));
+  pi.on("agent_start", () => {
+    lastPublicText = "";
+    if(job){
+      turnSettled=false;turnInterrupted=false;
+      pi.appendEntry(turnStateEntry,{runId:job.runId,settled:false,interrupted:false});
+    }
+    activity("agent_started", "Agent started");
+  });
+  pi.on("agent_settled", event => {
+    if(job){
+      turnSettled=true;turnInterrupted=event.aborted;
+      // Persist BEFORE notifying the server, making a missed socket event
+      // recoverable from the public Pi Session's own durable entries.
+      pi.appendEntry(turnStateEntry,{runId:job.runId,settled:true,interrupted:event.aborted});
+    }
+    activity("agent_settled", event.aborted ? "Agent interrupted" : "Agent settled");
+  });
   pi.on("message_update", event => {
     if (event.message.role !== "assistant") return;
     const rendered = event.message.content.filter(part => part.type === "text")
@@ -214,6 +243,18 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
         fresh: !context.sessionManager.getEntries().some(e => e.type === "message"),
         ...(context.model ? { provider: context.model.provider, model: context.model.id } : {}),
         effort: pi.getThinkingLevel() });
+      return;
+    }
+    if (command.type === "inspect") {
+      if(!job){
+        respond({requestId:command.requestId,status:"failed",code:"job_not_bound"});
+        return;
+      }
+      // Report replay is explicit and bound to this exact hosted Session.
+      if(recorded&&recorded.runId===job.runId)pi.events.emit(REPORT_CHANNEL,recorded);
+      respond({requestId:command.requestId,status:"ok",jobRunId:job.runId,
+        idle:context.isIdle(),turnSettled,turnInterrupted,
+        hasReport:!!recorded&&recorded.runId===job.runId});
       return;
     }
     if (command.type === "configure") {
