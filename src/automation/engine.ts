@@ -120,8 +120,18 @@ export class AutopilotEngine {
     const p=record.projectId,o=record.orchestraWorkspaceId,workflowId=record.workflowId;
     const current=this.workflow.get(p,o,workflowId);
     const known=this.agents.list(p,o,"all").filter(a=>a.workflowId===workflowId);
+    // A crash after committing a Workflow action but before sealing the Run must
+    // not lock its worktree forever. Only a durable command receipt authorizes seal.
+    for(const binding of known.filter(b=>b.phase==="settled"&&b.requestId.startsWith("auto:"))){
+      if(!this.workflow.wasApplied(p,o,workflowId,"auto:complete:"+binding.runId))continue;
+      const evidence=this.ledger.evidence(binding);
+      if(!evidence)throw new Error("Committed automation action has no evidence receipt");
+      const sealed=this.agents.seal(p,o,binding.sessionId!,evidence.ref);
+      this.port.onTransition?.(sealed);
+      return;
+    }
     // Finalize only *settled* Sessions with independently captured evidence.
-    for(const binding of known.filter(b=>b.phase==="settled")){
+    for(const binding of known.filter(b=>b.phase==="settled"&&b.requestId.startsWith("auto:"))){
       const task=current.tasks[binding.taskId];
       if(!task)continue;
       const kind=binding.seat==="qc"&&task.spec.kind==="implementation"?"qc":kindOf(task);
@@ -139,7 +149,10 @@ export class AutopilotEngine {
       const task=current.tasks[binding.taskId];
       if(!task||!["running","awaiting_qc"].includes(task.status)||
         expectedRunId(task)!==binding.runId)continue;
-      if(["uncertain","blocked","failed","reserved","created","connected"].includes(binding.phase))
+      if(!binding.requestId.startsWith("auto:"))
+        throw new Error("Active Task has a manually owned Run "+binding.runId+
+          "; reconcile before enabling automatic execution");
+      if(["uncertain","blocked","failed","reserved","created","connected","configured"].includes(binding.phase))
         throw new Error("Run "+binding.runId+" needs reconciliation ("+binding.phase+"); no duplicate Session will start");
     }
     const next=planNext(current,known,record.config);
