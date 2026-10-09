@@ -360,3 +360,28 @@ test("Implementation and QC prompts include the same explicit acceptance contrac
     assert.match(qc,new RegExp(sha));
   }finally{x.close();}
 });
+
+test("Shutdown waits for in-flight verification and cannot commit a Task after stop",async()=>{
+  const x=setup();
+  try{
+    await x.tick();await x.tick();
+    x.settled("impl-api-1");
+    let release;
+    const verification=new Promise(resolve=>{release=resolve;});
+    x.setVerification(verification);
+    const running=x.tick();
+    let drained=false;
+    const stopped=x.engine.stop().then(()=>{drained=true;});
+    await Promise.resolve();
+    assert.equal(drained,false,"Stop must await the host verifier before closing SQLite");
+    release({headSha:sha,clean:true,testsPassed:true,details:"completed during stop"});
+    await Promise.all([running,stopped]);
+    assert.equal(drained,true);
+    assert.equal(x.wf().tasks.api.status,"running",
+      "In-flight verification may settle, but no authoritative transition is committed after stop");
+    assert.equal(x.run("impl-api-1").phase,"settled",
+      "Durably settled Run can be recovered at next startup");
+    await x.tick();
+    assert.equal(x.wf().tasks.api.status,"running","Stopped runner rejects further ticks");
+  }finally{x.close();}
+});
