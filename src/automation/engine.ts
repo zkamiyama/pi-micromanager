@@ -120,8 +120,12 @@ function reviewerSlots(workflow:WorkflowInstance,agents:readonly AgentBinding[])
   const diagnoses=Object.values(workflow.tasks).filter(t=>
     t.status==="running"&&t.spec.role==="reviewer").length;
   const qcLeases=agents.filter(a=>a.workflowId===workflow.definition.id&&
-    a.seat==="qc"&&workflow.tasks[a.taskId]?.spec.kind==="implementation"&&
-    !["settled","sealed","failed"].includes(a.phase)).length;
+    a.seat==="qc"&&!["settled","sealed","failed"].includes(a.phase)&&
+    // Reviewer diagnosis Tasks already occupy a reserved role slot above.
+    // Unknown or partially reconstructed QC bindings must be counted
+    // conservatively instead of silently over-admitting more reviewers.
+    (!a.taskId||!workflow.tasks[a.taskId]||
+      workflow.tasks[a.taskId]?.spec.kind==="implementation")).length;
   return diagnoses+qcLeases;
 }
 /** Planning Sol runs are external to the DAG while synthesis is a Task.
