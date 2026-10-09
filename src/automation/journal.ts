@@ -2,6 +2,7 @@
 import type {WorkflowInstance} from "../core/workflow.js";
 import type {AgentBinding} from "../runtime/registry.js";
 import type {AutopilotLedger} from "./ledger.js";
+import type {ScreenshotArtifact} from "./screenshots.js";
 
 export interface JournalTask {
   id:string;title:string;kind:string;role:string;status:string;
@@ -16,11 +17,13 @@ export interface JournalRun {
 export interface WorkflowJournal {
   workflowId:string;revision:number;updatedAt:string;title:string;
   tasks:JournalTask[];runs:JournalRun[];
+  screenshots:ScreenshotArtifact[];
   events:{revision:number;type:string;message:string;at:string}[];
   notes:string[];
 }
 export function buildJournal(workflow:WorkflowInstance,
-  allRuns:readonly AgentBinding[],ledger:Pick<AutopilotLedger,"evidence">):WorkflowJournal {
+  allRuns:readonly AgentBinding[],ledger:Pick<AutopilotLedger,"evidence">,
+  screenshots:readonly ScreenshotArtifact[]=[]):WorkflowJournal {
   const matching=allRuns.filter(run=>run.workflowId===workflow.definition.id)
     .slice(0,120);
   const runs:JournalRun[]=matching.map(binding=>{
@@ -53,5 +56,6 @@ export function buildJournal(workflow:WorkflowInstance,
   return {workflowId:workflow.definition.id,
     revision:workflow.revision,updatedAt:workflow.updatedAt,
     title:workflow.definition.title,
-    tasks,runs,events:workflow.events.slice(-120).reverse(),notes};
+    tasks,runs,screenshots:screenshots.slice(0,32),
+    events:workflow.events.slice(-120).reverse(),notes};
 }
