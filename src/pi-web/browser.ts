@@ -27,6 +27,10 @@ interface State {
   quickGoalText:string;quickProfile:QuickProfile|null;quickGoals:QuickGoal[];
   quickSetupDraft:string;quickSetupLoaded:boolean;quickPolling:boolean;
   quickError:string;quickRequestId?:string;
+  quickSimpleProvider:string;quickSimpleModel:string;
+  quickTestFile:string;quickTestArgs:string;
+  quickRemote:string;quickBase:string;quickMerge:"allow"|"ask"|"deny";
+  quickAdvanced:boolean;
   workflows: WorkflowInstance[];
   journal?:WorkflowJournal;
   adrTargetWorkspaceId:string;
@@ -97,6 +101,9 @@ function stateFor(context: WorkspacePanelContext): State {
     state = { workflows: [],
       quickGoalText:"",quickProfile:null,quickGoals:[],quickSetupLoaded:false,
       quickPolling:false,quickError:"",
+      quickSimpleProvider:"",quickSimpleModel:"",
+      quickTestFile:"node",quickTestArgs:"--test",
+      quickRemote:"origin",quickBase:"main",quickMerge:"ask",quickAdvanced:false,
       quickSetupDraft:JSON.stringify({
         config:{managedWorktrees:true,workspaces:{},
           finalization:{workspaceId:"auto",autoMerge:true},
@@ -208,6 +215,46 @@ const plugin: PiWebPlugin = {
         if (!disposed){context.host.requestRender();void loadQuick(context);}
       }
     }
+    function hydrateSimpleSetup(state:State,profile:QuickProfile):void{
+      const profiles=Object.values(profile.config.models);
+      const first=profiles[0];
+      const common=first&&profiles.every(x=>
+        x.provider===first.provider&&x.model===first.model&&x.effort===first.effort);
+      if(common&&first){
+        state.quickSimpleProvider=first.provider;
+        state.quickSimpleModel=first.model;
+      }else state.quickAdvanced=true;
+      state.quickTestFile=profile.config.test.file;
+      state.quickTestArgs=profile.config.test.args.join("\n");
+      state.quickRemote=profile.config.publication?.remote??"origin";
+      state.quickBase=profile.config.publication?.baseBranch??"main";
+      state.quickMerge=profile.permissions.actions?.["github.pr.merge"]??
+        profile.permissions.default??"ask";
+    }
+    function simpleSetup(state:State):unknown{
+      if(state.quickAdvanced)return JSON.parse(state.quickSetupDraft) as unknown;
+      const provider=state.quickSimpleProvider.trim();
+      const model=state.quickSimpleModel.trim();
+      if(!provider||!model||provider.includes("REPLACE_WITH")||
+        model.includes("REPLACE_WITH"))
+        throw new Error("Enter a real Pi provider and model from the session daemon");
+      const file=state.quickTestFile.trim();
+      const args=state.quickTestArgs.split(/\r?\n/u).map(x=>x.trim()).filter(Boolean);
+      const remote=state.quickRemote.trim(),baseBranch=state.quickBase.trim();
+      const raw=JSON.parse(state.quickSetupDraft) as {
+        config:Record<string,unknown>;
+        permissions:{default?:string;actions?:Record<string,string>};
+      };
+      const models=Object.fromEntries(["planner","implementer","qc","architect"]
+        .map(role=>[role,{provider,model}]));
+      return {...raw,config:{...raw.config,managedWorktrees:true,workspaces:{},
+        models,test:{file,args,timeoutMs:60000},
+        publication:{remote,baseBranch,draft:true},
+        finalization:{workspaceId:"auto",autoMerge:true}},
+        permissions:{...raw.permissions,
+          actions:{...raw.permissions.actions,
+            "github.pr.merge":state.quickMerge,"deploy.production":"deny"}}};
+    }
     async function loadQuick(context:WorkspacePanelContext):Promise<void>{
       const state=stateFor(context);
       if(disposed||state.quickPolling)return;
@@ -217,7 +264,10 @@ const plugin: PiWebPlugin = {
           profile:QuickProfile|null;goals:QuickGoal[];
         };
         if(!state.quickSetupLoaded){
-          if(result.profile)state.quickSetupDraft=JSON.stringify(result.profile,null,2);
+          if(result.profile){
+            state.quickSetupDraft=JSON.stringify(result.profile,null,2);
+            hydrateSimpleSetup(state,result.profile);
+          }
           state.quickSetupLoaded=true;
         }
         const old=JSON.stringify({profile:state.quickProfile,goals:state.quickGoals});
@@ -236,9 +286,10 @@ const plugin: PiWebPlugin = {
       context.host.requestRender();
       try{
         const result=await send(context,"auto.quick.configure",
-          JSON.parse(state.quickSetupDraft)) as {profile:QuickProfile;goals:QuickGoal[]};
+          simpleSetup(state)) as {profile:QuickProfile;goals:QuickGoal[]};
         state.quickProfile=result.profile;state.quickGoals=result.goals;
         state.quickSetupDraft=JSON.stringify(result.profile,null,2);
+        hydrateSimpleSetup(state,result.profile);
         state.quickSetupLoaded=true;
         state.quickError="Project setup saved. Describe a goal and choose Plan & run.";
       }catch(error){state.quickError="Setup not saved: "+String(error).slice(0,300);}
