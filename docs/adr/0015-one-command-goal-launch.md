@@ -78,8 +78,10 @@ continue and host publisher permissions remain authoritative.
 
 The default PI WEB Micromanager panel leads with one goal text area and
 **Plan & run**. Beside it: verified publish destination, effective
-GitHub merge permission, and the current status. A collapsed project
-setup preserves advanced JSON editing without requiring it every run.
+GitHub merge permission, and the current status. A collapsed first-time project setup offers a small, accessible form
+for provider/model, test argv, Git remote/base and merge policy.
+An opt-in Advanced toggle preserves full JSON and distinct role models
+without requiring JSON editing for the usual case.
 The progress card shows plan / prepare / execute / complete, lets users
 cancel *before* code starts, open the actual DAG when ready, and refresh
 the durable status. Polling only reads state; it cannot trigger

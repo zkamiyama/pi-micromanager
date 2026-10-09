@@ -7,12 +7,19 @@ Use a **disposable GitHub repository** for the first run.
 ## Setup once per selected PI WEB project/workspace
 
 In **Micromanager**, the first section is **Tell Sol what to build**.
-Expand **First-time project setup**, and configure the saved run profile.
-Use [this copyable example](../examples/trial.one-command.json) as a
-starting point. Replace every `REPLACE_WITH_PI_PROVIDER` and
-`REPLACE_WITH_PI_MODEL` with an exact model available and authenticated
-in the target PI WEB session daemon. Change `test.file` /
-`test.args` to your repository's real test command.
+Expand **First-time project setup**. The normal setup is a small form:
+choose your authenticated **Pi provider** and **model** (the same model
+can serve all four roles), enter a test executable and its arguments
+**one per line**, the Git remote and branch, and a merge policy.
+Then click **Save project setup**. You can use different models for
+planner/implementer/QC/architect by enabling **Advanced** and editing
+the complete JSON instead.
+
+An optional [copyable advanced profile](../examples/trial.one-command.json)
+contains all the fields. Replace `REPLACE_WITH_PI_PROVIDER` and
+`REPLACE_WITH_PI_MODEL` with exact IDs available in the target
+PI WEB session daemon. The test command must be appropriate for
+your actual repository.
 
 Review the GitHub `publication.remote` / `baseBranch`, since this
 configuration permits authenticated code changes. The default
