@@ -66,7 +66,8 @@ For an implementation attempt:
    `(runId, headSha, criteriaRevision, attempt)` and honors every armed
    human barrier before admitting a new rework attempt.
 7. `integrated` remains an explicit Git/repository authority decision:
-   a QC PASS alone **never** merges, pushes, or deletes worktrees.
+   QC PASS alone never merges or deletes Worktrees. ADR-0011 adds a
+   separate host-owned, Workflow-permission-gated Push/Draft PR step.
 
 A human `request_intervention` reserves the post-QC hold immediately.
 A fresh read-only Sol planning Run proposes an independent investigator list
@@ -109,7 +110,7 @@ workflow transition and evidence were committed.
 - Direct user steering/follow-ups target the current bound Session; users
   cannot hijack an Autopilot-configured Session's initial prompt or Seal it
   before the evidence-linked Workflow transition.
-- No automatic merge/push, destructive workspace cleanup or provider auth
+- No automatic Git merge, destructive workspace cleanup or provider auth
   copying. Public text/tool projections only, never hidden model reasoning.
 - No unbounded replay of raw Pi JSONL transcripts.
 
@@ -127,7 +128,8 @@ worktree/session GC remain blocked pending upstream public capabilities.
 ADR-0008 also adds separate **read-only integration preview** and
 **human-confirmed Git ancestry proof** against sealed QC evidence. Only
 the explicit confirmation changes the DAG to `integrated`; this is not
-an automatic Git merge, cherry-pick or push.
+an automatic Git merge or cherry-pick. Optional Push/Draft PR now uses
+the distinct ADR-0011 publisher after sealed QC and permission checks.
 
 Autopilot executes **validated, reviewed DAGs**. The Sol goal-proposal
 workflow can turn a natural-language objective into an initial, read-only,
