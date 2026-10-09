@@ -62,7 +62,7 @@ const plugin: PiWebPlugin = {
         state.workflows = result as WorkflowInstance[];
         const id = workflowId ?? state.selected?.definition.id ?? state.workflows[0]?.definition.id;
         if (id) state.selected = await send(context, "get", id) as WorkflowInstance;
-        if (state.selectedTaskId && !state.selected?.tasks[state.selectedTaskId]) state.selectedTaskId = undefined;
+        if (state.selectedTaskId && !state.selected?.tasks[state.selectedTaskId]) delete state.selectedTaskId;
         state.loaded = true;
         state.status = `${state.workflows.length} saved workflow(s).`;
       } catch (error) { state.status = String(error); }
@@ -114,7 +114,7 @@ const plugin: PiWebPlugin = {
       return html`<section class="mm-lens" aria-label="Task Lens">
         <div class="mm-lens-head"><div><strong>Task Lens · ${task.spec.title}</strong>
           <p>Target: ${w.definition.id} / ${task.spec.id} · ${task.status} · QC ${task.qcRounds}/${w.definition.maxQcRounds}</p>
-        </div><button @click=${() => { state.selectedTaskId = undefined; context.host.requestRender(); }}>Close</button></div>
+        </div><button @click=${() => { delete state.selectedTaskId; context.host.requestRender(); }}>Close</button></div>
         <div class="mm-modes" role="group" aria-label="Intervention target">
           ${(["workflow", "implementer", "qc"] as const).map(mode => html`<button
             class=${state.interventionMode === mode ? "selected" : ""}
