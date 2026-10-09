@@ -2,6 +2,7 @@
  * A session-local bridge over PI WEB's public pi-session-events capability.
  * A timeout is UNCERTAIN, never a reason to resend a non-idempotent command.
  */
+import { REPORT_CHANNEL, parseRunReport, type RunReport } from "../automation/report.js";
 import {
   CONTROL_CHANNEL, RECEIPT_CHANNEL, ACTIVITY_CHANNEL,
   parseRuntimeReceipt, parseRuntimeActivity,
@@ -15,6 +16,7 @@ export interface PiEventConnection {
   close(): void;
 }
 export type ActivityListener = (value: RuntimeActivity) => void;
+export type ReportListener = (value: RunReport) => void;
 type Waiting = { resolve(value: RuntimeReceipt): void; timeout: ReturnType<typeof setTimeout> };
 function uncertain(id: string, code: string): RuntimeReceipt {
   return { requestId: id, status: "uncertain", code,
@@ -25,7 +27,8 @@ export class PiSessionBridge {
   private readonly pending = new Map<string, Waiting>();
   private readonly subscriptions: (() => void)[] = [];
   private closed = false;
-  constructor(private readonly conn: PiEventConnection, onActivity: ActivityListener) {
+  constructor(private readonly conn: PiEventConnection, onActivity: ActivityListener,
+    onReport?: ReportListener) {
     this.subscriptions.push(conn.on(RECEIPT_CHANNEL, data => {
       const receipt = parseRuntimeReceipt(data);
       if (!receipt) return;
@@ -38,6 +41,10 @@ export class PiSessionBridge {
     this.subscriptions.push(conn.on(ACTIVITY_CHANNEL, data => {
       const event = parseRuntimeActivity(data);
       if (event) onActivity(event);
+    }));
+    if(onReport)this.subscriptions.push(conn.on(REPORT_CHANNEL,data=>{
+      const report=parseRunReport(data);
+      if(report)onReport(report);
     }));
     conn.signal.addEventListener("abort", this.stop, { once: true });
   }

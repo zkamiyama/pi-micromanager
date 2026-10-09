@@ -1,6 +1,6 @@
 # ADR-0006: Ephemeral execution runs, dynamic grid, evidence-gated retirement
 
-- Status: Accepted (runtime foundation implemented; unattended dispatch and GC pending)
+- Status: Accepted (one-shot dispatch implemented in ADR-0007; reviewed Git lifecycle in ADR-0008; native GC pending)
 - Date: 2026-10-09
 - Related: ADR-0001, ADR-0002, ADR-0005
 - Supersedes: The prototype assumption of one reusable Agent seat per Task and role
@@ -98,10 +98,14 @@ was lost.
   bounded public activity records; past transcripts remain in Pi, not duplicated
   in MAMC's database.
 
-This PR does **not** yet deliver an unattended DAG dispatcher, automatic
-worktree creation/retirement, end-to-end real-provider integration proof,
-or Pi Session archive/delete. The manual one-shot launch surface is
-experimental, while the prior DAG/Cockpit example is still marked simulation.
+Subsequent ADR-0007 now provides **opt-in** unattended Task DAG dispatch
+to real one-shot Pi Sessions. ADR-0008 adds explicitly reviewed Git Worktree
+creation and evidence-linked external Git integration verification (without
+automatic Git merge/push). ADR-0009 adds a bounded Journal and confirmed
+retention of old public activity projections only. Real authenticated Pi
+provider E2E, native PI WEB Session archive/delete and Worktree GC remain
+pending because the public host SDK has no lifecycle deletion capability.
+The earlier DAG/Cockpit demo transitions are still marked simulation.
 
 ## Review triggers
 

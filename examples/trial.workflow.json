@@ -1,0 +1,32 @@
+{
+  "id": "trial-multiply",
+  "title": "Trial: safely implement and merge multiplication",
+  "maxQcRounds": 3,
+  "maxParallelByRole": {
+    "planner": 1,
+    "implementer": 1,
+    "reviewer": 1,
+    "architect": 1
+  },
+  "permissions": {
+    "default": "allow",
+    "actions": {
+      "deploy.production": "deny"
+    }
+  },
+  "tasks": [
+    {
+      "id": "multiply",
+      "title": "Implement multiply(a,b) with tests",
+      "kind": "implementation",
+      "role": "implementer",
+      "description": "In src/math.mjs add a named export multiply(a,b) returning the product without changing add(). Add coverage in test/math.test.mjs for positive, negative, and zero values. Make the actual code and test edits, run npm test, and commit the result. Never modify the GitHub workflow file or repository settings.",
+      "acceptanceCriteria": [
+        "src/math.mjs exports multiply(3,4) as 12, multiply(-2,3) as -6, and multiply(5,0) as 0.",
+        "test/math.test.mjs contains independent tests for multiply, preserving the existing add tests.",
+        "npm test passes and implementation changes are committed with a clean Git Worktree."
+      ],
+      "dependsOn": []
+    }
+  ]
+}

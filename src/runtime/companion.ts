@@ -3,15 +3,22 @@
  * Companions expose only public text/tool names; no hidden reasoning or tool args.
  */
 import { createHash } from "node:crypto";
+import { Type } from "@earendil-works/pi-ai";
+import { REPORT_CHANNEL, parseRunReport, type RunReport } from "../automation/report.js";
+import {directPublicationCommand} from "./publication-guard.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   CONTROL_CHANNEL, RECEIPT_CHANNEL, ACTIVITY_CHANNEL, parseRuntimeControl,
-  type RuntimeControl, type RuntimeReceipt, type RuntimeActivity, type ActivityKind,
+  type RuntimeControl, type RuntimeReceipt, type RuntimeActivity, type ActivityKind, type RunJobContext,
 } from "./protocol.js";
 
 type StoredReceipt = { id: string; hash: string; result: RuntimeReceipt };
 const receiptEntry = "pi-micromanager:receipt";
 const claimEntry = "pi-micromanager:claim";
+const jobEntry = "pi-micromanager:job:v1";
+const reportEntry = "pi-micromanager:report:v1";
+const turnStateEntry = "pi-micromanager:turn-state:v1";
+const safeReadTools=new Set(["read","grep","find","ls","mm_qc_report","mm_task_report","mm_plan_intervention","mm_workflow_proposal"]);
 function digest(control: RuntimeControl): string {
   return createHash("sha256").update(JSON.stringify(control)).digest("hex");
 }
@@ -24,6 +31,10 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
   let sequence = 0;
   let lastPublicText = "";
   let lastEmitAt = 0;
+  let job:RunJobContext|undefined;
+  let recorded:RunReport|undefined;
+  let turnSettled:boolean|undefined;
+  let turnInterrupted:boolean|undefined;
   const receipts = new Map<string, StoredReceipt>();
   const claims = new Map<string, string>();
 
@@ -38,10 +49,35 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
   function reloadReceipts(context: ExtensionContext): void {
     receipts.clear();
     claims.clear();
+    job=undefined;recorded=undefined;turnSettled=undefined;turnInterrupted=undefined;
     // Custom entries do not enter the model context; this is a bounded
     // command receipt and an uncertain-send marker, not a duplicated transcript.
     for (const entry of context.sessionManager.getEntries()) {
       if (entry.type !== "custom") continue;
+      if(entry.customType===jobEntry){
+        const data:unknown=entry.data;
+        if(data&&typeof data==="object"&&"kind" in data&&"runId" in data)
+          job=data as RunJobContext;
+        continue;
+      }
+      if(entry.customType===reportEntry){
+        const parsed=parseRunReport(entry.data);
+        if(parsed)recorded=parsed;
+        continue;
+      }
+      if(entry.customType===turnStateEntry){
+        const data:unknown=entry.data;
+        if(data&&typeof data==="object"&&!Array.isArray(data)&&
+          "runId" in data&&typeof data.runId==="string"&&
+          "settled" in data&&typeof data.settled==="boolean"&&
+          "interrupted" in data&&typeof data.interrupted==="boolean"){
+          if(!job||data.runId===job.runId){
+            turnSettled=data.settled;
+            turnInterrupted=data.interrupted;
+          }
+        }
+        continue;
+      }
       if (entry.customType !== claimEntry && entry.customType !== receiptEntry) continue;
       const data: unknown = entry.data;
       if (!data || typeof data !== "object" || Array.isArray(data) ||
@@ -56,11 +92,25 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
     }
   }
   pi.on("session_start", (_event, context) => { ctx = context; reloadReceipts(context); });
-  pi.on("session_shutdown", () => { ctx = undefined; receipts.clear(); claims.clear(); });
+  pi.on("session_shutdown", () => { ctx = undefined;job=undefined;recorded=undefined;turnSettled=undefined;turnInterrupted=undefined;receipts.clear(); claims.clear(); });
 
-  pi.on("agent_start", () => { lastPublicText = ""; activity("agent_started", "Agent started"); });
-  pi.on("agent_settled", event =>
-    activity("agent_settled", event.aborted ? "Agent interrupted" : "Agent settled"));
+  pi.on("agent_start", () => {
+    lastPublicText = "";
+    if(job){
+      turnSettled=false;turnInterrupted=false;
+      pi.appendEntry(turnStateEntry,{runId:job.runId,settled:false,interrupted:false});
+    }
+    activity("agent_started", "Agent started");
+  });
+  pi.on("agent_settled", event => {
+    if(job){
+      turnSettled=true;turnInterrupted=event.aborted;
+      // Persist BEFORE notifying the server, making a missed socket event
+      // recoverable from the public Pi Session's own durable entries.
+      pi.appendEntry(turnStateEntry,{runId:job.runId,settled:true,interrupted:event.aborted});
+    }
+    activity("agent_settled", event.aborted ? "Agent interrupted" : "Agent settled");
+  });
   pi.on("message_update", event => {
     if (event.message.role !== "assistant") return;
     const rendered = event.message.content.filter(part => part.type === "text")
@@ -86,6 +136,128 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
 
   // PI WEB's pi-session-events connection is a narrow shared event bus. It has
   // no transport-level acknowledgment; this extension supplies one explicitly.
+
+  // A report is one structured model assertion; host Git/test checks remain mandatory.
+  pi.registerTool({
+    name:"mm_qc_report",label:"Submit QC verdict",
+    description:"Submit the final QC verdict exactly once after inspecting code and evidence. This cannot approve merging.",
+    parameters:Type.Object({
+      verdict:Type.Union([Type.Literal("pass"),Type.Literal("fail"),Type.Literal("inconclusive")]),
+      summary:Type.String({minLength:1,maxLength:2000}),
+    }),
+    async execute(_toolId,params){
+      if(!job||job.kind!=="qc")throw new Error("Not bound to an automated QC Run");
+      if(recorded)throw new Error("A verdict was already submitted for this Run");
+      const report:RunReport={kind:"qc",runId:job.runId,verdict:params.verdict,
+        summary:params.summary,at:Date.now()};
+      pi.appendEntry(reportEntry,report);
+      recorded=report;
+      pi.events.emit(REPORT_CHANNEL,report);
+      return {content:[{type:"text" as const,text:"QC verdict recorded; host validation still required."}],
+        details:report};
+    },
+  });
+  pi.registerTool({
+    name:"mm_task_report",label:"Submit task result",
+    description:"Submit one concise evidence-backed summary for a diagnosis or synthesis Task.",
+    parameters:Type.Object({summary:Type.String({minLength:1,maxLength:2000})}),
+    async execute(_toolId,params){
+      if(!job||(job.kind!=="diagnosis"&&job.kind!=="synthesis"))
+        throw new Error("Not bound to a diagnosis or synthesis Run");
+      if(recorded)throw new Error("A Task result was already submitted for this Run");
+      const report:RunReport={kind:"task",runId:job.runId,summary:params.summary,at:Date.now()};
+      pi.appendEntry(reportEntry,report);
+      recorded=report;
+      pi.events.emit(REPORT_CHANNEL,report);
+      return {content:[{type:"text" as const,text:"Task result recorded for the Orchestrator."}],
+        details:report};
+    },
+  });
+
+  pi.registerTool({
+    name:"mm_plan_intervention",label:"Submit Sol investigation plan",
+    description:"Propose 1..4 independent investigators for this human-requested QC intervention. "+
+      "Models must be exact provider/model choices given by the Orchestrator. "+
+      "The deterministic Workflow engine validates the plan; no Task changes are made by this tool.",
+    parameters:Type.Object({
+      summary:Type.String({minLength:1,maxLength:2000}),
+      agents:Type.Array(Type.Object({
+        id:Type.String({minLength:1,maxLength:32}),
+        title:Type.String({minLength:1,maxLength:200}),
+        role:Type.Union([Type.Literal("architect"),Type.Literal("reviewer")]),
+        model:Type.String({minLength:1,maxLength:160}),
+      }),{minItems:1,maxItems:4}),
+    }),
+    async execute(_toolId,params){
+      if(!job||job.kind!=="planning")throw new Error("Not bound to a Sol planning Run");
+      if(recorded)throw new Error("A plan was already submitted");
+      const report:RunReport={kind:"plan",runId:job.runId,summary:params.summary,
+        agents:params.agents,at:Date.now()};
+      pi.appendEntry(reportEntry,report);
+      recorded=report;
+      pi.events.emit(REPORT_CHANNEL,report);
+      return {content:[{type:"text" as const,text:"Plan submitted for deterministic validation."}],
+        details:report};
+    },
+  });
+
+  pi.registerTool({
+    name:"mm_workflow_proposal",label:"Propose validated Task DAG",
+    description:"Submit a bounded implementation-only Task DAG for the user's stated goal. "+
+      "Include concrete acceptance criteria per Task; do not execute the proposal. "+
+      "A human must approve it and provide linked worktrees and exact models before any coding.",
+    parameters:Type.Object({
+      id:Type.String({minLength:1,maxLength:64}),
+      title:Type.String({minLength:1,maxLength:200}),
+      summary:Type.String({minLength:1,maxLength:2000}),
+      maxQcRounds:Type.Integer({minimum:1,maximum:10}),
+      tasks:Type.Array(Type.Object({
+        id:Type.String({minLength:1,maxLength:64}),
+        title:Type.String({minLength:1,maxLength:200}),
+        description:Type.String({minLength:1,maxLength:4000}),
+        acceptanceCriteria:Type.Array(Type.String({minLength:1,maxLength:500}),
+          {minItems:1,maxItems:20}),
+        dependsOn:Type.Array(Type.Object({
+          taskId:Type.String({minLength:1,maxLength:64}),
+          gate:Type.Union([Type.Literal("qc_passed"),Type.Literal("integrated")]),
+        }),{maxItems:16}),
+      }),{minItems:1,maxItems:16}),
+    }),
+    async execute(_toolId,params){
+      if(!job||job.kind!=="workflow_plan")
+        throw new Error("Not a fresh, explicitly requested Sol goal-proposal Run");
+      if(recorded)throw new Error("This goal has already received a proposal");
+      const definition={
+        id:params.id,title:params.title,maxQcRounds:params.maxQcRounds,
+        maxParallelByRole:{planner:1,implementer:2,reviewer:2,architect:2},
+        tasks:params.tasks.map(task=>({...task,kind:"implementation" as const,
+          role:"implementer" as const})),
+      };
+      const report=parseRunReport({kind:"workflow_plan",runId:job.runId,
+        summary:params.summary,definition,at:Date.now()});
+      if(!report||report.kind!=="workflow_plan")
+        throw new Error("Invalid proposed DAG: fix Task IDs, cycles, dependencies and criteria");
+      pi.appendEntry(reportEntry,report);
+      recorded=report;
+      pi.events.emit(REPORT_CHANNEL,report);
+      return {content:[{type:"text" as const,
+        text:"Validated DAG proposal saved. A human must review and accept it before implementation."}],
+        details:{runId:report.runId,taskCount:report.definition.tasks.length}};
+    },
+  });
+  pi.on("tool_call",event=>{
+    if(job&&job.kind!=="implementation"&&!safeReadTools.has(event.toolName))
+      return {block:true,reason:"This automated "+job.kind+" Session is read-only"};
+    // A Pi coding Run may edit/test/commit in its isolated Worktree, but must
+    // leave publishing to the host, after independent QC and Workflow policy.
+    // Tool guards alone are NOT sufficient isolation against arbitrary shell
+    // binaries; credential/network isolation remains an operator requirement.
+    if(job?.kind==="implementation"&&
+      directPublicationCommand(event.toolName,event.input))
+      return {block:true,reason:"Publishing is handled by the Orchestrator after sealed QC and the exact Workflow permission gate"};
+    return;
+  });
+
   pi.events.on(CONTROL_CHANNEL, input => {
     const command = parseRuntimeControl(input);
     if (!command) return;
@@ -126,6 +298,20 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
         effort: pi.getThinkingLevel() });
       return;
     }
+    if (command.type === "inspect") {
+      if(!job){
+        respond({requestId:command.requestId,status:"failed",code:"job_not_bound"});
+        return;
+      }
+      // Report replay is explicit and bound to this exact hosted Session.
+      if(recorded&&recorded.runId===job.runId)pi.events.emit(REPORT_CHANNEL,recorded);
+      respond({requestId:command.requestId,status:"ok",jobRunId:job.runId,
+        idle:context.isIdle(),
+        ...(turnSettled===undefined?{}:{turnSettled}),
+        ...(turnInterrupted===undefined?{}:{turnInterrupted}),
+        hasReport:!!recorded&&recorded.runId===job.runId});
+      return;
+    }
     if (command.type === "configure") {
       if (!context.isIdle() || context.hasPendingMessages()) {
         respond({ requestId: command.requestId, status: "failed", code: "busy",
@@ -151,6 +337,16 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
             message: "Pi did not accept the exact requested effort" });
           return;
         }
+      }
+      if(command.job){
+        if(job&&JSON.stringify(job)!==JSON.stringify(command.job)){
+          respond({requestId:command.requestId,status:"failed",code:"job_already_bound"});
+          return;
+        }
+        job=command.job;
+        pi.appendEntry(jobEntry,job);
+        if(job.kind!=="implementation")
+          pi.setActiveTools([...pi.getActiveTools().filter(name=>safeReadTools.has(name))]);
       }
       if (command.sessionName !== undefined) pi.setSessionName(command.sessionName);
       activity("model_changed", command.provider + "/" + command.model);

@@ -39,6 +39,11 @@ export interface Reservation {
 export interface SavedActivity {
   id: number; sessionId: string; kind: string; text: string; at: number;
 }
+/** Only a bounded projection: never a native Pi JSONL transcript or artifact. */
+export interface ExpiredActivity {
+  id:number; sessionId:string; workflowId:string; taskId:string;
+  at:number; bytes:number;
+}
 const fields = [
   "project_id AS projectId", "orchestra_workspace_id AS orchestraWorkspaceId",
   "workspace_id AS workspaceId", "workflow_id AS workflowId", "task_id AS taskId",
@@ -101,6 +106,23 @@ export class AgentRegistry {
     return this.db.prepare("SELECT "+fields+" FROM execution_runs WHERE project_id=? AND orchestra_workspace_id=?"+
       where+" ORDER BY updated_at DESC LIMIT 200").all(projectId,orchestraWorkspaceId) as unknown as AgentBinding[];
   }
+  /** Unbounded SQL existence check; never depend on the 200-item UI listing
+   * when enforcing workspace leases before reading evidence or writing ADRs. */
+  hasUnsealedWorkspace(projectId:string,workspaceId:string):boolean{
+    identity(projectId,"projectId");identity(workspaceId,"workspaceId");
+    return Boolean(this.db.prepare("SELECT 1 AS present FROM execution_runs "+
+      "WHERE project_id=? AND workspace_id=? AND phase NOT IN ('sealed','failed') "+
+      "LIMIT 1").get(projectId,workspaceId));
+  }
+  /** Never stage an ADR inside a historical Task's implementation/QC workspace. */
+  wasWorkflowWorkspace(projectId:string,orchestraWorkspaceId:string,
+    workflowId:string,workspaceId:string):boolean{
+    identity(projectId,"projectId");identity(orchestraWorkspaceId,"orchestraWorkspaceId");
+    identity(workflowId,"workflowId");identity(workspaceId,"workspaceId");
+    return Boolean(this.db.prepare("SELECT 1 FROM execution_runs WHERE "+
+      "project_id=? AND orchestra_workspace_id=? AND workflow_id=? AND workspace_id=? "+
+      "LIMIT 1").get(projectId,orchestraWorkspaceId,workflowId,workspaceId));
+  }
   get(projectId:string,orchestraWorkspaceId:string,sessionId:string):AgentBinding {
     identity(sessionId,"sessionId");
     const record=this.db.prepare("SELECT "+fields+
@@ -125,11 +147,15 @@ export class AgentRegistry {
         if(!sameReservation(previous,input)) throw new Error("Run ID already refers to a different execution");
         this.db.exec("COMMIT");return previous;
       }
-      if(input.seat==="implementer"){
+      if(input.seat==="implementer"||input.seat==="qc"||input.seat==="architect"){
+        // QC/diagnosis on a linked worktree holds a read lease. Writers may not
+        // race either class of read-only reviewer, including Astra diagnoses.
+        const conflicting=input.seat==="implementer"?
+          "seat IN ('implementer','qc','architect')":"seat='implementer'";
         const busy=this.db.prepare("SELECT COUNT(*) AS n FROM execution_runs WHERE project_id=? AND workspace_id=?"+
-          " AND seat='implementer' AND phase NOT IN ('sealed','failed')")
+          " AND "+conflicting+" AND phase NOT IN ('sealed','failed')")
           .get(input.projectId,input.workspaceId) as {n:number};
-        if(busy.n) throw new Error("This worktree is still owned by an unsealed implementer run");
+        if(busy.n)throw new Error("Worktree is leased by an unfinished writer or QC Run");
       }
       this.db.prepare("INSERT INTO execution_runs("+
         "project_id,orchestra_workspace_id,workspace_id,workflow_id,task_id,run_id,seat,request_id,phase,created_at,updated_at)"+
@@ -166,7 +192,12 @@ export class AgentRegistry {
   /** Pi agent_settled ends one execution; later stages always spawn a new session. */
   record(binding:AgentBinding,event:RuntimeActivity):void {
     if(!binding.sessionId)return;
-    this.db.prepare("UPDATE execution_runs SET latest_kind=?,latest_text=?,"+
+    // Settlement/abort proof must be sticky. Late asynchronous tool/text
+    // notifications must not overwrite the final "Agent interrupted" marker:
+    // doing so could allow Autopilot to finalize an aborted QC or plan.
+    this.db.prepare("UPDATE execution_runs SET "+
+      "latest_kind=CASE WHEN phase IN ('settled','sealed','failed') THEN latest_kind ELSE ? END,"+
+      "latest_text=CASE WHEN phase IN ('settled','sealed','failed') THEN latest_text ELSE ? END,"+
       "phase=CASE WHEN phase IN ('settled','sealed','failed') THEN phase"+
       " WHEN ?='agent_settled' THEN 'settled'"+
       " WHEN ?='agent_started' THEN 'running' ELSE phase END, updated_at=?"+
@@ -181,6 +212,63 @@ export class AgentRegistry {
       " WHERE project_id=? AND orchestra_workspace_id=? AND session_id=? ORDER BY id DESC LIMIT 60)")
       .run(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId,
         binding.projectId,binding.orchestraWorkspaceId,binding.sessionId);
+  }
+  /**
+   * Only public activity of a durably SEALED Run is a retention candidate.
+   * Both the event and the Run's last update must be old; neither an unsealed
+   * QC nor a Session receiving late events can be retired.
+   */
+  expiredActivity(projectId:string,orchestraWorkspaceId:string,
+    beforeEventMs:number,beforeSealedIso:string,limit=200):ExpiredActivity[]{
+    identity(projectId,"projectId");identity(orchestraWorkspaceId,"orchestraWorkspaceId");
+    if(!Number.isSafeInteger(beforeEventMs)||!Number.isSafeInteger(limit)||
+      limit<1||limit>250||!Number.isFinite(Date.parse(beforeSealedIso)))
+      throw new Error("Invalid activity retention boundary");
+    return this.db.prepare("SELECT a.id AS id,a.session_id AS sessionId,"+
+      "r.workflow_id AS workflowId,r.task_id AS taskId,a.at,"+
+      "length(CAST(a.text AS BLOB)) AS bytes "+
+      "FROM execution_activity a JOIN execution_runs r ON "+
+      "r.project_id=a.project_id AND r.orchestra_workspace_id=a.orchestra_workspace_id "+
+      "AND r.session_id=a.session_id "+
+      "WHERE a.project_id=? AND a.orchestra_workspace_id=? AND a.at<? "+
+      "AND r.updated_at<? AND r.phase='sealed' AND r.evidence_ref IS NOT NULL "+
+      "ORDER BY a.id LIMIT ?")
+      .all(projectId,orchestraWorkspaceId,beforeEventMs,beforeSealedIso,limit) as
+      unknown as ExpiredActivity[];
+  }
+  remainingActivityIds(projectId:string,orchestraWorkspaceId:string,ids:readonly number[]):number[]{
+    if(ids.length<1||ids.length>250||ids.some(id=>!Number.isSafeInteger(id)||id<1))
+      throw new Error("Invalid retention activity identifiers");
+    identity(projectId,"projectId");identity(orchestraWorkspaceId,"orchestraWorkspaceId");
+    const placeholders=ids.map(()=>"?").join(",");
+    return (this.db.prepare("SELECT id FROM execution_activity "+
+      "WHERE project_id=? AND orchestra_workspace_id=? AND id IN ("+placeholders+")"+
+      " ORDER BY id").all(projectId,orchestraWorkspaceId,...ids) as {id:number}[])
+      .map(r=>r.id);
+  }
+  /** Exact atomic deletion of previously verified projections only. */
+  deleteExpiredActivity(projectId:string,orchestraWorkspaceId:string,
+    ids:readonly number[],beforeEventMs:number,beforeSealedIso:string):number{
+    const sorted=[...new Set(ids)].sort((a,b)=>a-b);
+    if(sorted.length<1||sorted.length>200||sorted.length!==ids.length||
+      sorted.some(id=>!Number.isSafeInteger(id)||id<1))
+      throw new Error("Invalid retention deletion batch");
+    this.db.exec("BEGIN IMMEDIATE");
+    try{
+      // Recheck every ID under the same SQLite write transaction. Never
+      // partially delete an altered or newly active Run's public log.
+      const candidates=this.expiredActivity(projectId,orchestraWorkspaceId,
+        beforeEventMs,beforeSealedIso,250);
+      const approved=new Set(candidates.map(c=>c.id));
+      if(sorted.some(id=>!approved.has(id)))
+        throw new Error("Retention candidates changed after preview; start a new preview");
+      const placeholders=sorted.map(()=>"?").join(",");
+      const result=this.db.prepare("DELETE FROM execution_activity "+
+        "WHERE project_id=? AND orchestra_workspace_id=? AND id IN ("+placeholders+")")
+        .run(projectId,orchestraWorkspaceId,...sorted);
+      if(result.changes!==sorted.length)throw new Error("Retention batch was not fully deleted");
+      this.db.exec("COMMIT");return result.changes;
+    }catch(error){this.db.exec("ROLLBACK");throw error;}
   }
   /** Only after output/evidence was persisted. This does not delete a Pi JSONL or worktree. */
   seal(projectId:string,orchestraWorkspaceId:string,sessionId:string,evidenceRef:string):AgentBinding {

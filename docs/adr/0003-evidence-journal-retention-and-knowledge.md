@@ -1,6 +1,6 @@
 # ADR-0003: Bounded evidence, live journal, and knowledge promotion
 
-- Status: Accepted design; implementation deferred beyond the core engine
+- Status: Accepted design; bounded Journal/retention (ADR-0009) and private QC screenshots/reviewed ADR staging (ADR-0010) implemented; native cleanup/PR publication pending
 - Date: 2026-10-09
 
 ## Decision
@@ -55,6 +55,28 @@ When a significant long-lived decision or repeated QC failure changes the design
 4. Pin the minimal referenced evidence until that ADR decision is accepted/rejected. A rejection is not silently converted to an acceptance.
 5. Move old detailed data into retention after the final publication and QC seal. Keep `AGENTS.md` short; do not inject all ADR files into every model turn.
 
+## Implemented retention subset (ADR-0009)
+
+The current implementation provides an evidence-linked Journal projection over
+bounded Workflow events, durable QC/run summaries and SHA-256 evidence refs.
+A preview/confirm retention flow can transactionally prune up to 200 old,
+public Run activity records only after their Run has been sealed and their
+entire Workflow has completed integration/synthesis. Both event age and
+Run sealing age must meet the operator's 30–365 day threshold.
+
+Native Pi Session JSONL, owned/linked Worktrees, branches, command receipts,
+QC evidence and unfinished Workflow state remain untouched.
+
+ADR-0010 adds explicit, SHA-256 content-addressed private PNG/JPEG screenshot
+capture only when an existing file is tracked in the exact sealed QC Git commit,
+and verifies the stored image bytes on read. It also provides a **reviewed**
+ADR proposal with actual QC/evidence/screenshot references that can be staged
+without a Git commit in a distinct review Worktree. The operator still owns
+Git review and PR publication; Micromanager never claims a user-authored
+ADR is already accepted. PI WEB does not
+offer a public native Session archive/delete API in the current v1 contract;
+such cleanup must not be replaced by raw filesystem deletion.
+
 ## Consequences and limitations
 
-The first implementation does not yet run GC or create ADR PRs. `WorkflowInstance.events` has a maximum of 200 entries to bound state. Existing PI WEB session cleanup and worktree removal must remain separate until their lifecycle protections are explicitly integrated.
+The current implementation only runs explicit, scoped GC for sealed public activity projections. Real screenshot bytes and human-reviewed ADR file staging are available, but no native Session/Worktree GC, automatic screenshot taking or ADR PR publishing is implemented. `WorkflowInstance.events` has a maximum of 200 entries to bound state. Existing PI WEB session cleanup and worktree removal must remain separate until their lifecycle protections are explicitly integrated.

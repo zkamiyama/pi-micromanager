@@ -3,9 +3,13 @@ export const CONTROL_CHANNEL = "pi-micromanager:control:v1";
 export const RECEIPT_CHANNEL = "pi-micromanager:receipt:v1";
 export const ACTIVITY_CHANNEL = "pi-micromanager:activity:v1";
 
+export interface RunJobContext {
+  kind:"implementation"|"qc"|"diagnosis"|"synthesis"|"planning"|"workflow_plan";
+  runId:string;
+}
 export type RuntimeControl =
-  | { type: "probe"; requestId: string }
-  | { type: "configure"; requestId: string; provider: string; model: string; effort?: string; sessionName?: string }
+  | { type: "probe" | "inspect"; requestId: string }
+  | { type: "configure"; requestId: string; provider: string; model: string; effort?: string; sessionName?: string; job?: RunJobContext }
   | { type: "message"; requestId: string; text: string; delivery: "newTurn" | "steer" | "followUp" }
   | { type: "abort"; requestId: string };
 
@@ -20,6 +24,11 @@ export interface RuntimeReceipt {
   idle?: boolean;
   /** True only if the current Pi Session has no prior conversational messages. */
   fresh?: boolean;
+  /** Exact bound job, persisted final-turn state and stored report for recovery. */
+  jobRunId?: string;
+  turnSettled?: boolean;
+  turnInterrupted?: boolean;
+  hasReport?: boolean;
 }
 
 export const activityKinds = [
@@ -44,14 +53,22 @@ const requestIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 export function parseRuntimeControl(input: unknown): RuntimeControl | undefined {
   if (!record(input) || !bounded(input.requestId, 128) || !requestIdPattern.test(input.requestId)) return;
   const requestId = input.requestId;
-  if (input.type === "probe" || input.type === "abort") return { type: input.type, requestId };
+  if (input.type === "probe" || input.type === "inspect" || input.type === "abort") return { type: input.type, requestId };
   if (input.type === "configure") {
     if (!bounded(input.provider, 120) || !bounded(input.model, 160)) return;
     if (input.effort !== undefined && !bounded(input.effort, 32)) return;
     if (input.sessionName !== undefined && !bounded(input.sessionName, 120)) return;
+    let job:RunJobContext|undefined;
+    if(input.job!==undefined){
+      if(!record(input.job)||!bounded(input.job.runId,128)||
+        !/^[a-z][a-z0-9-]{0,127}$/.test(input.job.runId)||
+        !["implementation","qc","diagnosis","synthesis","planning","workflow_plan"].includes(String(input.job.kind)))return;
+      job={runId:input.job.runId,kind:input.job.kind as RunJobContext["kind"]};
+    }
     return { type: "configure", requestId, provider: input.provider, model: input.model,
       ...(input.effort === undefined ? {} : { effort: input.effort as string }),
-      ...(input.sessionName === undefined ? {} : { sessionName: input.sessionName as string }) };
+      ...(input.sessionName === undefined ? {} : { sessionName: input.sessionName as string }),
+      ...(job ? {job}: {}) };
   }
   if (input.type === "message") {
     if (!bounded(input.text, 16000) ||
@@ -78,6 +95,15 @@ export function parseRuntimeReceipt(input: unknown): RuntimeReceipt | undefined 
   if (input.fresh !== undefined) {
     if (typeof input.fresh !== "boolean") return;
     result.fresh = input.fresh;
+  }
+  if(input.jobRunId!==undefined){
+    if(!bounded(input.jobRunId,128)||!requestIdPattern.test(input.jobRunId))return;
+    result.jobRunId=input.jobRunId;
+  }
+  for(const field of ["turnSettled","turnInterrupted","hasReport"] as const){
+    if(input[field]===undefined)continue;
+    if(typeof input[field]!=="boolean")return;
+    result[field]=input[field] as boolean;
   }
   return result;
 }

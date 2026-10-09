@@ -1,4 +1,5 @@
 /** Pure, deterministic workflow state machine. No model or filesystem I/O. */
+import {validatePermissions,type WorkflowPermissions} from "./permissions.js";
 export type Role = "planner" | "implementer" | "reviewer" | "architect";
 export type TaskKind = "implementation" | "diagnosis" | "synthesis";
 export type Gate = "completed" | "qc_passed" | "integrated" | "qc_finalized";
@@ -9,11 +10,16 @@ export interface Dependency { taskId: string; gate: Gate }
 export interface TaskSpec {
   id: string;
   title: string;
+  /** Bounded instructions and acceptance criteria shared by implementation and QC. */
+  description?: string;
+  acceptanceCriteria?: string[];
   kind: TaskKind;
   role: Role;
   dependsOn: Dependency[];
   /** A provider model ID, not a CLI or API credential. */
   model?: string;
+  /** Only the Workflow engine may generate this internal, post-DAG Task. */
+  systemPurpose?:"final-integration";
 }
 export interface WorkflowDefinition {
   id: string;
@@ -21,6 +27,8 @@ export interface WorkflowDefinition {
   maxQcRounds: number;
   maxParallelByRole: Record<Role, number>;
   tasks: TaskSpec[];
+  /** Absent policy is YOLO (allow) for supported operations; merge defaults to ask. */
+  permissions?:WorkflowPermissions;
 }
 export interface QCRecord {
   runId: string;
@@ -79,7 +87,9 @@ export type WorkflowAction =
   | { type: "cancel_amendment"; amendmentId: string }
   | { type: "complete"; taskId: string }
   | { type: "resume_after_diagnosis"; amendmentId: string; decision: "rework" | "accept_pass" }
-  | { type: "integrate"; taskId: string };
+  | { type: "integrate"; taskId: string }
+  | { type: "prepare_final_integration" }
+  | { type: "final_merge_confirmed"; taskId:string; headSha:string; prUrl:string };
 
 export class WorkflowError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "WorkflowError"; }
@@ -94,6 +104,8 @@ function validId(value: unknown): value is string { return typeof value === "str
 
 /** Reject cycles and impossible references before any work can start. */
 export function validateDefinition(def: WorkflowDefinition): void {
+  try{validatePermissions(def.permissions);}
+  catch(error){throw new WorkflowError("invalid_permissions",String(error));}
   invariant(validId(def.id), "invalid_id", "Workflow ID must be lowercase kebab-case");
   invariant(typeof def.title === "string" && !!def.title.trim(), "invalid_title", "Workflow title is required");
   invariant(Number.isSafeInteger(def.maxQcRounds) && def.maxQcRounds >= 1 && def.maxQcRounds <= 100, "invalid_budget", "maxQcRounds must be 1..100");
@@ -106,7 +118,17 @@ export function validateDefinition(def: WorkflowDefinition): void {
   const tasks = new Map<string, TaskSpec>();
   for (const task of def.tasks) {
     invariant(task !== null && validId(task.id) && !tasks.has(task.id), "duplicate_task", "Task IDs must be unique lowercase kebab-case");
-    invariant(typeof task.title === "string" && !!task.title.trim(), "invalid_task", `Title required for ${task.id}`);
+    invariant(typeof task.title === "string" && !!task.title.trim() && task.title.length <= 200,
+      "invalid_task", `Title must be 1..200 characters for ${task.id}`);
+    if(task.description!==undefined)
+      invariant(typeof task.description==="string"&&!!task.description.trim()&&
+        task.description.length<=4000,"invalid_description",
+        `Description must be 1..4000 characters for ${task.id}`);
+    if(task.acceptanceCriteria!==undefined)
+      invariant(Array.isArray(task.acceptanceCriteria)&&task.acceptanceCriteria.length>=1&&
+        task.acceptanceCriteria.length<=20&&task.acceptanceCriteria.every(x=>
+          typeof x==="string"&&!!x.trim()&&x.length<=500),
+        "invalid_acceptance","Acceptance criteria must be 1..20 nonempty lines <=500 characters");
     invariant(roles.includes(task.role) && ["implementation", "diagnosis", "synthesis"].includes(task.kind), "invalid_task", `Invalid kind or role for ${task.id}`);
     invariant(Array.isArray(task.dependsOn), "invalid_dependencies", `dependsOn required for ${task.id}`);
     if (task.model !== undefined) invariant(typeof task.model === "string" && task.model.length <= 160, "invalid_model", "Invalid model ID");
@@ -363,6 +385,71 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       message = `Resolved ${a.id}; ${t.spec.id} -> ${t.status}`;
       break;
     }
+    case "prepare_final_integration": {
+      const id="mm-final-integration";
+      invariant(!Object.hasOwn(instance.tasks,id),"finalization_exists",
+        "Final integration Task already exists");
+      invariant(instance.definition.tasks.length<512,"finalization_capacity",
+        "Final integration needs a free Workflow Task slot");
+      invariant(!instance.amendments.some(a=>
+        a.status!=="cancelled"&&a.status!=="completed"),"finalization_held",
+        "Resolve all human interventions before final integration");
+      const original=Object.values(instance.tasks);
+      invariant(original.every(t=>t.spec.kind==="implementation"?
+        (["passed","integrated"].includes(t.status)&&
+          t.lastQc?.verdict==="pass"):
+        t.status==="done"),"finalization_blocked",
+        "All original implementation Tasks need QC PASS, and other Tasks must finish");
+      const sources=original.filter(t=>t.spec.kind==="implementation");
+      invariant(sources.length>0,"finalization_blocked",
+        "Final integration needs QC-passed source commits");
+      const spec:TaskSpec={
+        id,title:"Integrate all approved code and run final QC",
+        kind:"implementation",role:"implementer",
+        systemPurpose:"final-integration",
+        description:"Combine every original Task's QC-approved Git commit in "+
+          "a separate final integration Worktree. Resolve any Git merge conflicts, "+
+          "commit the full integration result, and preserve all source commits.",
+        acceptanceCriteria:[
+          "Final Git HEAD contains every original Task's sealed QC-approved commit as an ancestor",
+          "Final Git Worktree is clean and configured integration tests pass",
+          "Independent final QC confirms the complete combined implementation",
+        ],
+        dependsOn:original.map(t=>({taskId:t.spec.id,
+          gate:t.spec.kind==="implementation"?"qc_passed":"completed"})),
+      };
+      instance.definition.tasks.push(spec);
+      instance.tasks[id]={spec,status:"blocked",attempts:0,qcRounds:0};
+      validateDefinition(instance.definition);
+      message="Prepared final-integration Task for "+sources.length+
+        " QC-approved source commit(s)";
+      break;
+    }
+    case "final_merge_confirmed": {
+      const final=taskById(instance,action.taskId);
+      invariant(final.spec.systemPurpose==="final-integration"&&
+        final.status==="passed"&&final.lastQc?.verdict==="pass"&&
+        final.lastQc.headSha===action.headSha,"final_not_approved",
+        "Only exact QC-passed final integration result may complete the Workflow");
+      invariant(/^https:\/\/github\.com\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/pull\/[1-9][0-9]{0,8}$/.test(action.prUrl),
+        "final_merge_proof","Final GitHub Pull Request URL required");
+      invariant(instance.amendments.every(a=>
+        a.status==="cancelled"||a.status==="completed"),
+        "finalization_held","Pending human intervention prevents finalization");
+      const sources=Object.values(instance.tasks).filter(t=>
+        t.spec.systemPurpose!=="final-integration");
+      invariant(sources.every(t=>t.spec.kind==="implementation"?
+        (["passed","integrated"].includes(t.status)&&t.lastQc?.verdict==="pass"):
+        t.status==="done"),"final_source_changed",
+        "Final merge cannot overwrite unfinished or unverified original Tasks");
+      for(const task of sources){
+        if(task.spec.kind==="implementation")task.status="integrated";
+      }
+      final.status="integrated";
+      message="GitHub confirmed merged "+action.prUrl+" at final QC Git SHA "+
+        action.headSha.slice(0,12)+"; all Task integration gates completed";
+      break;
+    }
     case "integrate": {
       const t = taskById(instance, action.taskId);
       invariant(t.status === "passed", "invalid_transition", "Only QC-passed tasks can integrate");
@@ -399,10 +486,13 @@ export function parseDefinition(input: unknown): WorkflowDefinition {
       return { taskId: dep.taskId as string, gate: dep.gate as Gate };
     });
     return { id: t.id as string, title: t.title as string, kind: t.kind as TaskKind, role: t.role as Role, dependsOn: deps,
-      ...(t.model === undefined ? {} : { model: t.model as string }) };
+      ...(t.model === undefined ? {} : { model: t.model as string }),
+      ...(t.description===undefined?{}:{description:t.description as string}),
+      ...(t.acceptanceCriteria===undefined?{}:{acceptanceCriteria:t.acceptanceCriteria as string[]}) };
   });
   const def = { id: raw.id as string, title: raw.title as string, maxQcRounds: raw.maxQcRounds as number,
-    maxParallelByRole: raw.maxParallelByRole as Record<Role, number>, tasks };
+    maxParallelByRole: raw.maxParallelByRole as Record<Role, number>, tasks,
+    ...(raw.permissions===undefined?{}:{permissions:raw.permissions as WorkflowPermissions}) };
   validateDefinition(def);
   return def;
 }

@@ -54,7 +54,7 @@ test("one run request cannot duplicate a Session; new attempt needs distinct run
 
 test("two concurrent implementers cannot share a worktree; independent worktrees can",()=>fixture(db=>{
  db.reserve(reservation());
- assert.throws(()=>db.reserve(reservation("impl-other-1","implementer","wt-1","req-other")),/unsealed/);
+ assert.throws(()=>db.reserve(reservation("impl-other-1","implementer","wt-1","req-other")),/leased/);
  db.reserve(reservation("impl-other-1","implementer","wt-2","req-other"));
  assert.equal(db.list("project","orchestra-main","active").length,2);
 }));
@@ -74,4 +74,38 @@ test("streaming token deltas never create unlimited event history",()=>fixture(d
  db.record(binding,{kind:"message_delta",text:"public progress",sequence:100,at:1700000010000});
  assert.equal(db.activities("project","orchestra-main","session-1").length,60);
  assert.equal(db.get("project","orchestra-main","session-1").latestText,"public progress");
+}));
+
+test("QC snapshot leases prevent writers until QC evidence is sealed",()=>fixture(db=>{
+ const qc=reservation("qc-api-1","qc","linked-wt","review-1");
+ db.reserve(qc);db.assign(qc,"qc-session");
+ const impl=reservation("impl-api-2","implementer","linked-wt","write-2");
+ assert.throws(()=>db.reserve(impl),/leased/);
+ db.record(db.get("project","orchestra-main","qc-session"),event("agent_settled",3));
+ assert.throws(()=>db.reserve(impl),/leased/);
+ db.seal("project","orchestra-main","qc-session","sha256:verified-review");
+ assert.equal(db.reserve(impl).phase,"reserved");
+}));
+test("A QC Run cannot begin before its active writer relinquishes the worktree",()=>fixture(db=>{
+ const impl=reservation("impl-a-1","implementer","linked-wt","write-1");
+ db.reserve(impl);
+ assert.throws(()=>db.reserve(reservation("qc-a-1","qc","linked-wt","review-1")) ,/leased/);
+}));
+
+test("An aborted Pi Run cannot lose its interruption proof to a late token or tool event",()=>fixture(db=>{
+ const run=reservation("qc-abort-1","qc","wt-review","abort-1");
+ db.reserve(run);db.assign(run,"aborted-session");
+ let binding=db.get("project","orchestra-main","aborted-session");
+ db.record(binding,{kind:"agent_started",text:"Agent started",at:1700000000000,sequence:1});
+ db.record(binding,{kind:"agent_settled",text:"Agent interrupted",at:1700000001000,sequence:2});
+ binding=db.get("project","orchestra-main","aborted-session");
+ assert.equal(binding.phase,"settled");
+ assert.equal(binding.latestKind,"agent_settled");
+ assert.equal(binding.latestText,"Agent interrupted");
+ db.record(binding,{kind:"message_delta",text:"Late buffered text",at:1700000002000,sequence:3});
+ db.record(binding,{kind:"tool_finished",text:"Late tool completion",at:1700000003000,sequence:4});
+ const terminal=db.get("project","orchestra-main","aborted-session");
+ assert.equal(terminal.phase,"settled");
+ assert.equal(terminal.latestKind,"agent_settled");
+ assert.equal(terminal.latestText,"Agent interrupted");
 }));

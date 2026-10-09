@@ -2,6 +2,12 @@
 import { createLiveRunPanel, selectOrchestraTask } from "./fleet.js";
 import type { PiWebPlugin, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { WorkflowAction, WorkflowDefinition, WorkflowInstance, TaskState, Role } from "../core/workflow.js";
+import type { WorkflowJournal } from "../automation/journal.js";
+import type { RetentionPreview } from "../automation/retention.js";
+import type { ApprovalRequest } from "../automation/permissions.js";
+import type { PublishedOperation } from "../automation/publication.js";
+import type { ConvergenceReceipt } from "../automation/convergence.js";
+import type { AdrDraft, AdrFields } from "../automation/adr-promotion.js";
 
 const DEMO: WorkflowDefinition = {
   id: "demo-auth", title: "Auth migration — workflow preview", maxQcRounds: 5,
@@ -18,6 +24,18 @@ type Detail = "compact" | "expanded";
 type InterventionMode = "workflow" | "implementer" | "qc";
 interface State {
   workflows: WorkflowInstance[];
+  journal?:WorkflowJournal;
+  adrTargetWorkspaceId:string;
+  adrFields:AdrFields;
+  adrStatus:string;
+  adrDraft?:AdrDraft;
+  screenshotRunId:string;
+  screenshotPath:string;
+  screenshotStatus:string;
+  screenshotPreview?:{id:string;dataUrl:string|null;sha256:string;mime:string};
+  retentionDays:number;
+  retentionPreview?:RetentionPreview;
+  retentionStatus:string;
   selected?: WorkflowInstance;
   status: string;
   busy: boolean;
@@ -27,6 +45,33 @@ interface State {
   selectedTaskId?: string;
   interventionMode: InterventionMode;
   interventionDraft: string;
+  autopilotDraft: string;
+  finalWorktreeWorkspaceId:string;
+  autopilotStatus: string;
+  permissionStatus:string;
+  approvalRequests:ApprovalRequest[];
+  publishedOperations:PublishedOperation[];
+  convergenceReceipts:ConvergenceReceipt[];
+  autopilotEnabled: boolean;
+  autopilotConfigured: boolean;
+  autopilotConfigFor?:string;
+  workflowDraft:string;
+  worktreeTaskId:string;
+  worktreeWorkspaceId:string;
+  worktreeStatus:string;
+  worktreePlan?:{
+    id:string;workflowId:string;taskId:string;path:string;branch:string;
+    baseSha:string;stage:"prepared"|"reserved"|"created";expiresAt:number;
+  };
+  integrationTargetWorkspaceId:string;
+  integrationStatus:string;
+  integrationPreview?:{
+    id:string;workflowId:string;taskId:string;targetWorkspaceId:string;
+    sourceSha:string;targetHead:string;qcRunId:string;expiresAt:number;
+  };
+  goalText:string;goalProvider:string;goalModel:string;goalEffort:string;
+  goalStatus:string;goalProposalText:string;goalProposalReady:boolean;
+  goalRef?:{draftWorkflowId:string;runId:string};
 }
 const roleNames: Role[] = ["planner", "implementer", "reviewer", "architect"];
 const states = new Map<string, State>();
@@ -35,8 +80,50 @@ function stateFor(context: WorkspacePanelContext): State {
   const key = keyFor(context);
   let state = states.get(key);
   if (!state) {
-    state = { workflows: [], status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
+    let goalRef:State["goalRef"];
+    try{
+      const raw=typeof localStorage==="undefined"?null:
+        localStorage.getItem("pi-micromanager:goal-ref:"+key);
+      const value:unknown=raw?JSON.parse(raw):null;
+      if(value&&typeof value==="object"&&!Array.isArray(value)&&
+        "draftWorkflowId" in value&&typeof value.draftWorkflowId==="string"&&
+        "runId" in value&&typeof value.runId==="string")
+        goalRef={draftWorkflowId:value.draftWorkflowId,runId:value.runId};
+    }catch{/* Browser storage may be blocked. */}
+    state = { workflows: [],
+      adrTargetWorkspaceId:"",adrStatus:"",
+      adrFields:{filename:"0010-record-decision.md",title:"Architectural decision",
+        context:"",options:"",decision:"",consequences:""},
+      screenshotRunId:"",screenshotPath:"screenshots/qc.png",
+      screenshotStatus:"",retentionDays:30,retentionStatus:"", status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
       detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
+      finalWorktreeWorkspaceId:"",
+      autopilotDraft:JSON.stringify({
+        workspaces:{},
+        models:{
+          implementer:{provider:"",model:""},qc:{provider:"",model:""},
+          planner:{provider:"",model:""},architect:{provider:"",model:""},
+        },test:{file:"npm",args:["test"],timeoutMs:60000},maxAttempts:5,
+        publication:{remote:"origin",baseBranch:"main",draft:true},
+      },null,2),
+      autopilotStatus:"Not configured",autopilotEnabled:false,autopilotConfigured:false,
+      permissionStatus:"No permission decisions loaded",
+      approvalRequests:[],publishedOperations:[],convergenceReceipts:[],
+      goalText:"",goalProvider:"",goalModel:"",goalEffort:"",
+      goalStatus:goalRef?"A prior goal proposal can be checked":"No proposal in progress",
+      goalProposalText:"",goalProposalReady:false,
+      ...(goalRef?{goalRef}:{}),
+      worktreeTaskId:"",worktreeWorkspaceId:"",worktreeStatus:"",
+      integrationTargetWorkspaceId:"",integrationStatus:"",
+      workflowDraft:JSON.stringify({
+        id:"custom-feature",title:"Custom development workflow",maxQcRounds:5,
+        maxParallelByRole:{planner:1,implementer:2,reviewer:2,architect:2},
+        permissions:{default:"allow",actions:{"github.pr.merge":"ask","deploy.production":"ask"}},
+        tasks:[{id:"feature",title:"REPLACE: specific development Task",
+          description:"REPLACE: state the exact repository change required",
+          acceptanceCriteria:["REPLACE: define an independently testable acceptance condition"],
+          kind:"implementation",role:"implementer",dependsOn:[]}],
+      },null,2),
       interventionMode: "workflow",
       interventionDraft: "After the next QC, ask Astra and Claude Opus to independently investigate the root cause and alternatives; let Sol synthesize before Luna resumes." };
     states.set(key, state);
@@ -63,8 +150,28 @@ const plugin: PiWebPlugin = {
         state.workflows = result as WorkflowInstance[];
         const id = workflowId ?? state.selected?.definition.id ?? state.workflows[0]?.definition.id;
         if (id) {
-          if (state.selected?.definition.id !== id) delete state.selectedTaskId;
+          if (state.selected?.definition.id !== id){
+            delete state.journal;delete state.retentionPreview;
+             state.approvalRequests=[];state.publishedOperations=[];state.convergenceReceipts=[];
+             state.permissionStatus="Select Load permissions to review current requests";
+            delete state.screenshotPreview;
+            delete state.adrDraft;state.adrStatus="";
+            state.screenshotRunId="";state.screenshotStatus="";
+            delete state.selectedTaskId;delete state.worktreePlan;
+            state.worktreeTaskId="";state.worktreeStatus="";
+          }
           state.selected = await send(context, "get", id) as WorkflowInstance;
+          try{
+            const auto=await send(context,"auto.status",{workflowId:id}) as
+              {enabled:boolean;status:string;config:unknown}|null;
+            state.autopilotEnabled=auto?.enabled??false;
+            state.autopilotConfigured=!!auto;
+            state.autopilotStatus=auto?.status??"Not configured";
+            if(auto&&state.autopilotConfigFor!==id){
+              state.autopilotDraft=JSON.stringify(auto.config,null,2);
+              state.autopilotConfigFor=id;
+            }
+          }catch(error){state.autopilotStatus="Autopilot unavailable: "+String(error);}
         }
         if (state.selectedTaskId && !state.selected?.tasks[state.selectedTaskId]) delete state.selectedTaskId;
         state.loaded = true;
@@ -84,6 +191,82 @@ const plugin: PiWebPlugin = {
       } catch (error) { state.status = String(error); }
       finally { state.busy = false; if (!disposed) { context.host.requestRender(); void refresh(context, "demo-auth"); } }
     }
+
+    function saveGoalRef(context:WorkspacePanelContext,ref:State["goalRef"]):void{
+      try{
+        if(typeof localStorage==="undefined")return;
+        const key="pi-micromanager:goal-ref:"+keyFor(context);
+        if(ref)localStorage.setItem(key,JSON.stringify(ref));
+        else localStorage.removeItem(key);
+      }catch{/* Reference persistence is optional, not an execution authority. */}
+    }
+    async function proposeGoal(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.busy||!state.goalText.trim()||!state.goalProvider.trim()||
+        !state.goalModel.trim())return;
+      state.busy=true;state.goalStatus="Starting a fresh read-only Sol proposal…";
+      context.host.requestRender();
+      try{
+        const result=await send(context,"auto.propose",{
+          goal:state.goalText,provider:state.goalProvider,model:state.goalModel,
+          ...(state.goalEffort.trim()?{effort:state.goalEffort.trim()}:{}),
+        }) as {draftWorkflowId:string;runId:string;status:string};
+        const ref={draftWorkflowId:result.draftWorkflowId,runId:result.runId};
+        state.goalRef=ref;saveGoalRef(context,ref);
+        state.goalProposalText="";state.goalProposalReady=false;state.goalStatus=result.status;
+      }catch(error){state.goalStatus="Goal planning failed: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function checkGoal(context:WorkspacePanelContext){
+      const state=stateFor(context),ref=state.goalRef;
+      if(state.busy||!ref)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const result=await send(context,"auto.proposal",ref) as
+          {phase:string;proposal:WorkflowDefinition|null;summary:string|null;canAccept:boolean;notice?:string};
+        if(result.proposal){
+          state.goalProposalText=JSON.stringify(result.proposal,null,2);
+          state.goalProposalReady=result.canAccept;
+          state.goalStatus=(result.canAccept?"Review before approval: ":
+            "Sol submitted a proposal; wait for Run settlement: ")+
+            (result.summary??"Validated Task DAG");
+        }else state.goalStatus=result.notice??("Proposal phase: "+result.phase+
+          ". Wait for the real Pi Session to finish, then check again.");
+      }catch(error){state.goalStatus="Cannot read proposal: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function acceptGoal(context:WorkspacePanelContext){
+      const state=stateFor(context),ref=state.goalRef;
+      if(state.busy||!ref||!state.goalProposalText||!state.goalProposalReady)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const created=await send(context,"auto.acceptProposal",ref) as WorkflowInstance;
+        state.selected=created;
+        delete state.selectedTaskId;
+        state.workflowDraft=JSON.stringify(created.definition,null,2);
+        state.autopilotEnabled=false;state.autopilotConfigured=false;
+        delete state.autopilotConfigFor;
+        state.goalStatus="Approved "+created.definition.id+
+          ". Configure models and tests; automatic Worktree creation is available on Start.";
+        delete state.goalRef;state.goalProposalReady=false;saveGoalRef(context,undefined);
+        state.workflows=state.workflows.filter(x=>x.definition.id!==created.definition.id).concat(created);
+      }catch(error){state.goalStatus="Proposal acceptance failed: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function importWorkflow(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.busy)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const created=await send(context,"create",JSON.parse(state.workflowDraft)) as WorkflowInstance;
+        state.selected=created;
+        delete state.selectedTaskId;
+        state.status="Workflow saved with validated DAG; no Pi Runs launched.";
+        state.autopilotConfigured=false;state.autopilotEnabled=false;
+        delete state.autopilotConfigFor;
+      }catch(error){state.status="Workflow import failed: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
     async function change(context: WorkspacePanelContext, action: WorkflowAction) {
       const state = stateFor(context);
       const workflow = state.selected;
@@ -94,14 +277,269 @@ const plugin: PiWebPlugin = {
           commandId: crypto.randomUUID(), action }) as WorkflowInstance;
         state.selected = next;
         state.workflows = state.workflows.map(x => x.definition.id === next.definition.id ? next : x);
-        state.status = `Applied ${action.type} as revision ${next.revision} (simulation only).`;
+        state.status = "Applied "+action.type+" as revision "+next.revision+
+          (state.autopilotConfigured?" (explicit human decision)":" (simulation only)");
       } catch (error) { state.status = String(error); }
       finally { state.busy = false; if (!disposed) context.host.requestRender(); }
     }
 
+
+
+
+
+    async function adrCommand(context:WorkspacePanelContext,command:"preview"|"stage"|"latest"|"inspect"){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(!workflowId||state.busy)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        let input:unknown;
+        if(command==="preview"){
+          delete state.adrDraft;
+          input={workflowId,targetWorkspaceId:state.adrTargetWorkspaceId.trim(),
+            fields:state.adrFields};
+        }else if(command==="latest")input={workflowId};
+        else input={draftId:state.adrDraft?.id};
+        const draft=await send(context,"auto.adr."+command,input) as AdrDraft|null;
+        if(draft)state.adrDraft=draft;
+        else delete state.adrDraft;
+        state.adrStatus=!draft?"No saved ADR proposal yet.":
+          draft.state==="staged"?
+          "Exact ADR draft bytes staged in the review Worktree. Git commit, Push and PR "+
+          "publication remain separate human actions.":
+          draft.state==="reserved"?
+          "Write reserved or uncertain. Use Inspect; do NOT stage again blindly.":
+          "Proposed ADR is read-only. Review exact content, target Git SHA and "+
+          "evidence links before staging.";
+      }catch(error){state.adrStatus="ADR operation refused: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function captureScreenshot(context:WorkspacePanelContext){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(state.busy||!workflowId||!state.screenshotRunId||
+        !state.screenshotPath.trim())return;
+      state.busy=true;state.screenshotStatus="Validating actual QC Git commit and screenshot bytes…";
+      context.host.requestRender();
+      try{
+        const record=await send(context,"auto.screenshot.capture",{
+          workflowId,runId:state.screenshotRunId,relativePath:state.screenshotPath.trim(),
+        }) as {id:string;sha256:string;bytes:number};
+        state.screenshotStatus="Captured verified file bytes as immutable screenshot "+
+          record.sha256.slice(0,16)+" ("+record.bytes+" bytes).";
+        state.journal=await send(context,"auto.journal",{workflowId}) as WorkflowJournal;
+        delete state.screenshotPreview;
+      }catch(error){state.screenshotStatus="Screenshot capture refused: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function showScreenshot(context:WorkspacePanelContext,id:string){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(state.busy||!workflowId)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const result=await send(context,"auto.screenshot.preview",{
+          workflowId,artifactId:id,
+        }) as {artifact:{id:string;sha256:string;mime:string};
+          dataUrl:string|null;inlineLimit:number};
+        state.screenshotPreview={id:result.artifact.id,
+          dataUrl:result.dataUrl,sha256:result.artifact.sha256,mime:result.artifact.mime};
+        state.screenshotStatus=result.dataUrl?
+          "Displaying immutable image bytes stored privately in this PI WEB host.":
+          "Stored screenshot exceeds inline preview limit "+result.inlineLimit+
+          " bytes; metadata remains available. No image contents were sent to a model.";
+      }catch(error){state.screenshotStatus="Screenshot unavailable: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function loadEvidenceJournal(context:WorkspacePanelContext){
+      const s=stateFor(context),workflowId=s.selected?.definition.id;
+      if(s.busy||!workflowId)return;
+      s.busy=true;context.host.requestRender();
+      try{
+        const value=await send(context,"auto.journal",{workflowId}) as WorkflowJournal;
+        if(value.workflowId!==workflowId)throw new Error("Journal scope changed");
+        s.journal=value;
+        s.status="Loaded verified journal revision "+value.revision+".";
+      }catch(error){s.status="Journal unavailable: "+String(error);}
+      finally{s.busy=false;context.host.requestRender();}
+    }
+    async function retentionCommand(context:WorkspacePanelContext,kind:"preview"|"confirm"){
+      const s=stateFor(context);
+      if(s.busy)return;
+      s.busy=true;context.host.requestRender();
+      try{
+        if(kind==="preview"){
+          delete s.retentionPreview;
+          const result=await send(context,"auto.retention.preview",{days:s.retentionDays}) as
+            RetentionPreview|null;
+          if(!result){s.retentionStatus=
+            "No eligible old activity: unresolved workflows, QC evidence and native Pi sessions are protected.";}
+          else{
+            s.retentionPreview=result;
+            s.retentionStatus="Read-only retention preview created. Review before confirmation.";
+          }
+        }else{
+          const plan=s.retentionPreview;
+          if(!plan||plan.state!=="prepared")throw new Error("Preview first");
+          const done=await send(context,"auto.retention.confirm",{previewId:plan.id}) as RetentionPreview;
+          s.retentionPreview=done;
+          s.retentionStatus="Pruned "+done.deletedRows+
+            " old public activity rows. Workflow, QC evidence and native Pi Sessions are untouched.";
+        }
+      }catch(error){s.retentionStatus="Retention refused: "+String(error);}
+      finally{s.busy=false;context.host.requestRender();}
+    }
+
+    function insertAutoManagedWorktrees(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.autopilotEnabled)return;
+      try{
+        const raw=JSON.parse(state.autopilotDraft) as Record<string,unknown>;
+        raw.workspaces??={};
+        raw.managedWorktrees=true;
+        raw.finalization={workspaceId:"auto",autoMerge:true};
+        state.autopilotDraft=JSON.stringify(raw,null,2);
+        state.autopilotStatus="Automatic Worktrees staged. On explicit Start, "+
+          "missing Task Worktrees and the final Worktree will be created and "+
+          "their PI WEB identities verified before any Pi Session. Save the configuration first.";
+      }catch(error){state.autopilotStatus=String(error);}
+      context.host.requestRender();
+    }
+    function insertFinalWorkspace(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.autopilotEnabled||!state.finalWorktreeWorkspaceId.trim())return;
+      try{
+        const raw=JSON.parse(state.autopilotDraft) as Record<string,unknown>;
+        raw.finalization={
+          workspaceId:state.finalWorktreeWorkspaceId.trim(),autoMerge:true,
+        };
+        state.autopilotDraft=JSON.stringify(raw,null,2);
+        state.autopilotStatus="Final integration Workspace staged in JSON. "+
+          "Verify a distinct clean, linked non-main Git Worktree, then save "+
+          "configuration. Final QC and Workflow permissions gate the merge.";
+      }catch(error){state.autopilotStatus=String(error);}
+      context.host.requestRender();
+    }
+    async function permissionCommand(context:WorkspacePanelContext,
+      kind:"load"|"approved"|"rejected",approvalId?:string){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(state.busy||!workflowId)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        if(kind!=="load"){
+          if(!approvalId)throw new Error("Select an exact permission request");
+          const receipt=await send(context,"auto.permission.decide",{
+            approvalId,decision:kind,
+          }) as ApprovalRequest;
+          state.permissionStatus=receipt.state+" "+receipt.action+
+            " for QC "+receipt.headSha.slice(0,12)+
+            ". This decision cannot be reused for another commit.";
+        }
+        const latest=await send(context,"auto.permissions",{workflowId}) as {
+          approvals:ApprovalRequest[];publication:PublishedOperation[];
+          convergence:ConvergenceReceipt[];
+        };
+        state.approvalRequests=latest.approvals;
+        state.publishedOperations=latest.publication;
+        state.convergenceReceipts=latest.convergence??[];
+        if(kind==="load")state.permissionStatus="Loaded persisted publication decisions.";
+      }catch(error){state.permissionStatus="Permissions unavailable: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function autopilotCommand(context:WorkspacePanelContext,operation:"configure"|"start"|"pause"){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(!workflowId||state.busy)return;
+      state.busy=true;state.autopilotStatus="Processing "+operation+"…";context.host.requestRender();
+      try{
+        const result=await send(context,"auto."+operation,{
+          workflowId,...(operation==="configure"?{config:JSON.parse(state.autopilotDraft)}:{}),
+        }) as {enabled:boolean;status:string;config?:unknown};
+        state.autopilotEnabled=result.enabled;state.autopilotStatus=result.status;
+        if(operation==="start"&&result.config)
+          state.autopilotDraft=JSON.stringify(result.config,null,2);
+        if(operation==="configure"){
+          state.autopilotConfigured=true;
+          state.autopilotConfigFor=workflowId;
+        }
+      }catch(error){state.autopilotStatus=String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+
+    async function managedWorktreeCommand(context:WorkspacePanelContext,
+      action:"preview"|"create"|"inspect"|"status"){
+      const state=stateFor(context),workflow=state.selected;
+      if(!workflow||state.busy||state.autopilotEnabled)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const proof=await send(context,"auto.worktree."+action,
+          action==="preview"||action==="status"?
+          {workflowId:workflow.definition.id,taskId:state.worktreeTaskId}:
+          {planId:state.worktreePlan?.id}) as State["worktreePlan"];
+        if(!proof){
+          delete state.worktreePlan;
+          state.worktreeStatus="No saved Worktree plan for this Task.";
+          return;
+        }
+        if(proof.workflowId!==workflow.definition.id||proof.taskId!==state.worktreeTaskId)
+          throw new Error("Managed Git worktree scope mismatch");
+        state.worktreePlan=proof;
+        state.worktreeStatus=proof.stage==="created"?
+          "Created and verified. In PI WEB select this new linked Worktree, copy its Workspace ID, "+
+          "then insert that ID into the Autopilot configuration.":
+          proof.stage==="prepared"?"Git Worktree planned. Review its branch, base SHA and path before creating.":
+          "Creation reserved; if the host response was uncertain, inspect it. Do not issue another Git add.";
+      }catch(error){state.worktreeStatus="Worktree operation refused: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    function setWorktreeWorkspaceId(context:WorkspacePanelContext){
+      const state=stateFor(context),proof=state.worktreePlan;
+      if(!proof||proof.stage!=="created"||!state.worktreeWorkspaceId.trim()||
+        proof.workflowId!==state.selected?.definition.id)return;
+      try{
+        const config=JSON.parse(state.autopilotDraft) as
+          {workspaces?:Record<string,string>;[key:string]:unknown};
+        config.workspaces??={};
+        config.workspaces[proof.taskId]=state.worktreeWorkspaceId.trim();
+        state.autopilotDraft=JSON.stringify(config,null,2);
+        state.worktreeStatus="Workspace ID staged in the JSON configuration. "+
+          "Save Autopilot configuration separately before starting execution.";
+      }catch(error){state.worktreeStatus="Invalid configuration JSON: "+String(error);}
+      context.host.requestRender();
+    }
+    async function integrationCommand(context:WorkspacePanelContext,taskId:string,
+      action:"preview"|"confirm"){
+      const state=stateFor(context),workflow=state.selected;
+      if(!workflow||state.busy)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        if(action==="preview"){
+          delete state.integrationPreview;
+          const proof=await send(context,"auto.integration.preview",{
+            workflowId:workflow.definition.id,taskId,
+            targetWorkspaceId:state.integrationTargetWorkspaceId.trim(),
+          }) as NonNullable<State["integrationPreview"]>;
+          if(proof.workflowId!==workflow.definition.id||proof.taskId!==taskId)
+            throw new Error("Unexpected integration proof scope");
+          state.integrationPreview=proof;
+          state.integrationStatus="Read-only Git ancestry confirmed. Review both SHAs before finalizing.";
+        }else{
+          const proof=state.integrationPreview;
+          if(!proof||proof.taskId!==taskId||proof.workflowId!==workflow.definition.id)
+            throw new Error("Preview the exact Task and Git target first");
+          const next=await send(context,"auto.integration.confirm",{
+            previewId:proof.id,
+          }) as WorkflowInstance;
+          state.selected=next;
+          state.workflows=state.workflows.map(w=>
+            w.definition.id===next.definition.id?next:w);
+          state.integrationStatus="Git integration verified; Task advanced to integrated. "+
+            "No merge, push or file change was performed by Micromanager.";
+          delete state.integrationPreview;
+        }
+      }catch(error){state.integrationStatus="Integration refused: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
     function selectTask(context: WorkspacePanelContext, taskId: string) {
       const state = stateFor(context);
       state.selectedTaskId = taskId;
+      delete state.integrationPreview;state.integrationStatus="";
       state.interventionMode = "workflow";
       context.host.requestRender();
     }
@@ -147,7 +585,7 @@ const plugin: PiWebPlugin = {
               ?disabled=${state.busy}
               @click=${() => { void change(context, { type: "cancel_amendment", amendmentId: pending.id }); }}>
               Cancel pending intervention</button>` : null}
-            ${pending?.status === "planning" ? html`<button ?disabled=${state.busy}
+            ${pending?.status === "planning" && !state.autopilotConfigured ? html`<button ?disabled=${state.busy}
               @click=${() => { void change(context, {
                 type: "plan_intervention", interventionId: pending.id,
                 rationale: "SIMULATION ONLY: independent root-cause and alternative analysis",
@@ -160,8 +598,12 @@ const plugin: PiWebPlugin = {
           ${pending ? html`<div class="mm-intervention-state" role="status">
             <strong>Intervention ${pending.id}: ${pending.status}</strong>
             <p>${pending.instruction ?? "Typed diagnostic plan"} · after QC: ${pending.afterQcRunId}</p>
-            ${pending.status === "planning" ? html`<p>Barrier is durable. Sol planner connection is NOT implemented;
-              this task will remain held if QC finishes before planning.</p>` : null}
+            ${pending.status === "planning" ? html`<p>Barrier is durable.
+              ${state.autopilotEnabled?
+                "Autopilot launches a fresh read-only Sol planning Run; QC remains held if it finishes first.":
+                state.autopilotConfigured?
+                  "Autopilot is paused. Start it to run Sol planning; the QC barrier remains armed.":
+                  "The demo planner is simulation-only until real Autopilot is configured."}</p>` : null}
             ${pending.planRationale ? html`<p>Plan: ${pending.planRationale}</p>` : null}
           </div>` : null}
         </div>` : html`<div class="mm-lens-content">
@@ -181,11 +623,57 @@ const plugin: PiWebPlugin = {
             }).catch(error=>{state.status="Cannot open Orchestra: "+String(error);context.host.requestRender();});
           }}>Open Task's live Run in Orchestra</button>
         </div>`}
+
+        ${task.spec.kind==="implementation"&&task.status==="passed"&&state.autopilotConfigured?
+          html`<div class="mm-integration" aria-label="Verify external Git integration">
+            <strong>Verify completed Git integration</strong>
+            <p>This verification is read-only. First integrate the QC-passed commit into
+              another Git Worktree yourself, then select its PI WEB workspace ID.
+              Preview checks target HEAD, source ancestry and sealed QC evidence.</p>
+            <label>Target workspace ID
+              <input maxlength="128" .value=${state.integrationTargetWorkspaceId}
+                placeholder="Existing integrated workspace ID"
+                ?disabled=${state.busy}
+                @input=${(e:Event)=>{
+                  state.integrationTargetWorkspaceId=(e.target as HTMLInputElement).value;
+                  delete state.integrationPreview;state.integrationStatus="";
+                  context.host.requestRender();
+                }}/></label>
+            <button ?disabled=${state.busy||state.autopilotEnabled||
+                !state.integrationTargetWorkspaceId.trim()}
+              @click=${()=>void integrationCommand(context,task.spec.id,"preview")}>
+              Preview verified Git state</button>
+            ${state.integrationPreview?.taskId===task.spec.id?html`
+              <div class="mm-integration-proof">
+                <p>QC Run: ${state.integrationPreview.qcRunId}</p>
+                <p>QC source: <code>${state.integrationPreview.sourceSha}</code></p>
+                <p>Target HEAD: <code>${state.integrationPreview.targetHead}</code></p>
+                <p>Target workspace: ${state.integrationPreview.targetWorkspaceId}</p>
+                <p>Expires: ${new Date(state.integrationPreview.expiresAt).toLocaleTimeString()}</p>
+                <button ?disabled=${state.busy||state.autopilotEnabled}
+                  @click=${()=>void integrationCommand(context,task.spec.id,"confirm")}>
+                  Confirm integration and unblock DAG</button>
+              </div>`:null}
+            ${state.integrationStatus?html`<p role="status">${state.integrationStatus}</p>`:null}
+          </div>`:null}
       </section>`;
     }
     const actionsFor = (context: WorkspacePanelContext, t: TaskState, w: WorkflowInstance) => {
       const act = (action: WorkflowAction) => { void change(context, action); };
       const buttons = [];
+      if(stateFor(context).autopilotConfigured){
+        // Do not offer simulation transitions for a real automated Workflow.
+        // The explicit human resume decision is still supported.
+        if(t.status==="held")for(const a of w.amendments.filter(a=>a.targetTaskId===t.spec.id&&
+          a.status==="activated"&&a.synthesisTaskId&&w.tasks[a.synthesisTaskId]?.status==="done")){
+          buttons.push(html`<button @click=${()=>act({type:"resume_after_diagnosis",
+            amendmentId:a.id,decision:"rework"})}>Approve rework</button>`);
+          if(t.lastQc?.verdict==="pass")buttons.push(html`<button
+            @click=${()=>act({type:"resume_after_diagnosis",amendmentId:a.id,
+              decision:"accept_pass"})}>Accept QC pass</button>`);
+        }
+        return buttons;
+      }
       if (t.status === "ready") buttons.push(html`<button @click=${() => act({ type: "start", taskId: t.spec.id })}>Simulate start</button>`);
       if (t.status === "running") buttons.push(t.spec.kind === "implementation"
         ? html`<button @click=${() => act({ type: "implementation_finished", taskId: t.spec.id,
@@ -227,7 +715,7 @@ const plugin: PiWebPlugin = {
             const tasks = w ? Object.values(w.tasks) : [];
             return html`<style>${styles}</style><section class="mm">
               <header><h2>pi-micromanager</h2><p>See everything. Hear everything. Steer anything. Welcome to Cognitive Overload!</p></header>
-              <aside role="note">v0.1 foundation: workflow simulation only. No Pi Agent processes are launched or controlled yet.</aside>
+              <aside role="note">DAG/Cockpit demo buttons are simulation-only. Autopilot below is a separate opt-in, real Pi Session executor. No automatic merging or Worktree deletion.</aside>
               <div class="toolbar">
                 <button ?disabled=${state.busy} @click=${() => { void refresh(context); }}>Reload</button>
                 <button ?disabled=${state.busy} @click=${() => { void createDemo(context); }}>Create/load demo DAG</button>
@@ -236,6 +724,201 @@ const plugin: PiWebPlugin = {
                 </select>
               </div>
               <p role="status" aria-live="polite">${state.status}</p>
+
+              <details class="mm-goal-proposal">
+                <summary><strong>Ask Sol to plan a new goal</strong> · read-only proposal</summary>
+                <p>Sol creates a structured Task DAG through a real Pi Session. Nothing is
+                  executed until you review/accept the proposal and separately start Autopilot.</p>
+                <label for="mm-goal-text">Development goal</label>
+                <textarea id="mm-goal-text" rows="4" maxlength="4000"
+                  placeholder="Describe the feature, constraints and expected result…"
+                  .value=${state.goalText} ?disabled=${state.busy}
+                  @input=${(e:Event)=>{state.goalText=(e.target as HTMLTextAreaElement).value;
+                    context.host.requestRender();}}></textarea>
+                <div class="mm-goal-credentials">
+                  <label>Pi provider <input maxlength="120" placeholder="Configured provider ID"
+                    .value=${state.goalProvider} ?disabled=${state.busy}
+                    @input=${(e:Event)=>{state.goalProvider=(e.target as HTMLInputElement).value;
+                      context.host.requestRender();}} /></label>
+                  <label>Model ID <input maxlength="160" placeholder="Exact model ID"
+                    .value=${state.goalModel} ?disabled=${state.busy}
+                    @input=${(e:Event)=>{state.goalModel=(e.target as HTMLInputElement).value;
+                      context.host.requestRender();}} /></label>
+                  <label>Effort (optional) <input maxlength="32" placeholder="Supported effort"
+                    .value=${state.goalEffort} ?disabled=${state.busy}
+                    @input=${(e:Event)=>{state.goalEffort=(e.target as HTMLInputElement).value;}} /></label>
+                </div>
+                <div class="mm-actions">
+                  <button ?disabled=${state.busy||!state.goalText.trim()||
+                    !state.goalProvider.trim()||!state.goalModel.trim()}
+                    @click=${()=>void proposeGoal(context)}>Ask Sol (read-only)</button>
+                  <button ?disabled=${state.busy||!state.goalRef}
+                    @click=${()=>void checkGoal(context)}>Check proposal</button>
+                </div>
+                <p role="status" aria-live="polite">${state.goalStatus}</p>
+                ${state.goalProposalText?html`
+                  <label for="mm-goal-preview">Sol's proposed DAG (review before approval)</label>
+                  <textarea id="mm-goal-preview" rows="12" readonly spellcheck="false"
+                    .value=${state.goalProposalText}></textarea>
+                  <div class="mm-actions">
+                    <button ?disabled=${state.busy||!state.goalProposalReady} @click=${()=>void acceptGoal(context)}>
+                      Approve and save exact proposal</button>
+                    <button ?disabled=${state.busy} @click=${()=>{
+                      state.workflowDraft=state.goalProposalText;
+                      context.host.requestRender();
+                    }}>Copy into editable Workflow import</button>
+                  </div>`:null}
+              </details>
+              <details class="mm-workflow-import">
+                <summary>Import a real Workflow DAG (JSON)</summary>
+                <p>Author a Task DAG here or paste a definition. Server-side validation rejects
+                  cycles and unsupported dependencies before saving any workflow.</p>
+                <textarea rows="10" spellcheck="false" aria-label="Workflow definition JSON"
+                  .value=${state.workflowDraft} ?disabled=${state.busy}
+                  @input=${(e:Event)=>{state.workflowDraft=(e.target as HTMLTextAreaElement).value;}}></textarea>
+                <button ?disabled=${state.busy} @click=${()=>void importWorkflow(context)}>
+                  Validate and save Workflow</button>
+              </details>
+
+              ${w?html`<details class="mm-managed-worktree">
+                <summary><strong>Manage isolated Git Worktree</strong> · preview before creating</summary>
+                <p>Create a new Task branch and linked Git Worktree in Micromanager's own data
+                  directory. PI WEB discovers linked Git Worktrees automatically.
+                  In managed Autopilot mode, the Workspace ID is resolved and verified on Start.
+                  Manual ID entry remains available for legacy configurations.
+                  No Worktree is deleted automatically.</p>
+                <label>Unstarted implementation Task
+                  <select aria-label="Task for managed Git Worktree" .value=${state.worktreeTaskId}
+                    ?disabled=${state.busy||state.autopilotEnabled}
+                    @change=${(e:Event)=>{
+                      state.worktreeTaskId=(e.target as HTMLSelectElement).value;
+                      delete state.worktreePlan;state.worktreeStatus="";context.host.requestRender();
+                    }}>
+                    <option value="">Choose Task</option>
+                    ${Object.values(w.tasks).filter(t=>t.spec.kind==="implementation"&&t.attempts===0)
+                      .map(t=>html`<option value=${t.spec.id}>${t.spec.title}</option>`)}
+                  </select>
+                </label>
+                <div class="mm-actions">
+                  <button ?disabled=${state.busy||state.autopilotEnabled||!state.worktreeTaskId}
+                    @click=${()=>void managedWorktreeCommand(context,"preview")}>
+                    Preview Worktree</button>
+                  <button ?disabled=${state.busy||!state.worktreeTaskId}
+                    @click=${()=>void managedWorktreeCommand(context,"status")}>
+                    Load saved plan</button>
+                  <button ?disabled=${state.busy||state.autopilotEnabled||
+                    state.worktreePlan?.stage!=="prepared"}
+                    @click=${()=>void managedWorktreeCommand(context,"create")}>
+                    Create reviewed Git Worktree</button>
+                  <button ?disabled=${state.busy||!state.worktreePlan||
+                    state.worktreePlan.stage==="prepared"}
+                    @click=${()=>void managedWorktreeCommand(context,"inspect")}>
+                    Inspect reserved Worktree</button>
+                </div>
+                ${state.worktreePlan?html`<div class="mm-worktree-proof">
+                  <p>Stage: ${state.worktreePlan.stage}</p>
+                  <p>Branch: <code>${state.worktreePlan.branch}</code></p>
+                  <p>Base SHA: <code>${state.worktreePlan.baseSha}</code></p>
+                  <p>Owned path: <code>${state.worktreePlan.path}</code></p>
+                  ${state.worktreePlan.stage==="created"?html`
+                    <label>Discovered PI WEB Workspace ID
+                      <input maxlength="128" placeholder="Copy from PI WEB Worktree details"
+                        .value=${state.worktreeWorkspaceId}
+                        @input=${(e:Event)=>{
+                          state.worktreeWorkspaceId=(e.target as HTMLInputElement).value;
+                          context.host.requestRender();
+                        }}/></label>
+                    <button ?disabled=${!state.worktreeWorkspaceId.trim()||state.busy}
+                      @click=${()=>setWorktreeWorkspaceId(context)}>
+                      Insert ID into Autopilot configuration</button>`:null}
+                </div>`:null}
+                <p role="status" aria-live="polite">${state.worktreeStatus}</p>
+              </details>`:null}
+              <details class="mm-autopilot">
+                <summary><strong>Autopilot · Real Orchestrator</strong>
+                  <span>${state.autopilotEnabled?"● Running":"○ Paused / offline"}</span></summary>
+                <p>YOLO by default: a configured publication target automatically pushes
+                  QC-approved commits and creates Draft GitHub PRs. Workflow permissions can
+                  override git.push / github.pr.create to ask or deny. Final PR merge uses the Workflow's merge permission; production
+                  deployment remains separately gated. Choose the correct remote,
+                  base branch and credentials. Legacy configurations never push unexpectedly.
+                  Exact models, linked Worktrees and host tests are still required.</p>
+                <label for="mm-auto-config">Autopilot configuration (JSON)</label>
+                <p>Opt into automatic provisioning to create missing Task Worktrees
+                  and a separate final Worktree at explicit Start. PI WEB discovers Git
+                  Worktrees automatically; the host validates their exact identities before
+                  admitting any Pi Session. Independent final QC and Workflow permissions
+                  gate the GitHub auto-merge.</p>
+                <button ?disabled=${state.busy||state.autopilotEnabled}
+                  @click=${()=>insertAutoManagedWorktrees(context)}>
+                  Auto-provision DAG Worktrees + final GitHub auto-merge (opt in)</button>
+                <label>Final integration Workspace ID
+                  <input .value=${state.finalWorktreeWorkspaceId}
+                    ?disabled=${state.busy||state.autopilotEnabled}
+                    placeholder="Existing linked non-main Git Worktree ID"
+                    @input=${(e:Event)=>{
+                      state.finalWorktreeWorkspaceId=(e.target as HTMLInputElement).value;
+                      context.host.requestRender();
+                    }}/></label>
+                <button ?disabled=${state.busy||state.autopilotEnabled||
+                  !state.finalWorktreeWorkspaceId.trim()}
+                  @click=${()=>insertFinalWorkspace(context)}>
+                  Enable full-DAG integration + YOLO PR auto-merge</button>
+                <textarea id="mm-auto-config" rows="12" spellcheck="false"
+                  .value=${state.autopilotDraft} ?disabled=${state.busy||state.autopilotEnabled}
+                  @input=${(e:Event)=>{state.autopilotDraft=(e.target as HTMLTextAreaElement).value;}}></textarea>
+                <div class="mm-actions">
+                  <button ?disabled=${state.busy||state.autopilotEnabled||!w}
+                    @click=${()=>void autopilotCommand(context,"configure")}>Save configuration</button>
+                  <button ?disabled=${state.busy||state.autopilotEnabled||!w}
+                    @click=${()=>void autopilotCommand(context,"start")}>Start Autopilot</button>
+                  <button ?disabled=${state.busy||!state.autopilotEnabled||!w}
+                    @click=${()=>void autopilotCommand(context,"pause")}>Pause admission</button>
+                </div>
+                <p role="status" aria-live="polite">${state.autopilotStatus}</p>
+                <section class="mm-permissions">
+                  <strong>Workflow permissions · allow / ask / deny</strong>
+                  <p>Default: ${w?.definition.permissions?.default??"allow"} (YOLO).
+                    Git integration fast-forwards clean unstarted dependent
+                    Worktrees after sealed QC. Divergent branches still require human
+                    reconciliation during Task dependency convergence.
+                    Final integration is a dedicated Pi Run with final QC;
+                    GitHub PR merge is YOLO unless the Workflow overrides it.
+                    Edit Workflow JSON before import to change decisions.
+                    Strong Pi shell restrictions still require an OS sandbox.</p>
+                  <button ?disabled=${state.busy||!w}
+                    @click=${()=>void permissionCommand(context,"load")}>
+                    Load publication & approvals</button>
+                  ${state.approvalRequests.map(a=>html`
+                    <article class="mm-permission-request">
+                      <p><strong>${a.action}</strong> · ${a.state} · Task ${a.taskId}</p>
+                      <p>QC ${a.runId} · <code>${a.headSha}</code></p>
+                      <p>Destination: ${a.target}</p>
+                      ${a.state==="pending"?html`<div class="mm-actions">
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void permissionCommand(context,"approved",a.id)}>
+                          Approve this exact commit</button>
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void permissionCommand(context,"rejected",a.id)}>
+                          Deny</button>
+                      </div>`:null}
+                    </article>`)}
+                  ${state.publishedOperations.map(x=>html`
+                    <article class="mm-permission-request">
+                      <p>${x.action} · ${x.state} · Task ${x.taskId}</p>
+                      <p>Commit <code>${x.sha}</code></p>
+                      ${x.result?html`<p>${x.result}</p>`:null}
+                    </article>`)}
+                  ${state.convergenceReceipts.map(x=>html`
+                    <article class="mm-permission-request">
+                      <p>Git fast-forward · ${x.state} · ${x.sourceTaskId}
+                        → ${x.targetTaskId}</p>
+                      <p>QC ${x.qcRunId}: <code>${x.sourceSha}</code></p>
+                      <p>Target ${x.targetWorkspaceId} · Branch ${x.branch}</p>
+                    </article>`)}
+                  <p role="status">${state.permissionStatus}</p>
+                </section>
+              </details>
               <nav aria-label="Views">${(["cockpit", "dag", "kanban", "journal"] as const).map(view => html`
                 <button class=${state.view === view ? "selected" : ""} @click=${() => { state.view = view; context.host.requestRender(); }}>${view.toUpperCase()}</button>
               `)}</nav>
@@ -257,7 +940,170 @@ const plugin: PiWebPlugin = {
                 </svg></div>`; })() : null}
                 ${state.view === "kanban" ? html`<div class="mm-kanban">${(["blocked", "ready", "running", "awaiting_qc", "held", "passed", "done", "integrated", "needs_human"] as const).map(status => html`
                   <section><strong>${status}</strong>${tasks.filter(t=>t.status===status).map(t=>html`<button class="mm-pill" @click=${() => selectTask(context,t.spec.id)}>${t.spec.title}</button>`)}</section>`)}</div>` : null}
-                ${state.view === "journal" ? html`<div class="mm-events">${[...w.events].reverse().map(e=>html`<article><time>${e.at}</time><p><strong>${e.type}</strong> · ${e.message}</p></article>`)}</div>` : null}
+
+                ${state.view === "journal" ? html`
+                  <section class="mm-journal" aria-label="Evidence-linked Workflow journal">
+                    <div class="mm-actions">
+                      <button ?disabled=${state.busy} @click=${()=>void loadEvidenceJournal(context)}>
+                        Load evidence-linked journal</button>
+                    </div>
+                    ${state.journal?.workflowId===w.definition.id?html`
+                      ${state.journal.notes.map(note=>html`<p role="note">${note}</p>`)}
+                      <h3>Task and QC evidence</h3>
+                      ${state.journal.tasks.map(t=>html`<article class="mm-journal-task">
+                        <strong>${t.title}</strong>
+                        <p>${t.id} · ${t.status} · attempts ${t.attempts} · QC ${t.qcRounds}</p>
+                        ${t.lastQc?html`<p>QC ${t.lastQc.verdict}
+                          · Run ${t.lastQc.runId}
+                          · Git <code>${t.lastQc.headSha}</code></p>`:null}
+                      </article>`)}
+
+                      <h3>Actual QC screenshot evidence</h3>
+                      <p>Only explicit, already committed screenshots inside a sealed QC Run's
+                        <code>screenshots/</code> directory may be captured. Images can contain
+                        secrets: inspect them before selecting Capture. This does not certify QC by itself.</p>
+                      <div class="mm-screenshot-capture">
+                        <label>Sealed QC Run
+                          <select .value=${state.screenshotRunId} ?disabled=${state.busy}
+                            @change=${(e:Event)=>{
+                              state.screenshotRunId=(e.target as HTMLSelectElement).value;
+                              context.host.requestRender();
+                            }}>
+                            <option value="">Choose a sealed QC Run</option>
+                            ${state.journal.runs.filter(r=>r.seat==="qc"&&r.phase==="sealed")
+                              .map(r=>html`<option value=${r.runId}>${r.runId}</option>`)}
+                          </select>
+                        </label>
+                        <label>Path relative to that QC Worktree
+                          <input maxlength="180" spellcheck="false" .value=${state.screenshotPath}
+                            placeholder="screenshots/qc.png" ?disabled=${state.busy}
+                            @input=${(e:Event)=>{
+                              state.screenshotPath=(e.target as HTMLInputElement).value;
+                              context.host.requestRender();
+                            }}/></label>
+                        <button ?disabled=${state.busy||!state.screenshotRunId||
+                          !state.screenshotPath.trim()}
+                          @click=${()=>void captureScreenshot(context)}>
+                          Capture verified screenshot bytes</button>
+                      </div>
+                      ${state.journal.screenshots.map(shot=>html`
+                        <article class="mm-journal-run">
+                          <strong>${shot.relativePath}</strong>
+                          <p>QC ${shot.runId} · Git <code>${shot.sourceSha}</code></p>
+                          <p>sha256:<code>${shot.sha256}</code> · ${shot.bytes} bytes</p>
+                          <button ?disabled=${state.busy}
+                            @click=${()=>void showScreenshot(context,shot.id)}>Verify / view image</button>
+                          ${state.screenshotPreview?.id===shot.id?
+                            (state.screenshotPreview.dataUrl?html`
+                              <img class="mm-screenshot-preview"
+                                src=${state.screenshotPreview.dataUrl}
+                                alt=${"QC screenshot file "+shot.relativePath}/>`:
+                              html`<p>File too large for inline image preview.</p>`):null}
+                        </article>`)}
+                      <p role="status">${state.screenshotStatus}</p>
+                      <h3>One-shot Pi Runs (up to 120)</h3>
+                      ${state.journal.runs.map(run=>html`<article class="mm-journal-run">
+                        <strong>${run.seat} · ${run.runId}</strong>
+                        <p>Task ${run.taskId} · ${run.phase} · ${run.updatedAt}</p>
+                        ${run.evidence?html`
+                          <p>Evidence <code>${run.evidence.ref}</code></p>
+                          <p>${run.evidence.summary}</p>
+                        `:null}
+                      </article>`)}
+                    `:html`<p>Load the verified Task/Run evidence references above.</p>`}
+                    <h3>Authoritative Workflow events</h3>
+                    <div class="mm-events">
+                      ${[...w.events].reverse().map(e=>html`<article>
+                        <time>${e.at}</time><p><strong>${e.type}</strong> · ${e.message}</p>
+                      </article>`)}
+                    </div>
+
+                    <details class="mm-adr">
+                      <summary>Propose a verified architecture decision (ADR)</summary>
+                      <p>This is a human-authored ADR proposal grounded in sealed QC
+                        evidence and screenshot SHA references. All Tasks must first
+                        be integrated/completed. No Git commit, Push or PR is automatic.</p>
+                      <label>Separate, clean review Worktree ID
+                        <input maxlength="128" .value=${state.adrTargetWorkspaceId}
+                          ?disabled=${state.busy}
+                          placeholder="PI WEB linked non-main Worktree ID"
+                          @input=${(e:Event)=>{
+                            state.adrTargetWorkspaceId=(e.target as HTMLInputElement).value;
+                            delete state.adrDraft;context.host.requestRender();
+                          }}/></label>
+                      ${(["filename","title","context","options","decision","consequences"] as const)
+                        .map(key=>html`<label>${key}
+                          ${key==="filename"||key==="title"?html`
+                            <input maxlength=${key==="filename"?"80":"200"}
+                              .value=${state.adrFields[key]}
+                              ?disabled=${state.busy}
+                              @input=${(e:Event)=>{
+                                state.adrFields[key]=(e.target as HTMLInputElement).value;
+                                delete state.adrDraft;context.host.requestRender();
+                              }}/>`:html`<textarea rows="3" maxlength="4000"
+                              .value=${state.adrFields[key]}
+                              ?disabled=${state.busy}
+                              @input=${(e:Event)=>{
+                                state.adrFields[key]=(e.target as HTMLTextAreaElement).value;
+                                delete state.adrDraft;context.host.requestRender();
+                              }}></textarea>`}
+                        </label>`)}
+                      <div class="mm-actions">
+                        <button ?disabled=${state.busy||state.autopilotEnabled||
+                          !state.adrTargetWorkspaceId.trim()}
+                          @click=${()=>void adrCommand(context,"preview")}>
+                          Preview evidence-backed ADR</button>
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void adrCommand(context,"latest")}>
+                          Recover saved draft</button>
+                      </div>
+                      ${state.adrDraft?html`<div class="mm-adr-preview">
+                        <p>Target Git HEAD: <code>${state.adrDraft.targetHead}</code></p>
+                        <p>Content SHA-256: <code>${state.adrDraft.sha256}</code></p>
+                        <p>File: docs/adr/${state.adrDraft.filename}</p>
+                        <p>Status: ${state.adrDraft.state}</p>
+                        <textarea readonly rows="16" spellcheck="false"
+                          .value=${state.adrDraft.content}></textarea>
+                        <div class="mm-actions">
+                          <button ?disabled=${state.busy||state.adrDraft.state!=="prepared"}
+                            @click=${()=>void adrCommand(context,"stage")}>
+                            Stage exact reviewed ADR file in Git Worktree</button>
+                          <button ?disabled=${state.busy}
+                            @click=${()=>void adrCommand(context,"inspect")}>
+                            Inspect staged/reserved file</button>
+                        </div>
+                      </div>`:null}
+                      <p role="status" aria-live="polite">${state.adrStatus}</p>
+                    </details>
+                    <details class="mm-retention">
+                      <summary>Review old public activity retention (manual)</summary>
+                      <p>Only events older than 30 days in fully completed
+                        Workflows with sealed Runs and retained evidence qualify.
+                        This never deletes Pi Session transcripts, Task state,
+                        Worktrees, or QC evidence.</p>
+                      <label>Age threshold (days)
+                        <input type="number" min="30" max="365" .value=${String(state.retentionDays)}
+                          ?disabled=${state.busy}
+                          @change=${(e:Event)=>{
+                            state.retentionDays=Number((e.target as HTMLInputElement).value);
+                            delete state.retentionPreview;state.retentionStatus="";
+                            context.host.requestRender();
+                          }}/></label>
+                      <button ?disabled=${state.busy}
+                        @click=${()=>void retentionCommand(context,"preview")}>
+                        Preview retention (read-only)</button>
+                      ${state.retentionPreview?html`
+                        <p>Eligible rows: ${state.retentionPreview.rowCount},
+                          retained Run count: ${state.retentionPreview.affectedRuns},
+                          approximate bytes: ${state.retentionPreview.estimatedBytes}</p>
+                        <p>Preview expires at
+                          ${new Date(state.retentionPreview.expiresAt).toLocaleTimeString()}</p>
+                        <button ?disabled=${state.busy||state.retentionPreview.state!=="prepared"}
+                          @click=${()=>void retentionCommand(context,"confirm")}>
+                          Confirm pruning public activity only</button>`:null}
+                      <p role="status">${state.retentionStatus}</p>
+                    </details>
+                  </section>` : null}
               `}
             </section>`;
           },
@@ -290,10 +1136,101 @@ const styles = `
   .mm-kanban {display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px;}
   .mm-kanban section {border:1px solid var(--pi-border-muted);padding:8px;border-radius:8px;min-height:76px;}
   .mm-pill {background:var(--pi-surface);border-radius:6px;padding:6px;margin-top:7px;font-size:12px;}
+
+  .mm-screenshot-capture{display:flex;flex-wrap:wrap;gap:8px;align-items:end;}
+  .mm-screenshot-capture label{display:grid;gap:4px;font-size:12px;}
+  .mm-screenshot-capture input,.mm-screenshot-capture select{
+    min-width:170px;max-width:100%;padding:6px;color:inherit;
+    border:1px solid var(--pi-border-muted);border-radius:6px;background:var(--pi-surface);}
+  .mm-screenshot-preview{display:block;max-width:100%;max-height:380px;
+    object-fit:contain;border:1px solid var(--pi-border-muted);border-radius:6px;margin-top:8px;}
+  .mm-journal h3{font-size:13px;margin:16px 0 6px;}
+  .mm-journal-task,.mm-journal-run{border:1px solid var(--pi-border-muted);
+    border-radius:8px;padding:9px;margin:7px 0;font-size:12px;overflow-wrap:anywhere;}
+  .mm-journal-task p,.mm-journal-run p,.mm-retention p{font-size:12px;color:var(--pi-muted);
+    overflow-wrap:anywhere;margin:5px 0;}
+  .mm-journal code{font-size:11px;overflow-wrap:anywhere;}
+
+  .mm-adr{border:1px solid var(--pi-border-muted);border-radius:8px;
+    padding:10px;margin:14px 0;font-size:12px;}
+  .mm-adr summary{cursor:pointer;font-weight:600;}
+  .mm-adr p{font-size:12px;color:var(--pi-muted);overflow-wrap:anywhere;}
+  .mm-adr label{display:grid;gap:4px;font-size:12px;margin:8px 0;}
+  .mm-adr textarea,.mm-adr input{width:100%;box-sizing:border-box;
+    border:1px solid var(--pi-border-muted);border-radius:6px;
+    padding:8px;background:var(--pi-surface);color:inherit;}
+  .mm-adr textarea{resize:vertical;font:12px ui-monospace,monospace;}
+  .mm-adr-preview{border:1px dashed var(--pi-border-muted);border-radius:8px;
+    padding:8px;margin:10px 0;}
+  .mm-adr-preview code{overflow-wrap:anywhere;}
+  .mm-retention{border:1px solid var(--pi-border-muted);border-radius:8px;
+    padding:10px;margin:14px 0;font-size:12px;}
+  .mm-retention summary{cursor:pointer;font-weight:600;}
+  .mm-retention label{display:flex;gap:8px;align-items:center;margin:8px 0;}
+  .mm-retention input{max-width:100px;padding:6px;border:1px solid var(--pi-border-muted);
+    border-radius:6px;background:var(--pi-surface);color:inherit;}
   .mm-events article {border-bottom:1px solid var(--pi-border-muted);padding:7px 0;font-size:12px;}
   .mm-events p {margin:0;}
   .mm-task-selected { outline: 2px solid var(--pi-accent-border); }
   .mm-intervene { font-size: 11px !important; margin-top: 6px; }
+
+  .mm-goal-proposal{border:1px solid var(--pi-border-muted);border-radius:8px;
+    padding:10px;margin:12px 0;background:var(--pi-surface);}
+  .mm-goal-proposal summary{cursor:pointer;}
+  .mm-goal-proposal p{font-size:12px;color:var(--pi-muted);}
+  .mm-goal-proposal label{display:block;font-size:12px;margin:8px 0 5px;}
+  .mm-goal-proposal textarea{width:100%;box-sizing:border-box;resize:vertical;
+    color:inherit;background:var(--pi-surface);border:1px solid var(--pi-border-muted);
+    border-radius:6px;padding:8px;font:12px ui-monospace,monospace;}
+  .mm-goal-proposal textarea[readonly]{opacity:.88;}
+  .mm-goal-credentials{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;}
+  .mm-goal-credentials input{width:100%;box-sizing:border-box;background:var(--pi-surface);
+    color:inherit;border:1px solid var(--pi-border-muted);border-radius:6px;padding:6px;}
+
+
+  .mm-managed-worktree{border:1px solid var(--pi-border-muted);border-radius:8px;
+    background:var(--pi-surface);padding:10px;margin:12px 0;}
+  .mm-managed-worktree summary{cursor:pointer;}
+  .mm-managed-worktree p{font-size:12px;color:var(--pi-muted);overflow-wrap:anywhere;}
+  .mm-managed-worktree label{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    font-size:12px;margin:8px 0;}
+  .mm-managed-worktree input,.mm-managed-worktree select{color:inherit;
+    background:var(--pi-surface);border:1px solid var(--pi-border-muted);
+    border-radius:6px;padding:6px;min-width:160px;max-width:100%;}
+  .mm-worktree-proof{margin:8px 0;padding:8px;border:1px dashed var(--pi-border-muted);
+    border-radius:8px;}
+  .mm-worktree-proof code{overflow-wrap:anywhere;font-size:11px;}
+  .mm-integration{border:1px solid var(--pi-border-muted);background:var(--pi-surface);
+    border-radius:8px;padding:10px;margin:12px 0;font-size:12px;}
+  .mm-integration p{color:var(--pi-muted);overflow-wrap:anywhere;}
+  .mm-integration label{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  .mm-integration input{min-width:180px;max-width:100%;background:var(--pi-surface);
+    border:1px solid var(--pi-border-muted);border-radius:5px;color:inherit;padding:5px;}
+  .mm-integration-proof{margin-top:10px;padding:8px;border:1px dashed var(--pi-border-muted);
+    border-radius:7px;}
+  .mm-integration-proof code{overflow-wrap:anywhere;font-size:11px;}
+  .mm-workflow-import{border:1px solid var(--pi-border-muted);border-radius:8px;
+    padding:10px;margin:12px 0;background:var(--pi-surface);}
+  .mm-workflow-import summary{cursor:pointer;font-weight:600;}
+  .mm-workflow-import p{color:var(--pi-muted);font-size:12px;}
+  .mm-workflow-import textarea{width:100%;box-sizing:border-box;resize:vertical;margin:8px 0;
+    background:var(--pi-surface);color:inherit;border:1px solid var(--pi-border-muted);
+    border-radius:6px;padding:8px;font:12px ui-monospace,monospace;}
+  .mm-permissions{border-top:1px solid var(--pi-border-muted);padding:10px 0;margin:12px 0 0;}
+  .mm-permissions strong{font-size:13px;}
+  .mm-permission-request{padding:9px;border:1px solid var(--pi-border-muted);
+    border-radius:8px;margin:8px 0;}
+  .mm-permission-request code{font-size:11px;overflow-wrap:anywhere;}
+  .mm-permission-request p{font-size:12px;overflow-wrap:anywhere;}
+  .mm-autopilot {border:1px solid var(--pi-border-muted);background:var(--pi-surface);
+    border-radius:9px;padding:11px;margin:12px 0;}
+  .mm-autopilot summary {cursor:pointer;display:flex;align-items:center;gap:10px;justify-content:space-between;}
+  .mm-autopilot summary span{font-size:11px;color:var(--pi-muted);}
+  .mm-autopilot p{font-size:12px;color:var(--pi-muted);}
+  .mm-autopilot label{font-size:12px;display:block;margin:8px 0 5px;}
+  .mm-autopilot textarea{width:100%;box-sizing:border-box;min-height:120px;resize:vertical;
+    background:var(--pi-surface);border:1px solid var(--pi-border-muted);color:inherit;
+    border-radius:6px;font:12px ui-monospace,SFMono-Regular,monospace;padding:9px;}
   .mm-lens { border: 1px solid var(--pi-accent-border); border-radius: 9px; padding: 12px; margin: 12px 0; background: var(--pi-surface); }
   .mm-lens-head { display:flex; justify-content:space-between; align-items:start; gap:8px; }
   .mm-lens-head p,.mm-lens-content p { margin:5px 0 9px; font-size:12px; color:var(--pi-muted); }
