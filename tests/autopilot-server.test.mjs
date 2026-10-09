@@ -953,3 +953,19 @@ test("A missing structured plan stops before any code or Git mutation",async()=>
    assert.deepEqual(await host.request("list",null),[]);
  }finally{await host.cleanup();}
 });
+
+test("One-command refuses a competing Workflow already running in the same Workspace",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   await host.request("create",definition);
+   await host.request("auto.configure",{workflowId:"wf",config});
+   const started=await host.request("auto.start",{workflowId:"wf"});
+   assert.equal(started.enabled,true);
+   await host.request("auto.quick.configure",quickProfile());
+   await assert.rejects(host.request("auto.quick.start",{
+     requestId:quickRequestId,goal:"Risky competing DAG",
+   }),/Another Autopilot is running/);
+   assert.equal((await host.request("auto.quick.status",null)).goals.length,0);
+ }finally{await host.cleanup();}
+});
