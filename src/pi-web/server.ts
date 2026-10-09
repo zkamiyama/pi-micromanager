@@ -20,6 +20,7 @@ import { ManagedWorktreeProvisioner } from "../automation/worktree-provisioner.j
 import { ActivityRetention } from "../automation/retention.js";
 import { buildJournal } from "../automation/journal.js";
 import { ScreenshotEvidence } from "../automation/screenshots.js";
+import { AdrPromotion } from "../automation/adr-promotion.js";
 import { classifyRecoveredRun } from "../automation/recovery.js";
 import type { AutopilotRecord } from "../automation/ledger.js";
 
@@ -61,6 +62,11 @@ const plugin:PiWebServerPlugin={
   const screenshots=new ScreenshotEvidence({
     path:join(host.dataDirectory,"screenshot-evidence.sqlite"),
     dataDirectory:host.dataDirectory,workflows:store,agents,ledger,host,
+    workspaces:()=>workspaces,
+  });
+  const adr=new AdrPromotion({
+    path:join(host.dataDirectory,"adr-drafts.sqlite"),
+    workflows:store,agents,ledger,screenshots,host,
     workspaces:()=>workspaces,
   });
   const retention=new ActivityRetention({
@@ -441,6 +447,24 @@ const plugin:PiWebServerPlugin={
             }
             return j(created);
           }
+          case "auto.adr.latest":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            store.get(p,o,workflowId);
+            return j(adr.latest(p,o,workflowId));
+          }
+          case "auto.adr.preview":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            return j(await adr.preview(p,o,workflowId,
+              id(input.targetWorkspaceId),input.fields));
+          }
+          case "auto.adr.inspect":{
+            const input=object(ctx.input);
+            return j(adr.inspect(p,o,id(input.draftId)));
+          }
+          case "auto.adr.stage":{
+            const input=object(ctx.input);
+            return j(await adr.stage(p,o,id(input.draftId)));
+          }
           case "auto.screenshot.list":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             store.get(p,o,workflowId);
@@ -731,7 +755,7 @@ const plugin:PiWebServerPlugin={
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       for(const bridge of live.values())bridge.stop();
-      live.clear();viewers.clear();screenshots.close();retention.close();provisioner.close();integration.close();ledger.close();agents.close();store.close();
+      live.clear();viewers.clear();adr.close();screenshots.close();retention.close();provisioner.close();integration.close();ledger.close();agents.close();store.close();
     },
   };
  },
