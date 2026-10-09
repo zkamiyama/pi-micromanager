@@ -30,9 +30,9 @@ The Live Runs surface now prioritizes a **single Orchestrator dock below floatin
 
 Each Run is keyed by the immutable `workflowId + runId` identity. New nodes appear as active/pending Runs are registered; settled Runs move to History. A dashed connection indicates common orchestra ownership, while any solid Task-to-Task edge is derived exclusively from the persisted DAG and only drawn when both Tasks are represented on the current page. Nothing here implies a hidden agent communication channel.
 
-Pointer and keyboard positioning are presentational only. Clicking the canvas background fades nodes without cancelling Runs, modifying the DAG or relinquishing intervention capability. Node selection restores readability. Per-Run text drafts and receipts must remain scoped to their own Session. The Orchestrator composer is disabled unless a genuinely connected planner Session exists; no fabricated Sol transcript or auto-spawning is allowed.
+Pointer and keyboard positioning are presentational only. Browser-local layout, fade state and Run density survive refresh within the same machine/project/workspace scope, but never store chat drafts or message content. Clicking the canvas background fades nodes without cancelling Runs, modifying the DAG or relinquishing intervention capability. Node selection restores readability. Per-Run text drafts and receipts must remain scoped to their own Session. The Orchestrator composer is disabled unless a genuinely connected planner Session exists; no fabricated Sol transcript or auto-spawning is allowed.
 
-This remains a normal PI WEB workspace panel with bounded paging and scrolling. Full-viewport freeform placement would require a host-approved capability, not private DOM manipulation.
+This remains a normal PI WEB workspace panel with bounded paging, search/filter controls and scrolling. Task Lens uses public PI WEB navigation to focus a matching Run, with no cross-Task fallback. The live event stream has bounded retry/backoff and stops subscriptions when switching scopes. Full-viewport freeform placement would require a host-approved capability, not private DOM manipulation.
 
 ## Technical UI restrictions
 
