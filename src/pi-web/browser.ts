@@ -61,7 +61,10 @@ const plugin: PiWebPlugin = {
         if (!Array.isArray(result)) throw new Error("Invalid workflow list");
         state.workflows = result as WorkflowInstance[];
         const id = workflowId ?? state.selected?.definition.id ?? state.workflows[0]?.definition.id;
-        if (id) state.selected = await send(context, "get", id) as WorkflowInstance;
+        if (id) {
+          if (state.selected?.definition.id !== id) delete state.selectedTaskId;
+          state.selected = await send(context, "get", id) as WorkflowInstance;
+        }
         if (state.selectedTaskId && !state.selected?.tasks[state.selectedTaskId]) delete state.selectedTaskId;
         state.loaded = true;
         state.status = `${state.workflows.length} saved workflow(s).`;
@@ -76,6 +79,7 @@ const plugin: PiWebPlugin = {
         const created = await send(context, "create", DEMO) as WorkflowInstance;
         state.status = "Demo stored in scoped SQLite. No Pi agents have been launched.";
         state.selected = created;
+        delete state.selectedTaskId;
       } catch (error) { state.status = String(error); }
       finally { state.busy = false; if (!disposed) { context.host.requestRender(); void refresh(context, "demo-auth"); } }
     }

@@ -145,6 +145,13 @@ function dependencySatisfied(instance: WorkflowInstance, downstream: TaskState, 
     dep.gate === "qc_finalized" && upstream.lastQc !== undefined;
 }
 function releaseReady(instance: WorkflowInstance): void {
+  // Previously ready nodes must be re-blocked when a new human hold invalidates
+  // a QC dependency. Merely rejecting start() would leave a misleading Kanban card.
+  for (const t of Object.values(instance.tasks)) {
+    if (t.status === "ready" && !t.spec.dependsOn.every(d => dependencySatisfied(instance, t, d))) {
+      t.status = "blocked";
+    }
+  }
   for (const t of Object.values(instance.tasks)) {
     if (t.status !== "blocked") continue;
     if (t.spec.dependsOn.every(d => dependencySatisfied(instance, t, d))) t.status = "ready";

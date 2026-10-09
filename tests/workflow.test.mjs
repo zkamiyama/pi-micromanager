@@ -258,3 +258,21 @@ test('Failed Sol plan leaves safe hold and rejects a second conflicting interven
   expectCode(() => advance(w, { type: 'plan_intervention', interventionId: 'unknown', agents: investigators(),
     rationale: 'Wrong intervention' }), 'invalid_transition');
 });
+
+test('Previously ready QC-dependent tasks are visibly reblocked by later human hold', () => {
+  const def = definition();
+  def.tasks[1].dependsOn = [{ taskId: 'schema', gate: 'qc_finalized' }];
+  let w = newWorkflow(def, now);
+  w = advance(w, { type: 'start', taskId: 'schema' });
+  w = advance(w, finish('schema'));
+  w = advance(w, qc('schema', 1, 'fail'));
+  assert.equal(w.tasks.api.status, 'ready');
+  w = advance(w, { type: 'start', taskId: 'schema' });
+  w = advance(w, finish('schema'));
+  w = advance(w, request());
+  w = advance(w, qc('schema', 2, 'fail'));
+  assert.equal(w.tasks.api.status, 'blocked');
+  expectCode(() => advance(w, { type: 'start', taskId: 'api' }), 'not_ready');
+  w = advance(w, { type: 'cancel_amendment', amendmentId: 'human-change' });
+  assert.equal(w.tasks.api.status, 'ready');
+});
