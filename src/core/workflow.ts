@@ -422,7 +422,8 @@ export function parseDefinition(input: unknown): WorkflowDefinition {
       ...(t.acceptanceCriteria===undefined?{}:{acceptanceCriteria:t.acceptanceCriteria as string[]}) };
   });
   const def = { id: raw.id as string, title: raw.title as string, maxQcRounds: raw.maxQcRounds as number,
-    maxParallelByRole: raw.maxParallelByRole as Record<Role, number>, tasks };
+    maxParallelByRole: raw.maxParallelByRole as Record<Role, number>, tasks,
+    ...(raw.permissions===undefined?{}:{permissions:raw.permissions as WorkflowPermissions}) };
   validateDefinition(def);
   return def;
 }
