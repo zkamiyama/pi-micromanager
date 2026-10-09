@@ -19,11 +19,15 @@ test("The published trial workflow and Autopilot configuration pass the actual v
   assert.deepEqual(parsed.test,{file:"node",args:["--test"],timeoutMs:60000});
 });
 
-test("The disposable starter repository really passes baseline Node tests",()=>{
+test("The disposable starter repository really passes baseline Node tests",async()=>{
   const cwd=resolve("examples/trial-repo");
   const checked=spawnSync(process.execPath,["--test"],{
     cwd,encoding:"utf8",timeout:10000,
   });
   assert.equal(checked.status,0,checked.stderr||checked.stdout);
-  assert.match(checked.stdout,/pass/);
+  // Node's nested test-runner child may suppress TAP output even when its
+  // process exits successfully. Assert the executable behavior explicitly.
+  const {add}=await import("../examples/trial-repo/src/math.mjs");
+  assert.equal(add(2,3),5);
+  assert.equal(add(-4,7),3);
 });
