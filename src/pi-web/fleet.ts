@@ -128,13 +128,22 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
          !Array.isArray(history)||!history.every(isBinding)||!Array.isArray(workflows))
         throw new Error("Unrecognized server schema");
        s.active=active;s.history=history;s.workflows=workflows as WorkflowInstance[];
+       let selectionNotice="";
+       const explicitFocus=!!s.pendingTaskFocus;
        if(s.pendingTaskFocus){
          const target=s.pendingTaskFocus;
          const match=active.find(b=>b.workflowId===target.workflowId&&b.taskId===target.taskId&&
            b.seat===target.seat&&!!b.sessionId);
-         if(match)s.selectedSessionId=match.sessionId!;
-         else s.loadStatus="No active "+target.seat+" Run for "+target.taskId+
-           ". Use Manual one-shot launch after the Task is admitted.";
+         if(match){
+           s.selectedSessionId=match.sessionId!;
+           const order=[...active].sort((a,b)=>
+             b.createdAt.localeCompare(a.createdAt)||b.runId.localeCompare(a.runId));
+           s.canvasPage=Math.max(0,Math.floor(order.indexOf(match)/12));
+         }else{
+           s.selectedSessionId="";
+           selectionNotice="No active "+target.seat+" Run for "+target.taskId+
+             ". Use Manual one-shot launch after the Task is admitted.";
+         }
          delete s.pendingTaskFocus;
        }
        s.canvasPage=Math.min(s.canvasPage,Math.max(0,Math.ceil(active.length/12)-1));
@@ -149,10 +158,10 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       const wf=s.workflows.find(w=>w.definition.id===s.workflowId);
       if(!wf?.tasks[s.taskId])s.taskId=Object.keys(wf?.tasks??{})[0]??"";
       const all=[...active,...history];
-      if(!all.some(b=>b.sessionId===s.selectedSessionId))
+      if(!explicitFocus&&!all.some(b=>b.sessionId===s.selectedSessionId))
         s.selectedSessionId=active.find(x=>!!x.sessionId)?.sessionId??
           history.find(x=>!!x.sessionId)?.sessionId??"";
-      s.loadStatus=active.length+" active/pending execution(s), "+history.length+" completed execution(s).";
+      s.loadStatus=selectionNotice||(active.length+" active/pending execution(s), "+history.length+" completed execution(s).");
       s.loaded=true;
     }catch(error){s.loadStatus=String(error)}
     finally{s.busy=false;refresh(ctx);
