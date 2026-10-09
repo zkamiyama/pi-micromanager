@@ -79,7 +79,11 @@ function fixture(){
   }];
   const opts={path:join(data,"adr.sqlite"),
     workflows,agents,ledger,host,screenshots:{
-      list(){return screenshotReferences;},
+      list(){return screenshotReferences.map((s,i)=>({...s,id:"mock-"+i}));},
+      preview(_p,_o,_w,id){
+        if(id!=="mock-0")throw new Error("Wrong screenshot reference");
+        return {artifact:screenshotReferences[0],dataUrl:null,inlineLimit:0};
+      },
     },workspaces:()=>({version:1,async resolve({projectId,workspaceId}){
       if(projectId!=="p"||workspaceId!=="adr-review")
         throw new Error("Unknown linked project/workspace");
