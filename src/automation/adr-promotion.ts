@@ -124,10 +124,16 @@ export class AdrPromotion {
         qcRunId:qc.runId,commit:task.lastQc.headSha,evidenceRef:evidence.ref});
     }
     if(!verified.length)throw new Error("ADR source has no implementation QC evidence");
-    const screenshots=this.opt.screenshots.list(p,o,workflowId).map(s=>({
-      runId:s.runId,sourceSha:s.sourceSha,sha256:s.sha256,
-      bytes:s.bytes,relativePath:s.relativePath,
-    }));
+    // Only current QC-passed source snapshots are cited. Verify stored
+    // screenshot bytes again; a modified object may never be promoted as
+    // immutable engineering evidence.
+    const screenshots=this.opt.screenshots.list(p,o,workflowId)
+      .filter(s=>verified.some(v=>v.qcRunId===s.runId&&v.commit===s.sourceSha))
+      .map(s=>{
+        this.opt.screenshots.preview(p,o,workflowId,s.id);
+        return {runId:s.runId,sourceSha:s.sourceSha,sha256:s.sha256,
+          bytes:s.bytes,relativePath:s.relativePath};
+      });
     return {workflow,verified,screenshots,
       sourceDigest:digest([workflow.revision,verified,screenshots])};
   }
