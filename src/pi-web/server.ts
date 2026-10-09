@@ -12,7 +12,7 @@ import { WorkflowError, type WorkflowAction, type TaskState } from "../core/work
 import { AgentRegistry, type AgentBinding, type Reservation, type Seat } from "../runtime/registry.js";
 import { PiSessionBridge } from "../runtime/session-bridge.js";
 import { type RuntimeActivity, type RuntimeControl } from "../runtime/protocol.js";
-import { AutopilotLedger } from "../automation/ledger.js";
+import { AutopilotLedger, parseAutopilotConfig } from "../automation/ledger.js";
 import { AutopilotEngine } from "../automation/engine.js";
 import { createHostExecutor } from "../automation/host-port.js";
 import { classifyRecoveredRun } from "../automation/recovery.js";
@@ -246,18 +246,26 @@ const plugin:PiWebServerPlugin={
           case "auto.configure":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             const workflow=store.get(p,o,workflowId);
-            const result=ledger.save(p,o,workflowId,input.config);
+            const config=parseAutopilotConfig(input.config);
+            const current=ledger.get(p,o,workflowId);
+            if(current?.enabled)throw new Error("Pause Autopilot before changing its configuration");
+            const active=agents.list(p,o,"active").some(b=>b.workflowId===workflowId&&
+              b.requestId.startsWith("auto:"));
+            if(active)throw new Error("Cannot reconfigure while an automated Pi Run is unsealed");
             const missing=Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation"&&
-              !result.config.workspaces[t.spec.id]).map(t=>t.spec.id);
+              !config.workspaces[t.spec.id]).map(t=>t.spec.id);
             if(missing.length)throw new WorkflowError("missing_worktrees",
               "Configure an existing linked worktree per implementation Task: "+missing.join(", "));
-            return j(result);
+            return j(ledger.save(p,o,workflowId,config));
           }
           case "auto.start":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             const workflow=store.get(p,o,workflowId);
             const configured=ledger.get(p,o,workflowId);
             if(!configured)throw new WorkflowError("not_configured","Configure Autopilot first");
+            if(bootstrap)await bootstrap;
+            const fresh=ledger.get(p,o,workflowId);
+            if(fresh?.enabled)return j(fresh);
             if(!workspaces)throw new Error("PI WEB workspace authority unavailable");
             const owners=new Set<string>();
             for(const task of Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation")){
@@ -279,7 +287,6 @@ const plugin:PiWebServerPlugin={
                   throw new Error("QC requires an existing linked Worktree");
               }
             }
-            if(bootstrap)await bootstrap;
             const manual=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
               !b.requestId.startsWith("auto:")&&
               !["sealed","failed"].includes(b.phase));
@@ -398,6 +405,8 @@ const plugin:PiWebServerPlugin={
             const bridge=live.get(bridgeKey(binding));
             if(!bridge?.connected)throw new Error("Reconnect before sending a command");
             const action=input.action;
+            if(binding.requestId.startsWith("auto:")&&action==="newTurn")
+              throw new Error("Only Autopilot may admit the initial turn of its bound Pi Session");
             let cmd:RuntimeControl;
             if(action==="abort")cmd={type:"abort",requestId:id(input.requestId)};
             else{
@@ -419,6 +428,12 @@ const plugin:PiWebServerPlugin={
           case "agents.seal":{
             const input=object(ctx.input);
             const binding=registered(ctx,id(input.sessionId));
+            if(binding.requestId.startsWith("auto:")){
+              const authorized=store.wasApplied(p,o,binding.workflowId,"auto:complete:"+binding.runId);
+              const persisted=ledger.evidence(binding);
+              if(!authorized||!persisted||persisted.ref!==input.evidenceRef)
+                throw new Error("Autopilot Run sealing requires its committed workflow transition and exact evidence");
+            }
             const sealed=agents.seal(p,o,binding.sessionId!,nonempty(input.evidenceRef,512));
             notifyRun(sealed);
             const bridge=live.get(bridgeKey(binding));
