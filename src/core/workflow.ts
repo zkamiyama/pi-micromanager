@@ -88,7 +88,8 @@ export type WorkflowAction =
   | { type: "complete"; taskId: string }
   | { type: "resume_after_diagnosis"; amendmentId: string; decision: "rework" | "accept_pass" }
   | { type: "integrate"; taskId: string }
-  | { type: "prepare_final_integration" };
+  | { type: "prepare_final_integration" }
+  | { type: "final_merge_confirmed"; taskId:string; headSha:string; prUrl:string };
 
 export class WorkflowError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "WorkflowError"; }
@@ -422,6 +423,31 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       validateDefinition(instance.definition);
       message="Prepared final-integration Task for "+sources.length+
         " QC-approved source commit(s)";
+      break;
+    }
+    case "final_merge_confirmed": {
+      const final=taskById(instance,action.taskId);
+      invariant(final.spec.systemPurpose==="final-integration"&&
+        final.status==="passed"&&final.lastQc?.verdict==="pass"&&
+        final.lastQc.headSha===action.headSha,"final_not_approved",
+        "Only exact QC-passed final integration result may complete the Workflow");
+      invariant(/^https:\/\/github\.com\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/pull\/[1-9][0-9]{0,8}$/.test(action.prUrl),
+        "final_merge_proof","Final GitHub Pull Request URL required");
+      invariant(instance.amendments.every(a=>
+        a.status==="cancelled"||a.status==="completed"),
+        "finalization_held","Pending human intervention prevents finalization");
+      const sources=Object.values(instance.tasks).filter(t=>
+        t.spec.systemPurpose!=="final-integration");
+      invariant(sources.every(t=>t.spec.kind==="implementation"?
+        (["passed","integrated"].includes(t.status)&&t.lastQc?.verdict==="pass"):
+        t.status==="done"),"final_source_changed",
+        "Final merge cannot overwrite unfinished or unverified original Tasks");
+      for(const task of sources){
+        if(task.spec.kind==="implementation")task.status="integrated";
+      }
+      final.status="integrated";
+      message="GitHub confirmed merged "+action.prUrl+" at final QC Git SHA "+
+        action.headSha.slice(0,12)+"; all Task integration gates completed";
       break;
     }
     case "integrate": {
