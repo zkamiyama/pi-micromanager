@@ -33,6 +33,7 @@ interface GridState {
   listening:boolean; connecting:boolean;
   channel?:PluginPeerChannel;
   controller?:AbortController;
+  needsReload:boolean;
   canvasDimmed:boolean;
   canvasPage:number;
   plannerSessionId:string;
@@ -54,7 +55,7 @@ function stateFor(ctx:WorkspacePanelContext):GridState{
       evidenceRef:"",
       density:{planner:"expanded",implementer:"compact",qc:"expanded",architect:"expanded"},
       activity:new Map(),loadStatus:"Not connected.",busy:false,loaded:false,
-      listening:false,connecting:false,canvasDimmed:false,canvasPage:0,
+      listening:false,connecting:false,needsReload:false,canvasDimmed:false,canvasPage:0,
        plannerSessionId:"",nodePositions:new Map(),nodeDrafts:new Map(),nodeModes:new Map(),deliveryStatus:new Map()};
     states.set(k,s);
   }
@@ -86,7 +87,8 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
   }
   async function load(ctx:WorkspacePanelContext) {
     const s=stateFor(ctx);
-    if(s.busy||lifetime.aborted)return;
+    if(lifetime.aborted)return;
+    if(s.busy){s.needsReload=true;return;}
     s.busy=true;refresh(ctx);
     try{
       const [active,history,workflows]=await Promise.all([
@@ -112,7 +114,9 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       s.loadStatus=active.length+" active/pending execution(s), "+history.length+" completed execution(s).";
       s.loaded=true;
     }catch(error){s.loadStatus=String(error)}
-    finally{s.busy=false;refresh(ctx)}
+    finally{s.busy=false;refresh(ctx);
+      if(s.needsReload){s.needsReload=false;queueMicrotask(()=>{if(!lifetime.aborted)void load(ctx);});}
+    }
   }
   async function call(ctx:WorkspacePanelContext,operation:string,input:unknown){
     const s=stateFor(ctx);
@@ -139,11 +143,18 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         onData(payload) {
           if(!payload||typeof payload!=="object")return;
           const p=payload as Record<string,unknown>;
+          if(p.type==="run_changed"){
+            if(typeof p.workflowId!=="string"||typeof p.runId!=="string")return;
+            queueMicrotask(()=>{if(!lifetime.aborted)void load(ctx);});
+            return;
+          }
           if(p.type!=="agent_activity"||typeof p.sessionId!=="string")return;
           const event=validatedActivity(p.event);if(!event)return;
           const list=s.activity.get(p.sessionId)??[];
           s.activity.set(p.sessionId,[...list.slice(-15),event]);
           const b=s.active.find(x=>x.sessionId===p.sessionId);
+          if(!b&&event.kind!=="message_delta")
+            queueMicrotask(()=>{if(!lifetime.aborted)void load(ctx);});
           if(b){
             b.latestKind=event.kind;b.latestText=event.text;
             if(event.kind==="agent_started")b.phase="running";
