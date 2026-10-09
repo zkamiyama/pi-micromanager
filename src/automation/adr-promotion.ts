@@ -138,7 +138,11 @@ export class AdrPromotion {
     return {workflow,verified,screenshots,
       sourceDigest:digest([workflow.revision,verified,screenshots])};
   }
-  private async target(p:string,workspaceId:string){
+  private async target(p:string,o:string,workflowId:string,workspaceId:string){
+    if(this.opt.agents.wasWorkflowWorkspace(p,o,workflowId,workspaceId)||
+      Object.values(this.opt.ledger.get(p,o,workflowId)?.config.workspaces??{})
+        .includes(workspaceId))
+      throw new Error("ADR review target must be separate from implementation/QC Worktrees");
     const api=this.opt.workspaces();
     if(!api)throw new Error("PI WEB Workspace capability unavailable");
     const result=await api.resolve({projectId:p,workspaceId});
@@ -178,7 +182,7 @@ export class AdrPromotion {
     input:unknown):Promise<AdrDraft>{
     const fields=parseFields(input);
     const proof=this.evidence(p,o,workflowId);
-    const selected=await this.target(p,targetWorkspaceId);
+    const selected=await this.target(p,o,workflowId,targetWorkspaceId);
     const targetPath=this.filePath(selected.workspace.path,fields.filename);
     const now=new Date().toISOString();
     const source=proof.verified.map(x=>"- **"+x.task+"** (`"+x.taskId+"`): "+
@@ -244,7 +248,7 @@ export class AdrPromotion {
     if(proof.workflow.revision!==row.workflowRevision||
       proof.sourceDigest!==row.sourceDigest)
       throw new Error("ADR source evidence changed since review");
-    const current=await this.target(p,row.targetWorkspaceId);
+    const current=await this.target(p,o,row.workflowId,row.targetWorkspaceId);
     if(current.head!==row.targetHead||
       this.filePath(current.workspace.path,row.filename)!==row.target_path)
       throw new Error("ADR Git target changed since review");
