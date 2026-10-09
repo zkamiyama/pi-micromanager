@@ -4,7 +4,11 @@ import type {
   WorkspacePanelContribution, PluginPeerChannel,
 } from "@jmfederico/pi-web/plugin-api";
 import type { AgentBinding, Seat } from "../runtime/registry.js";
-import type { WorkflowInstance, TaskState } from "../core/workflow.js";
+import type { WorkflowInstance } from "../core/workflow.js";
+import {
+  buildCanvasGraph, runKey, NODE_WIDTH, NODE_HEIGHT,
+  type CanvasPosition, type CanvasDependency,
+} from "./canvas-layout.js";
 
 type Html = PluginActivationContext["html"];
 type LiveBinding = AgentBinding & { connected?: boolean };
@@ -29,6 +33,13 @@ interface GridState {
   listening:boolean; connecting:boolean;
   channel?:PluginPeerChannel;
   controller?:AbortController;
+  canvasDimmed:boolean;
+  canvasPage:number;
+  plannerSessionId:string;
+  nodePositions:Map<string,CanvasPosition>;
+  nodeDrafts:Map<string,string>;
+  nodeModes:Map<string,Mode>;
+  drag?:{key:string;pointerId:number;startX:number;startY:number;origin:CanvasPosition};
 }
 const states=new Map<string,GridState>();
 const scope=(ctx:WorkspacePanelContext)=>
@@ -42,7 +53,8 @@ function stateFor(ctx:WorkspacePanelContext):GridState{
       message:"",mode:"steer",evidenceRef:"",
       density:{planner:"expanded",implementer:"compact",qc:"expanded",architect:"expanded"},
       activity:new Map(),loadStatus:"Not connected.",busy:false,loaded:false,
-      listening:false,connecting:false};
+      listening:false,connecting:false,canvasDimmed:false,canvasPage:0,
+       plannerSessionId:"",nodePositions:new Map(),nodeDrafts:new Map(),nodeModes:new Map()};
     states.set(k,s);
   }
   return s;
@@ -53,6 +65,7 @@ function isBinding(value:unknown):value is LiveBinding {
   if(!value||typeof value!=="object")return false;
   const b=value as Record<string,unknown>;
   return typeof b.runId==="string"&&typeof b.taskId==="string"&&typeof b.seat==="string"&&
+    typeof b.workflowId==="string"&&roles.includes(b.seat as Seat)&&
     typeof b.phase==="string"&&(typeof b.sessionId==="string"||b.sessionId===null);
 }
 function validatedActivity(value:unknown):Activity|undefined{
@@ -80,7 +93,12 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       if(!Array.isArray(active)||!active.every(isBinding)||
          !Array.isArray(history)||!history.every(isBinding)||!Array.isArray(workflows))
         throw new Error("Unrecognized server schema");
-      s.active=active;s.history=history;s.workflows=workflows as WorkflowInstance[];
+       s.active=active;s.history=history;s.workflows=workflows as WorkflowInstance[];
+       s.canvasPage=Math.min(s.canvasPage,Math.max(0,Math.ceil(active.length/12)-1));
+       const activeKeys=new Set(active.map(b=>runKey(b.workflowId,b.runId)));
+       for(const key of s.nodePositions.keys())if(!activeKeys.has(key))s.nodePositions.delete(key);
+       for(const key of s.nodeDrafts.keys())if(!activeKeys.has(key))s.nodeDrafts.delete(key);
+       for(const key of s.nodeModes.keys())if(!activeKeys.has(key))s.nodeModes.delete(key);
       if(!s.workflows.some(w=>w.definition.id===s.workflowId))
         s.workflowId=s.workflows[0]?.definition.id??"";
       const wf=s.workflows.find(w=>w.definition.id===s.workflowId);
@@ -148,9 +166,80 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     finally{s.connecting=false;refresh(ctx)}
   }
   lifetime.addEventListener("abort",()=>{
-    for(const s of states.values()){s.controller?.abort();s.channel?.close();s.activity.clear();}
+    for(const s of states.values()){s.controller?.abort();s.channel?.close();s.activity.clear();
+      s.nodePositions.clear();s.nodeDrafts.clear();s.nodeModes.clear();}
     states.clear();
   },{once:true});
+
+
+  const isCommandReady=(b:LiveBinding):boolean=>
+    !!b.sessionId&&b.connected===true&&(b.phase==="configured"||b.phase==="running");
+  const modeFor=(s:GridState,b:LiveBinding):Mode=>
+    b.phase==="configured"?"newTurn":s.nodeModes.get(runKey(b.workflowId,b.runId))==="followUp"?"followUp":"steer";
+  function focus(ctx:WorkspacePanelContext,b:LiveBinding){
+    const s=stateFor(ctx);
+    s.selectedSessionId=b.sessionId??"";
+    s.canvasDimmed=false;
+    refresh(ctx);
+  }
+  async function sendNode(ctx:WorkspacePanelContext,b:LiveBinding){
+    const s=stateFor(ctx),key=runKey(b.workflowId,b.runId);
+    const message=s.nodeDrafts.get(key)?.trim();
+    if(!message||!isCommandReady(b)||s.busy||lifetime.aborted)return;
+    const action=modeFor(s,b);
+    s.busy=true;refresh(ctx);
+    try {
+      const receipt=await api(ctx,"agents.command",{
+        sessionId:b.sessionId,action,requestId:crypto.randomUUID(),text:message,
+      }) as {status?:string;message?:string};
+      if(receipt?.status==="ok"){
+        // Acknowledged only. Do not treat acknowledgement as proof the Agent finished.
+        s.nodeDrafts.delete(key);
+        s.loadStatus="Command acknowledged by "+b.runId+".";
+      }else{
+        // Keep the draft and never automatically retry an uncertain delivery.
+        s.loadStatus="Command to "+b.runId+" "+(receipt?.status??"unknown")+
+          ": "+(receipt?.message??"Check session state before retrying.");
+      }
+    }catch(error){s.loadStatus="Command to "+b.runId+" failed: "+String(error);}
+    finally{s.busy=false;refresh(ctx);void load(ctx);}
+  }
+  function startDrag(ctx:WorkspacePanelContext,key:string,origin:CanvasPosition,event:PointerEvent){
+    if(event.button!==0)return;
+    const s=stateFor(ctx);
+    s.drag={key,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,origin};
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    event.preventDefault();
+    s.canvasDimmed=false;refresh(ctx);
+  }
+  function moveDrag(ctx:WorkspacePanelContext,event:PointerEvent){
+    const s=stateFor(ctx),drag=s.drag;
+    if(!drag||drag.pointerId!==event.pointerId)return;
+    s.nodePositions.set(drag.key,{
+      x:drag.origin.x+event.clientX-drag.startX,
+      y:drag.origin.y+event.clientY-drag.startY,
+    });
+    refresh(ctx);
+  }
+  function endDrag(ctx:WorkspacePanelContext,event:PointerEvent){
+    const s=stateFor(ctx);
+    if(s.drag?.pointerId!==event.pointerId)return;
+    const target=event.currentTarget as HTMLElement;
+    if(target.hasPointerCapture(event.pointerId))target.releasePointerCapture(event.pointerId);
+    delete s.drag;refresh(ctx);
+  }
+  function nudge(ctx:WorkspacePanelContext,key:string,pos:CanvasPosition,event:KeyboardEvent){
+    const amount=event.shiftKey?32:12;
+    const delta:Record<string,CanvasPosition>={
+      ArrowLeft:{x:-amount,y:0},ArrowRight:{x:amount,y:0},
+      ArrowUp:{x:0,y:-amount},ArrowDown:{x:0,y:amount},
+    };
+    const move=delta[event.key];if(!move)return;
+    event.preventDefault();
+    const s=stateFor(ctx);
+    s.nodePositions.set(key,{x:pos.x+move.x,y:pos.y+move.y});
+    s.canvasDimmed=false;refresh(ctx);
+  }
 
   function render(ctx:WorkspacePanelContext){
     const s=stateFor(ctx);
