@@ -72,8 +72,11 @@ to launch while its checkout lacks the passing ancestor.
   mean the source has been merged to `main`, auto-merged on GitHub,
   deployed, or accepted by a human code reviewer.
 - Terminal Tasks with **no dependent implementation Tasks** remain
-  `passed`, not automatically `integrated`; their eventual branch
-  integration/review remains an independent policy decision.
+  `passed` under this fast-forward-only operation. ADR-0013 optionally
+  creates a separate final integration Pi Run after the whole DAG settles,
+  with independent final QC and a GitHub `MERGED` receipt before marking
+  every Task integrated. Without that configuration, terminal branch review
+  remains separate.
 - Fan-out from one source to multiple clean branches is supported.
   Multiple divergent ancestors of one child may need a human-guided
   merge/rebase; the first safely fast-forwarded parent is retained,
