@@ -1,11 +1,10 @@
 /** Durable DAG-to-Pi dispatcher. No unverified model prose advances a Task. */
-import { randomUUID } from "node:crypto";
 import { WorkflowError, type WorkflowInstance, type WorkflowAction, type TaskState } from "../core/workflow.js";
 import { WorkflowStore } from "../core/store.js";
 import { AgentRegistry, type AgentBinding, type Seat } from "../runtime/registry.js";
 import { AutopilotLedger, type AutopilotConfig, type ModelProfile, type AutopilotRecord } from "./ledger.js";
 
-export type JobKind="implementation"|"qc"|"diagnosis"|"synthesis";
+export type JobKind="implementation"|"qc"|"diagnosis"|"synthesis"|"planning";
 export interface LaunchJob {
   projectId:string; orchestraWorkspaceId:string;workflowId:string;taskId:string;
   runId:string;workspaceId:string;seat:Seat;kind:JobKind;model:ModelProfile;prompt:string;
@@ -130,6 +129,53 @@ export class AutopilotEngine {
       this.port.onTransition?.(sealed);
       return;
     }
+    // Resolve the planner's typed proposal, even when the human QC hold was
+    // armed before the QC completed.
+    for(const amendment of current.amendments.filter(a=>a.status==="planning")){
+      const planRunId="plan-"+amendment.id;
+      const existing=known.find(b=>b.runId===planRunId);
+      if(existing){
+        if(!existing.requestId.startsWith("auto:"))
+          throw new Error("Human-owned planning Run cannot be automatically adopted");
+        if(existing.phase==="settled"){
+          const report=this.ledger.report(existing);
+          if(!report||report.kind!=="plan")
+            throw new Error("Sol settled without a structured intervention plan");
+          for(const agent of report.agents){
+            const role=agent.role==="architect"?"architect":"qc";
+            const configured=record.config.models[role];
+            if(agent.model!==configured.provider+"/"+configured.model)
+              throw new Error("Sol proposed an unconfigured diagnosis model: "+agent.model);
+          }
+          const action:WorkflowAction={type:"plan_intervention",interventionId:amendment.id,
+            agents:report.agents,rationale:report.summary};
+          const evidence=this.ledger.sealEvidence(existing,"plan",JSON.stringify(report).slice(0,3500));
+          this.act(record,current,action,"auto:complete:"+existing.runId);
+          const sealed=this.agents.seal(p,o,existing.sessionId!,evidence.ref);
+          this.port.onTransition?.(sealed);
+          return;
+        }
+        if(["uncertain","blocked","failed","reserved","created","connected","configured"].includes(existing.phase))
+          throw new Error("Sol planning needs Run reconciliation: "+existing.phase);
+        continue;
+      }
+      const target=current.tasks[amendment.targetTaskId];
+      if(!target)throw new Error("Orphan planning amendment");
+      const roles=record.config.models;
+      const prompt=boundedPrompt(
+        "You are Sol, planning a human-requested Task-scoped QC investigation. READ ONLY. "+
+        "Workflow "+current.definition.title+"; target Task "+target.spec.id+" ("+target.spec.title+"). "+
+        "Human instruction: "+(amendment.instruction??"")+". "+
+        "Propose 1..4 independent investigators and call mm_plan_intervention once. "+
+        "Use ONLY these exact models: architect="+roles.architect.provider+"/"+roles.architect.model+
+        ", reviewer="+roles.qc.provider+"/"+roles.qc.model+". "+
+        "Your report is checked by the deterministic Workflow engine. "+
+        "Do not change Tasks, edit code, merge, or resume a held Task.");
+      await this.port.launch({projectId:p,orchestraWorkspaceId:o,workflowId,
+        taskId:amendment.targetTaskId,runId:planRunId,seat:"planner",kind:"planning",
+        workspaceId:o,model:roles.planner,prompt});
+      return;
+    }
     // Finalize only *settled* Sessions with independently captured evidence.
     for(const binding of known.filter(b=>b.phase==="settled"&&b.requestId.startsWith("auto:"))){
       const task=current.tasks[binding.taskId];
@@ -170,7 +216,13 @@ export class AutopilotEngine {
         .map(b=>this.ledger.report(b)?.summary).filter((s):s is string=>!!s);
       await this.port.launch({projectId:p,orchestraWorkspaceId:o,workflowId,
         taskId:next.taskId,runId:next.runId,seat:next.seat,kind:next.kind,workspaceId,
-        model:record.config.models[next.seat],prompt:buildJobPrompt(current,task,next.kind,sources),
+        model:task.spec.model?(()=>{
+          const raw=task.spec.model!;
+          const cut=raw.indexOf("/");
+          return cut>0?{...record.config.models[next.seat],provider:raw.slice(0,cut),
+            model:raw.slice(cut+1)}:{...record.config.models[next.seat],model:raw};
+        })():record.config.models[next.seat],
+        prompt:buildJobPrompt(current,task,next.kind,sources),
         ...(next.kind==="qc"&&task.pendingWork?{headSha:task.pendingWork.headSha}:{})});
       return;
     }
