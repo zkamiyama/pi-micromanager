@@ -232,10 +232,17 @@ const plugin:PiWebServerPlugin={
           case "get":return j(store.get(p,o,id(ctx.input)));
           case "create":return j(store.create(p,o,ctx.input));
           case "act":{
-            const input=object(ctx.input);
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            const action=object(input.action) as unknown as WorkflowAction;
+            const running=ledger.get(p,o,workflowId)?.enabled===true;
+            if(running&&!["request_intervention","cancel_amendment","resume_after_diagnosis"].includes(action.type))
+              throw new WorkflowError("autopilot_owns_transition",
+                "Autopilot owns automatic Task/QC transitions; pause before using simulation controls");
             if(!Number.isSafeInteger(input.expectedRevision))throw new WorkflowError("invalid_revision","Expected revision required");
-            return j(store.act(p,o,id(input.workflowId),input.expectedRevision as number,
-              id(input.commandId),object(input.action) as unknown as WorkflowAction));
+            const next=store.act(p,o,workflowId,input.expectedRevision as number,
+              id(input.commandId),action);
+            if(running)scheduleAutopilot(p,o,workflowId);
+            return j(next);
           }
 
           case "auto.status":{
