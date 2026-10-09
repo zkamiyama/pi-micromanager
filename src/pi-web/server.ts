@@ -622,8 +622,14 @@ const plugin:PiWebServerPlugin={
             return j({profile,goals:quick.list(p,o)});
           }
           case "auto.quick.start":{
-            const input=object(ctx.input);
-            const goal=quick.begin(p,o,input.goal,id(input.requestId));
+            const input=object(ctx.input),requestId=id(input.requestId);
+            // Retrying the exact accepted request is idempotent; starting a
+            // different DAG while the same workspace runs another Autopilot
+            // would race source Git/remote publication and is not allowed.
+            if(!quick.find(p,o,requestId)&&ledger.list().some(record=>
+              record.projectId===p&&record.orchestraWorkspaceId===o&&record.enabled))
+              throw new Error("Another Autopilot is running in this project Workspace; pause or complete it first");
+            const goal=quick.begin(p,o,input.goal,requestId);
             scheduleQuick(goal);
             return j(goal);
           }
