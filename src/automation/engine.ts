@@ -113,21 +113,37 @@ export function planNext(workflow:WorkflowInstance,agents:readonly AgentBinding[
 }
 export class AutopilotEngine {
   private readonly busy=new Set<string>();
+  private readonly flights=new Set<Promise<void>>();
+  private stopping=false;
   constructor(private readonly workflow:WorkflowStore,private readonly agents:AgentRegistry,
     private readonly ledger:AutopilotLedger,private readonly port:ExecutorPort){}
   private key(record:AutopilotRecord):string {
     return JSON.stringify([record.projectId,record.orchestraWorkspaceId,record.workflowId]);
   }
+  /** Stop admitting new ticks and wait before callers close the backing SQLite stores. */
+  async stop():Promise<void>{
+    this.stopping=true;
+    await Promise.allSettled([...this.flights]);
+  }
   /** Tick is re-entrant safe in one server plugin lifetime; durable run IDs protect restarts. */
-  async tick(record:AutopilotRecord):Promise<void>{
+  tick(record:AutopilotRecord):Promise<void>{
+    if(this.stopping)return Promise.resolve();
+    const flight=this.runTick(record);
+    this.flights.add(flight);
+    void flight.finally(()=>this.flights.delete(flight)).catch(()=>{});
+    return flight;
+  }
+  private async runTick(record:AutopilotRecord):Promise<void>{
     const key=this.key(record);
     if(this.busy.has(key)||!record.enabled)return;
     this.busy.add(key);
     try {
       const enabled=this.ledger.get(record.projectId,record.orchestraWorkspaceId,record.workflowId);
       if(!enabled?.enabled)return;
+      if(this.stopping)return;
       await this.step(enabled);
     }catch(error){
+      if(this.stopping)return;
       if(error instanceof WorkflowError&&error.code==="revision_conflict")return;
       this.ledger.setStatus(record.projectId,record.orchestraWorkspaceId,record.workflowId,
         false,"Paused safely: "+String(error).slice(0,900));
@@ -138,6 +154,7 @@ export class AutopilotEngine {
       current.revision,commandId,action);
   }
   private async step(record:AutopilotRecord):Promise<void>{
+    if(this.stopping)return;
     const p=record.projectId,o=record.orchestraWorkspaceId,workflowId=record.workflowId;
     const current=this.workflow.get(p,o,workflowId);
     const known=this.agents.list(p,o,"all").filter(a=>a.workflowId===workflowId);
@@ -173,6 +190,7 @@ export class AutopilotEngine {
           }
           const action:WorkflowAction={type:"plan_intervention",interventionId:amendment.id,
             agents:report.agents,rationale:report.summary};
+          if(this.stopping)return;
           const evidence=this.ledger.sealEvidence(existing,"plan",JSON.stringify(report).slice(0,3500));
           this.act(record,current,action,"auto:complete:"+existing.runId);
           const sealed=this.agents.seal(p,o,existing.sessionId!,evidence.ref);
@@ -195,6 +213,7 @@ export class AutopilotEngine {
         ", reviewer="+roles.qc.provider+"/"+roles.qc.model+". "+
         "Your report is checked by the deterministic Workflow engine. "+
         "Do not change Tasks, edit code, merge, or resume a held Task.");
+      if(this.stopping)return;
       await this.port.launch({projectId:p,orchestraWorkspaceId:o,workflowId,
         taskId:amendment.targetTaskId,runId:planRunId,seat:"planner",kind:"planning",
         workspaceId:o,model:roles.planner,prompt});
@@ -225,6 +244,7 @@ export class AutopilotEngine {
       if(["uncertain","blocked","failed","reserved","created","connected","configured"].includes(binding.phase))
         throw new Error("Run "+binding.runId+" needs reconciliation ("+binding.phase+"); no duplicate Session will start");
     }
+    if(this.stopping)return;
     const next=planNext(current,known,record.config);
     if(next?.action==="start"){
       this.act(record,current,{type:"start",taskId:next.taskId},
@@ -254,6 +274,7 @@ export class AutopilotEngine {
           return source?.spec.kind==="implementation"&&source.lastQc?.verdict==="pass"?
             [source.lastQc.headSha]:[];
         }):[];
+      if(this.stopping)return;
       await this.port.launch({projectId:p,orchestraWorkspaceId:o,workflowId,
         taskId:next.taskId,runId:next.runId,seat:next.seat,kind:next.kind,workspaceId,
         ...(requiredAncestors.length?{requiredAncestors}:{}),
@@ -347,6 +368,7 @@ export class AutopilotEngine {
       action={type:"complete",taskId:task.spec.id};
       details=kind+" report: "+report!.summary;
     }
+    if(this.stopping)return; // Do not commit a transition during plugin shutdown.
     const evidence=this.ledger.sealEvidence(binding,kind,details.slice(0,3500));
     this.act(record,current,action,"auto:complete:"+binding.runId);
     // Seal the settled Pi Run only AFTER authoritative workflow/evidence persist.
