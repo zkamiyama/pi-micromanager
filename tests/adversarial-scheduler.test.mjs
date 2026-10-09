@@ -226,6 +226,16 @@ test("32 independent DAG branches saturate 8 implementation and 4 QC seats, desp
  assert.equal(result.peakQc,4);
 });
 
+test("64 independent source Tasks saturate every available worker/QC slot under 128-role ceilings",async()=>{
+ const result=await execute(640128,64,{
+   implementer:128,reviewer:128,architect:2,planner:1,
+ });
+ assert.equal(result.peakImpl,64,
+   "No arbitrary lower concurrency cap may prevent all 64 independent Tasks");
+ assert.equal(result.peakQc,64,
+   "All 64 independent QCs may run when the reviewer quota is sufficiently high");
+});
+
 test("Reproducible stress: eight seeded interleavings, isolated Worktrees and bounded fresh QC retries",async()=>{
  for(let seed=1;seed<=8;seed++)
    await execute(seed*7919,16,{implementer:4,reviewer:2,architect:2,planner:1});
