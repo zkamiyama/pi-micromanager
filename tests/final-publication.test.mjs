@@ -139,9 +139,9 @@ test("Final QC only publishes final SHA then readies the Draft PR and requests G
    assert.equal(x.pr.isDraft,true);
    assert.equal(await x.tick(),"acted");assert.equal(x.readyCount,1);
    assert.equal(x.pr.isDraft,false);
-   assert.equal(await x.tick(),"waiting");assert.equal(x.mergeCount,1);
+   assert.equal(await x.tick(),"scheduled");assert.equal(x.mergeCount,1);
    assert.ok(x.pr.autoMergeRequest);
-   assert.equal(await x.tick(),"waiting");
+   assert.equal(await x.tick(),"scheduled");
    assert.equal(x.mergeCount,1,"Never repeat a scheduled GitHub merge");
    assert.ok(x.publisher.list("p","o","all-done")
      .some(r=>r.action==="github.pr.merge"&&r.state==="scheduled"));
@@ -173,7 +173,7 @@ test("Merge ask holds the Draft PR and never calls gh pr ready until exact final
    x.approvals.decide("p","o",request.id,"approved");
    assert.equal(await x.tick(),"acted");
    assert.equal(x.readyCount,1);
-   assert.equal(await x.tick(),"waiting");
+   assert.equal(await x.tick(),"scheduled");
    assert.equal(x.mergeCount,1);
  }finally{x.close();}
 });
@@ -196,7 +196,7 @@ test("Lost gh merge reply can recover only from a verified GitHub autoMergeReque
    await assert.rejects(x.tick(),/Lost GitHub merge response/);
    assert.equal(x.mergeCount,1);
    x.reopen();
-   assert.equal(await x.tick(),"waiting");
+   assert.equal(await x.tick(),"scheduled");
    assert.equal(x.mergeCount,1,"Do not duplicate ambiguous GitHub merge");
    x.markMerged();
    assert.equal(await x.tick(),"acted");
