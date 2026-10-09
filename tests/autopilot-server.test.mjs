@@ -21,12 +21,12 @@ const config = {
   test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
 };
 
-function fakePluginHost() {
-  const dir = mkdtempSync(join(tmpdir(),"pi-mm-server-"));
+function fakePluginHost(shared) {
+  const dir = shared?.dir??mkdtempSync(join(tmpdir(),"pi-mm-server-"));
   const lifetime = new AbortController();
-  const sessions = new Map();
+  const sessions = shared?.sessions??new Map();
   const calls = [];
-  let serial = 0;
+  let serial = sessions.size;
   const workspace = id => ({
     id,projectId:"project",path:id==="orchestra"?"/repo":"/repo/api",
     isMain:id==="orchestra",
@@ -151,13 +151,13 @@ function fakePluginHost() {
       operation,input,signal:new AbortController().signal,
     });
   };
-  const cleanup=async()=>{
+  const cleanup=async(preserve=false)=>{
     lifetime.abort();
     const resolved=await backend;
     await resolved.dispose(new AbortController().signal);
-    rmSync(dir,{recursive:true,force:true});
+    if(!preserve)rmSync(dir,{recursive:true,force:true});
   };
-  return {activate,request,cleanup,sessions,calls};
+  return {activate,request,cleanup,sessions,calls,shared:{dir,sessions}};
 }
 async function eventually(callback,timeout=6500){
   const started=Date.now();
@@ -273,4 +273,44 @@ test("A mismatched replayed QC report pauses Autopilot instead of accepting fabr
     assert.equal((await host.request("get","wf")).tasks.api.status,"awaiting_qc");
     assert.equal(host.sessions.size,2,"No duplicate Run after unsafe report replay");
   }finally{await host.cleanup();}
+});
+
+test("Plugin restart recovers the same settled Pi Session and resumes QC without duplicate dispatch",async()=>{
+  const before=fakePluginHost();
+  let after;
+  try{
+    await before.activate();
+    await before.request("create",definition);
+    await before.request("auto.configure",{workflowId:"wf",config});
+    await before.request("auto.start",{workflowId:"wf"});
+    const impl=await eventually(()=>[...before.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.kind==="implementation")&&
+      s.commands.some(c=>c.type==="message")));
+    assert.equal(impl.id,"pi-session-1");
+    // Shutdown while a Pi turn is still running. Its hosted session remains
+    // alive and settles while this server plugin is completely inactive.
+    await before.cleanup(true);
+    impl.finish();
+    after=fakePluginHost(before.shared);
+    await after.activate();
+    await eventually(async()=>{
+      const wf=await after.request("get","wf");
+      return wf.tasks.api.status==="awaiting_qc";
+    });
+    assert.equal(after.sessions.get("pi-session-1"),impl,
+      "Recover the existing hosted Pi Session instead of spawning a duplicate");
+    const qc=await eventually(()=>[...after.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.kind==="qc")&&
+      s.commands.some(c=>c.type==="message")));
+    assert.equal(qc.id,"pi-session-2");
+    qc.finish({kind:"qc",runId:"qc-api-1",verdict:"pass",
+      summary:"Independent QC completed",at:Date.now()});
+    await eventually(async()=>((await after.request("get","wf")).tasks.api.status==="passed"));
+    assert.equal(after.sessions.size,2);
+    assert.equal((await after.request("auto.status",{workflowId:"wf"})).enabled,false,
+      "All Tasks are stable and worktree integration stays explicit");
+  }finally{
+    if(after)await after.cleanup();
+    else await before.cleanup();
+  }
 });
