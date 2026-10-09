@@ -54,7 +54,9 @@ function stateFor(context: WorkspacePanelContext): State {
       workflowDraft:JSON.stringify({
         id:"custom-feature",title:"Custom development workflow",maxQcRounds:5,
         maxParallelByRole:{planner:1,implementer:2,reviewer:2,architect:2},
-        tasks:[{id:"feature",title:"Implement the requested feature",
+        tasks:[{id:"feature",title:"REPLACE: specific development Task",
+          description:"REPLACE: state the exact repository change required",
+          acceptanceCriteria:["REPLACE: define an independently testable acceptance condition"],
           kind:"implementation",role:"implementer",dependsOn:[]}],
       },null,2),
       interventionMode: "workflow",
