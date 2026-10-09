@@ -22,7 +22,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **Runtime adapter implemented experimentally (not authenticated E2E-verified):** Public PI WEB session creation in an existing resolved workspace, Pi companion model/effort handshake, direct steer/abort, bounded activity streams, immutable per-Run registry and Orchestra Live Runs/History.
 
-**New opt-in Autopilot (PR #7):** A real Sol goal-proposal Session can first turn a natural-language objective into a strictly validated DAG for **explicit human approval**. After approval and Worktree/model configuration, the server-side scheduler runs **validated, saved** DAGs in fresh Pi Sessions. It admits ready implementation Tasks, checks Git commits and real test exit codes, starts independent read-only QC, honors QC retry budgets and human holds, dispatches Sol's typed intervention plan and parallel frozen-snapshot diagnosis/synthesis, and persists bounded evidence receipts. An unknown/aborted Run **pauses safely**; server restart reconciles existing Sessions from durable Pi turn markers before resuming. Automatic Git merge/push is prohibited.
+**New opt-in Autopilot (PR #7):** A real Sol goal-proposal Session can first turn a natural-language objective into a strictly validated DAG for **explicit human approval**. After approval and Worktree/model configuration, the server-side scheduler runs **validated, saved** DAGs in fresh Pi Sessions. It admits ready implementation Tasks, checks Git commits and real test exit codes, starts independent read-only QC, honors QC retry budgets and human holds, dispatches Sol's typed intervention plan and parallel frozen-snapshot diagnosis/synthesis, and persists bounded evidence receipts. An unknown/aborted Run **pauses safely**; server restart reconciles existing Sessions from durable Pi turn markers before resuming. Automatic Git merge is prohibited; new Workflows with an explicit `publication` destination can autonomously push QC-sealed commits and create Draft PRs under the Workflow permission policy.
 
 **Evidence Journal & confirmed retention (PR #7):** The Journal tab can read a finite, evidence-linked projection of Task status, QC SHA/verdict, one-shot Pi Runs and durable evidence references. The operator may preview and confirm pruning public activity projections over 30 days old **only when** their Runs are sealed and entire Workflows are complete; no native Pi JSONL, QC evidence, command receipt, Workflow state or Git Worktree is removed. Test outputs are retained as bounded exit/size/SHA-256 fingerprints rather than potentially sensitive stdout/stderr.
 
@@ -30,7 +30,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. The planner window represents a real Session only when Sol is actually running.
 
-**Still not implemented/verified:** Automatic discovery/registration of newly created Worktrees as PI WEB Workspace IDs, unattended goal → execution without explicit DAG approval/Workspace setup, independent provider-authenticated multi-Agent E2E, automatic browser screenshot capture and broader artifact types, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, Git merge/push and approved PR publication, ADR Git commit/PR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
+**Still not implemented/verified:** Automatic discovery/registration of newly created Worktrees as PI WEB Workspace IDs, unattended goal → execution without explicit DAG approval/Workspace setup, independent provider-authenticated multi-Agent E2E, automatic browser screenshot capture and broader artifact types, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, Git merge and protected-branch operations, ADR Git commit/PR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
 
 ## Architecture and ADRs
 
@@ -44,6 +44,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - [ADR-0008 — Managed Worktree provisioning and verified Git integration](docs/adr/0008-git-worktree-provisioning-and-integration.md)
 - [ADR-0009 — Evidence-linked Journal and conservative activity retention](docs/adr/0009-journal-and-conservative-retention.md)
 - [ADR-0010 — Immutable QC screenshots and reviewed ADR staging](docs/adr/0010-screenshot-artifacts-and-reviewed-adr-staging.md)
+- [ADR-0011 — YOLO Workflow permissions and QC-gated Draft PR publication](docs/adr/0011-yolo-workflow-permissions-and-publication.md)
 
 ## Development
 
@@ -73,8 +74,8 @@ cannot launch a modifying Agent.
 
 1. In PI WEB, create/verify **separate linked Git worktrees**, or use **Micromanager → Manage isolated Git Worktree → Preview → Create** to create a task-owned branch/linked Git Worktree after explicit review. Select the new workspace in PI WEB and copy its **actual PI WEB Workspace ID** into Autopilot configuration. A modifying Task must not use the project's main checkout.
 2. Under **Micromanager → Ask Sol to plan a new goal**, enter a precise natural-language goal and exact authenticated Pi planner provider/model. Check the real Pi Session proposal, inspect its DAG and choose **Approve and save exact proposal**. Alternatively import a reviewed JSON DAG through **Import a real Workflow DAG**. In either case, give each Task a concrete `description` and `acceptanceCriteria` lines. Implementation and QC Runs receive **the same** contract. Verify Task IDs, dependency gates and requested changes before starting.
-3. Under **Autopilot → configuration (JSON)**, map every implementation Task ID to an existing linked Worktree workspace ID; configure **all four** exact Pi provider/model profiles and a bounded executable test argv. Save configuration, then explicitly **Start Autopilot**.
-4. Watch actual one-shot Pi Runs in the **Orchestra** tab. The scheduler makes fresh Sessions for implementation/QC/rework, but it never auto-merges. Use **Pause admission** to stop *new* work; current running Pi turns continue unless directly interrupted.
+3. Under **Autopilot → configuration (JSON)**, map every implementation Task ID to an existing linked Worktree workspace ID; configure **all four** exact Pi provider/model profiles and a bounded executable test argv. For YOLO publication, verify `publication.remote` and `publication.baseBranch` and make sure `gh` and Git authentication are available on the host. Legacy configs without `publication` never push. Save configuration, then explicitly **Start Autopilot**.
+4. Watch actual one-shot Pi Runs in the **Orchestra** tab. The scheduler makes fresh Sessions for implementation/QC/rework and can publish QC-passed Draft PRs, but it never auto-merges. Use **Pause admission** to stop *new* work; current running Pi turns continue unless directly interrupted.
 5. For a human QC intervention, use **Task Lens** to register the after-next-QC barrier. Sol produces a typed plan, the investigations and synthesis run read-only, and a **human explicit resume** remains required.
 
 Example configuration (replace IDs and all provider/model values with your real installed PI WEB/Pi settings):
@@ -105,6 +106,71 @@ QC-passed commit. If not, it pauses so you can explicitly integrate upstream
 changes; it never auto-cherry-picks, merges, or silently skips dependencies.
 
 The scheduler runs in the PI WEB server-plugin lifetime (not as a separate operating-system service). It restores active Run identity on restart from persisted companion turn entries where possible. If a settled Pi Session's typed QC/plan report notification is lost, the host reconnects to **that same Session read-only** to recover the durable report; wrong-Run reports and unknown turn states cause a safe pause, not a retry. Uncertain command delivery remains blocked until reconciled. Public-host-capability mock integration tests cover actual Session launch, bounded host tests, QC transitions, typed Sol proposal approval and lost report replay. Host shutdown now drains in-flight scheduler verification and fences new Pi Session sends when its lifetime ends, before closing SQLite. Authenticated real-provider/GUI E2E is still deferred. See [ADR-0007](docs/adr/0007-opt-in-autopilot.md) for recovery and trust boundaries.
+
+## YOLO default and Workflow permission gates
+
+**YOLO is the default**: after you explicitly start an automated Workflow,
+Pi implementation Runs may edit, test and commit code, and Micromanager's
+host-side publisher can Push the QC-passed commit and create a **Draft**
+GitHub Pull Request automatically. The built-in review/QC gates still apply.
+
+The optional `permissions` section belongs in the **Workflow definition**
+(imported DAG JSON), not in a model chat prompt:
+
+```json
+{
+  "permissions": {
+    "default": "allow",
+    "actions": {
+      "git.commit": "allow",
+      "git.push": "ask",
+      "github.pr.create": "allow",
+      "github.pr.merge": "ask",
+      "deploy.production": "ask"
+    }
+  }
+}
+```
+
+`allow` runs without human interaction, `ask` creates a durable approval
+request, and `deny` prevents the corresponding **host-managed operation**.
+`git.commit: ask` holds admission before the modifying Pi Session begins,
+bound to the exact Task attempt and Workflow revision. `git.push` and
+`github.pr.create` approvals bind the exact sealed QC Run, Git SHA and
+publication remote/base. Open **Autopilot → Load publication & approvals**
+to inspect and approve or deny these specific requests. Changing a commit,
+target or source revision cannot reuse a previous approval.
+
+`github.pr.merge` and `deploy.production` are policy names reserved for
+future host executors and default to `ask`—**no automatic merge or
+deployment executor exists**. Publication is enabled only if the separately
+saved Autopilot configuration contains:
+
+```json
+"publication": {
+  "remote": "origin",
+  "baseBranch": "main",
+  "draft": true
+}
+```
+
+The UI prepopulates this for new configurations. Verify the actual base
+branch before saving. Historical configs without this field remain local
+only, avoiding surprising outward effects. The host invokes `git` and
+`gh` as bounded argv processes, verifies QC SHA and repository ownership,
+and uses no-force Push and Draft PR creation. Lost responses are reconciled
+against Git remote SHA / GitHub PR state, not blindly retried.
+
+**Security limitation:** Pi's `tool_call` hook blocks common direct shell
+publish commands, but an arbitrary model-controlled shell can bypass
+text-pattern guards via scripts or network clients. The permission model
+enforces **Micromanager's own executor**, not a universal OS capability
+boundary. Do not expose write-enabled GitHub/deployment credentials to
+untrusted Pi processes when a real denial guarantee is required. Use an
+isolated Pi OS/container identity and narrowly scoped host-side credentials.
+PI WEB's current public Session API has no supported per-Run sandbox
+configuration, so this integration cannot itself promise host enforcement.
+See [ADR-0011](docs/adr/0011-yolo-workflow-permissions-and-publication.md).
 
 ## Managed Worktrees and Git integration proof
 
@@ -216,7 +282,7 @@ No fake Agents, automatic dispatch, synthesized chats, or permanent Session reus
 ## Boundaries and safety
 
 - The control plane controls *workflow admission*, not the model's hidden reasoning; observable text and tools only.
-- No implicit Git merge/push, provider credential storage or destructive Workspace cleanup. Code changes occur **only** through explicitly started Pi implementation Runs in validated, isolated Worktrees.
+- No automatic Git merge, provider credential storage or destructive Workspace cleanup. Git Push/Draft PR are only enabled with an explicit publication target and Workflow permission gates. Code changes occur **only** through explicitly started Pi implementation Runs in validated, isolated Worktrees.
 - All real modifying agents must be in isolated worktrees before concurrent execution is permitted.
 - Native Pi transcripts stay with their owning host; Micromanager stores bounded public activity projections and immutable evidence references instead of copying raw JSONL. ADR promotion into target repos is not yet implemented.
 - TTS/Swarmfield is a later, deliberately low-priority experiment.
