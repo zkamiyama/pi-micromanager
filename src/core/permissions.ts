@@ -12,7 +12,9 @@ export function permissionDecision(permissions:WorkflowPermissions|undefined,
   action:PermissionAction):PermissionDecision {
   const specified=permissions?.actions?.[action];
   if(specified)return specified;
-  if(action==="github.pr.merge"||action==="deploy.production")
+  // A fully QC-gated finalization pipeline can merge in YOLO mode.
+  // Production deployment remains an independent, human-first capability.
+  if(action==="deploy.production")
     return permissions?.default==="deny"?"deny":"ask";
   return permissions?.default??"allow";
 }
