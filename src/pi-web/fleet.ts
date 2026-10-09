@@ -117,7 +117,17 @@ function validatedActivity(value:unknown):Activity|undefined{
 }
 export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePanelContribution {
   let activeScope="";
+  let streamFrame:number|undefined;
   function refresh(ctx:WorkspacePanelContext){ctx.host.requestRender();}
+  function streamRefresh(ctx:WorkspacePanelContext):void {
+    const s=stateFor(ctx);
+    if(lifetime.aborted||s.drag||activeScope!==scope(ctx)||streamFrame!==undefined)return;
+    if(typeof requestAnimationFrame!=="function"){refresh(ctx);return;}
+    streamFrame=requestAnimationFrame(()=>{
+      streamFrame=undefined;
+      if(!lifetime.aborted&&!s.drag&&activeScope===scope(ctx))refresh(ctx);
+    });
+  }
   function stopObserving(s:GridState):void {
     if(s.retryTimer){clearTimeout(s.retryTimer);delete s.retryTimer;}
     s.controller?.abort();s.channel?.close();
@@ -141,7 +151,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
   async function load(ctx:WorkspacePanelContext) {
     const s=stateFor(ctx);
     if(lifetime.aborted)return;
-    if(s.busy){s.needsReload=true;return;}
+    if(s.busy||s.drag){s.needsReload=true;return;}
     s.busy=true;refresh(ctx);
     try{
       const [active,history,workflows]=await Promise.all([
@@ -243,7 +253,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
               queueMicrotask(()=>{if(!lifetime.aborted)void load(ctx);});
             }
           }
-          refresh(ctx);
+          streamRefresh(ctx);
         },
       });
       if(ctl.signal.aborted||lifetime.aborted){channel.close();return}
@@ -264,6 +274,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     }finally{s.connecting=false;refresh(ctx)}
   }
   lifetime.addEventListener("abort",()=>{
+    if(streamFrame!==undefined&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(streamFrame);
     for(const s of states.values()){stopObserving(s);s.activity.clear();
       s.nodePositions.clear();s.nodeDensity.clear();s.nodeDrafts.clear();s.nodeModes.clear();s.deliveryStatus.clear();
       s.historyLoaded.clear();s.historyLoading.clear();}
@@ -400,7 +411,8 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     if(target.hasPointerCapture(event.pointerId))target.releasePointerCapture(event.pointerId);
     delete s.drag;
     persistCanvas(ctx,s);
-    refresh(ctx);
+    if(s.needsReload){s.needsReload=false;void load(ctx);}
+    else refresh(ctx);
   }
   function nudge(ctx:WorkspacePanelContext,key:string,pos:CanvasPosition,rootY:number,event:KeyboardEvent){
     const amount=event.shiftKey?32:12;
