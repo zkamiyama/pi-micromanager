@@ -1,4 +1,4 @@
-/** PI WEB workspace panel. v0.1 is a control-state simulator, not yet a Pi runtime. */
+/** PI WEB workspace panel: distinct simulation preview and real, opt-in Pi Autopilot. */
 import { createLiveRunPanel, selectOrchestraTask } from "./fleet.js";
 import type { PiWebPlugin, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { WorkflowAction, WorkflowDefinition, WorkflowInstance, TaskState, Role } from "../core/workflow.js";
@@ -295,10 +295,29 @@ const plugin: PiWebPlugin = {
       }catch(error){state.quickError="Setup not saved: "+String(error).slice(0,300);}
       finally{state.busy=false;context.host.requestRender();}
     }
+    function newQuickRequestId():string{
+      // PI WEB may be served over a trusted LAN origin where randomUUID()
+      // is unavailable. getRandomValues also works on non-secure origins.
+      if(!globalThis.crypto?.getRandomValues)
+        throw new Error("Browser cryptographic randomness is unavailable");
+      const bytes=new Uint8Array(16);
+      globalThis.crypto.getRandomValues(bytes);
+      bytes[6]=(bytes[6]!&0x0f)|0x40;
+      bytes[8]=(bytes[8]!&0x3f)|0x80;
+      const hex=Array.from(bytes,x=>x.toString(16).padStart(2,"0")).join("");
+      return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),
+        hex.slice(16,20),hex.slice(20)].join("-");
+    }
     async function startQuick(context:WorkspacePanelContext){
       const state=stateFor(context);
       if(state.busy||!state.quickProfile||!state.quickGoalText.trim())return;
-      const requestId=state.quickRequestId??crypto.randomUUID();
+      let requestId:string;
+      try{requestId=state.quickRequestId??newQuickRequestId();}
+      catch(error){
+        state.quickError="Cannot authorize a run: "+String(error);
+        context.host.requestRender();
+        return;
+      }
       state.quickRequestId=requestId;
       state.busy=true;state.quickError="Submitting Plan & run…";
       context.host.requestRender();
