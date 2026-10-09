@@ -54,7 +54,7 @@ test("one run request cannot duplicate a Session; new attempt needs distinct run
 
 test("two concurrent implementers cannot share a worktree; independent worktrees can",()=>fixture(db=>{
  db.reserve(reservation());
- assert.throws(()=>db.reserve(reservation("impl-other-1","implementer","wt-1","req-other")),/unsealed/);
+ assert.throws(()=>db.reserve(reservation("impl-other-1","implementer","wt-1","req-other")),/leased/);
  db.reserve(reservation("impl-other-1","implementer","wt-2","req-other"));
  assert.equal(db.list("project","orchestra-main","active").length,2);
 }));
@@ -74,4 +74,20 @@ test("streaming token deltas never create unlimited event history",()=>fixture(d
  db.record(binding,{kind:"message_delta",text:"public progress",sequence:100,at:1700000010000});
  assert.equal(db.activities("project","orchestra-main","session-1").length,60);
  assert.equal(db.get("project","orchestra-main","session-1").latestText,"public progress");
+}));
+
+test("QC snapshot leases prevent writers until QC evidence is sealed",()=>fixture(db=>{
+ const qc=reservation("qc-api-1","qc","linked-wt","review-1");
+ db.reserve(qc);db.assign(qc,"qc-session");
+ const impl=reservation("impl-api-2","implementer","linked-wt","write-2");
+ assert.throws(()=>db.reserve(impl),/leased/);
+ db.record(db.get("project","orchestra-main","qc-session"),event("agent_settled",3));
+ assert.throws(()=>db.reserve(impl),/leased/);
+ db.seal("project","orchestra-main","qc-session","sha256:verified-review");
+ assert.equal(db.reserve(impl).phase,"reserved");
+}));
+test("A QC Run cannot begin before its active writer relinquishes the worktree",()=>fixture(db=>{
+ const impl=reservation("impl-a-1","implementer","linked-wt","write-1");
+ db.reserve(impl);
+ assert.throws(()=>db.reserve(reservation("qc-a-1","qc","linked-wt","review-1")) ,/leased/);
 }));
