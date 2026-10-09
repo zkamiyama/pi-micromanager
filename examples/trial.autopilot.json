@@ -1,0 +1,25 @@
+{
+  "managedWorktrees": true,
+  "workspaces": {},
+  "finalization": {
+    "workspaceId": "auto",
+    "autoMerge": true
+  },
+  "publication": {
+    "remote": "origin",
+    "baseBranch": "main",
+    "draft": true
+  },
+  "models": {
+    "implementer": {"provider": "REPLACE_WITH_PI_PROVIDER", "model": "REPLACE_WITH_PI_MODEL"},
+    "qc": {"provider": "REPLACE_WITH_PI_PROVIDER", "model": "REPLACE_WITH_PI_MODEL"},
+    "planner": {"provider": "REPLACE_WITH_PI_PROVIDER", "model": "REPLACE_WITH_PI_MODEL"},
+    "architect": {"provider": "REPLACE_WITH_PI_PROVIDER", "model": "REPLACE_WITH_PI_MODEL"}
+  },
+  "test": {
+    "file": "npm",
+    "args": ["test"],
+    "timeoutMs": 60000
+  },
+  "maxAttempts": 3
+}
