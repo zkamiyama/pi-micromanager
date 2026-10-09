@@ -170,6 +170,27 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       if(expectedSha!==undefined&&before.sha!==expectedSha)
         throw new Error("QC SHA mismatch; refuse to finalize verdict");
       if(!before.clean)throw new Error("Uncommitted files in inspected worktree");
+      const workflow=workflows.get(binding.projectId,
+        binding.orchestraWorkspaceId,binding.workflowId);
+      const task=workflow.tasks[binding.taskId];
+      if(task?.spec.systemPurpose==="final-integration"){
+        if(!config.finalization||binding.workspaceId!==config.finalization.workspaceId)
+          throw new Error("Final QC must run in the configured integration Worktree");
+        for(const source of Object.values(workflow.tasks)){
+          if(source.spec.kind!=="implementation"||
+            source.spec.systemPurpose==="final-integration")continue;
+          if(!["passed","integrated"].includes(source.status)||
+            source.lastQc?.verdict!=="pass")
+            throw new Error("Final QC source Task is no longer passed");
+          try{
+            await gitRead(w.path,["merge-base","--is-ancestor",
+              source.lastQc.headSha,"HEAD"]);
+          }catch{
+            throw new Error("Final integration is missing QC-approved source commit "+
+              source.spec.id+" "+source.lastQc.headSha.slice(0,12));
+          }
+        }
+      }
       const result=await host.execFile({
         file:config.test.file,args:config.test.args,cwd:w.path,
         timeoutMs:config.test.timeoutMs,signal:host.lifetimeSignal,
