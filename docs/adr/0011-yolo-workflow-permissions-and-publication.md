@@ -19,7 +19,7 @@ Autopilot Workflow. A Workflow may optionally define a durable policy:
       "git.integrate": "allow",
       "git.push": "ask",
       "github.pr.create": "allow",
-      "github.pr.merge": "ask",
+      "github.pr.merge": "allow",
       "deploy.production": "ask"
     }
   }
@@ -27,10 +27,12 @@ Autopilot Workflow. A Workflow may optionally define a durable policy:
 ```
 
 Every action accepts `allow`, `ask` or `deny`. Unknown actions and
-decisions are rejected, not silently accepted. Merge and production
-deployment are **reserved** action names, defaulting to `ask`, but there
-are currently **no Micromanager execution paths** for them. An
-`allow` setting cannot create capabilities the host does not implement.
+decisions are rejected, not silently accepted. `github.pr.merge`
+defaults to `allow` (YOLO), **but it is only executable** when the operator
+also configured the separate finalization Worktree and `autoMerge=true`,
+and the final implementation/QC chain is fully sealed (ADR-0013).
+`deploy.production` remains a human-first reserved action with no
+execution path.
 
 Existing saved Workflows with no `permissions` field remain compatible.
 New Workflows are YOLO for implementation and hosted Draft PR publication
@@ -68,10 +70,13 @@ The GitHub CLI `gh` must already be installed and authenticated in the
 host environment; credentials are never stored in Micromanager's SQLite
 configuration. GitHub CLI listings independently check that an existing
 PR belongs to the exact head SHA, head branch, repository, base branch and
-is open. A PR created by the tool must still be Draft. **No GitHub PR merge,
-auto-merge, conflict-resolving Git merge, release, PR ready conversion,
-push of a protected branch or
-destructive Worktree cleanup** is implemented.
+is open. A PR created by the tool starts as Draft. ADR-0013 adds a
+separate finalization-only `pr ready` → `pr merge --auto --merge`
+operation after full-DAG final QC, respecting branch protection and
+required checks. The regular Task-per-PR path remains Draft-only.
+No GitHub admin bypass, arbitrary conflict-resolving host Git merge,
+release, protected-branch force push or destructive Worktree cleanup
+is implemented.
 
 ## `ask` is a durable approval, not a blocking model popup
 
@@ -123,8 +128,11 @@ unconditionally. Only after every dependent checkout contains the source
 commit does the DAG's `integrated` gate open.
 
 This is a real but limited Git Worktree fast-forward, **not** a GitHub PR
-merge, main branch merge, auto conflict resolver or code review. Terminal
-Tasks still need a separate integration/review decision. See
+merge, main branch merge, auto conflict resolver or code review. Terminal Tasks become part of a separately verified final integration
+Pi Run when ADR-0013 `finalization` is configured; after its own
+independent QC and a GitHub `MERGED` receipt, the entire DAG closes
+atomically. Without finalization, terminal Tasks still require
+a separate integration/review decision. See
 [ADR-0012](0012-safe-automatic-git-convergence.md).
 
 ## Security boundary of Pi `tool_call`
