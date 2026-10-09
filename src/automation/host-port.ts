@@ -26,6 +26,7 @@ export interface HostPortOptions {
   getWorkspaces():PiWebHostWorkspacesV1|undefined;
   probe(binding:AgentBinding):Promise<{bridge:PiSessionBridge;status:string}>;
   validateRun(task:TaskState,seat:Seat):string;
+  replaySettledReport(binding:AgentBinding):Promise<void>;
   notify(binding:AgentBinding):void;
 }
 export function createHostExecutor(options:HostPortOptions):ExecutorPort {
@@ -61,6 +62,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
     return w;
   }
   return {
+    recoverReport:options.replaySettledReport,
     async launch(job:LaunchJob){
       const sessions=options.getSessions();
       if(!sessions)throw new Error("Pi sessions capability unavailable");
