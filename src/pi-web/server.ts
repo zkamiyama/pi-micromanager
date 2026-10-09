@@ -429,6 +429,10 @@ const plugin:PiWebServerPlugin={
             }
             return j(created);
           }
+          case "auto.worktree.status":{
+            const input=object(ctx.input);
+            return j(provisioner.find(p,o,id(input.workflowId),id(input.taskId)));
+          }
           case "auto.worktree.preview":{
             const input=object(ctx.input),workflowId=id(input.workflowId),taskId=id(input.taskId);
             if(!workspaces)throw new Error("PI WEB workspace authority missing");
