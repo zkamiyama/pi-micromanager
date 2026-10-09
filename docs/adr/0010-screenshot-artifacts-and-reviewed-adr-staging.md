@@ -26,6 +26,8 @@ The host checks:
   Worktree; the Worktree has no unsealed competing Run;
 - Git's root is the resolved Workspace, the checkout is clean, and its exact
   HEAD equals the QC-reviewed SHA;
+- the file is present as a **tracked blob in that exact commit**, and the
+  on-disk Git blob hash matches it; ignored or untracked files are rejected;
 - the file is a real regular file within the `screenshots/` directory,
   without a symlink leaf or path traversal;
 - the file is an identified PNG/JPEG with size at most **1 MiB** (PNG
@@ -68,7 +70,8 @@ A read-only ADR preview:
   chosen `docs/adr/0000-slug.md` path and a 10-minute expiry.
 
 The target must be a **separate, linked, non-main Git Worktree** on a
-non-protected review branch with no unsealed Pi Run. Files may not overwrite
+non-protected review branch with no unsealed Pi Run. It must not be any
+current or historical Worktree used by this Workflow's Pi workers. Files may not overwrite
 existing content or escape the checkout through symlinks. The preview
 contains the exact proposed Markdown, labeled *Proposed*, not *Accepted*.
 
