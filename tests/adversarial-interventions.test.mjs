@@ -55,10 +55,14 @@ test("96 permutations of QC verdict, plan ordering, timing and decision preserve
         const id="case-"+String(++permutations).padStart(3,"0");
         const sha=createHash("sha1").update(id).digest("hex");
         let w=newWorkflow(def("fuzz-"+id),at);
+        if(phase!=="ready")w=doAction(w,{type:"start",taskId:"root"});
+        if(phase==="awaiting_qc")w=doAction(w,finish("root",sha));
+        // Reserve the human intervention at the requested actual stage:
+        // ready vs running implementation vs awaiting independent QC.
+        assert.equal(w.tasks.root.status,phase);
         w=doAction(w,{type:"request_intervention",interventionId:id,
           targetTaskId:"root",afterQcRunId:"next",
           instruction:"Compare independent safety and compatibility diagnoses"});
-        if(phase!=="ready")w=doAction(w,{type:"start",taskId:"root"});
         if(independent){
           w=doAction(w,{type:"start",taskId:"unrelated"});
           w=doAction(w,finish("unrelated",sha));
@@ -67,7 +71,7 @@ test("96 permutations of QC verdict, plan ordering, timing and decision preserve
         }else assert.equal(w.tasks.unrelated.status,"ready");
         if(planOrder==="early")w=doAction(w,plan(id));
         if(phase==="ready")w=doAction(w,{type:"start",taskId:"root"});
-        w=doAction(w,finish("root",sha));
+        if(phase!=="awaiting_qc")w=doAction(w,finish("root",sha));
         assert.equal(w.tasks.child.status,"blocked");
         if(phase==="awaiting_qc")assert.equal(w.tasks.root.status,"awaiting_qc");
         w=doAction(w,qc("root",sha,verdict));
