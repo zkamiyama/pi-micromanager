@@ -27,6 +27,9 @@ interface State {
   selectedTaskId?: string;
   interventionMode: InterventionMode;
   interventionDraft: string;
+  autopilotDraft: string;
+  autopilotStatus: string;
+  autopilotEnabled: boolean;
 }
 const roleNames: Role[] = ["planner", "implementer", "reviewer", "architect"];
 const states = new Map<string, State>();
@@ -37,6 +40,14 @@ function stateFor(context: WorkspacePanelContext): State {
   if (!state) {
     state = { workflows: [], status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
       detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
+      autopilotDraft:JSON.stringify({
+        workspaces:{},
+        models:{
+          implementer:{provider:"",model:""},qc:{provider:"",model:""},
+          planner:{provider:"",model:""},architect:{provider:"",model:""},
+        },test:{file:"npm",args:["test"],timeoutMs:60000},maxAttempts:5,
+      },null,2),
+      autopilotStatus:"Not configured",autopilotEnabled:false,
       interventionMode: "workflow",
       interventionDraft: "After the next QC, ask Astra and Claude Opus to independently investigate the root cause and alternatives; let Sol synthesize before Luna resumes." };
     states.set(key, state);
@@ -65,6 +76,12 @@ const plugin: PiWebPlugin = {
         if (id) {
           if (state.selected?.definition.id !== id) delete state.selectedTaskId;
           state.selected = await send(context, "get", id) as WorkflowInstance;
+          try{
+            const auto=await send(context,"auto.status",{workflowId:id}) as
+              {enabled:boolean;status:string;config:unknown}|null;
+            state.autopilotEnabled=auto?.enabled??false;
+            state.autopilotStatus=auto?.status??"Not configured";
+          }catch(error){state.autopilotStatus="Autopilot unavailable: "+String(error);}
         }
         if (state.selectedTaskId && !state.selected?.tasks[state.selectedTaskId]) delete state.selectedTaskId;
         state.loaded = true;
@@ -99,6 +116,19 @@ const plugin: PiWebPlugin = {
       finally { state.busy = false; if (!disposed) context.host.requestRender(); }
     }
 
+
+    async function autopilotCommand(context:WorkspacePanelContext,operation:"configure"|"start"|"pause"){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(!workflowId||state.busy)return;
+      state.busy=true;state.autopilotStatus="Processing "+operation+"…";context.host.requestRender();
+      try{
+        const result=await send(context,"auto."+operation,{
+          workflowId,...(operation==="configure"?{config:JSON.parse(state.autopilotDraft)}:{}),
+        }) as {enabled:boolean;status:string};
+        state.autopilotEnabled=result.enabled;state.autopilotStatus=result.status;
+      }catch(error){state.autopilotStatus=String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
     function selectTask(context: WorkspacePanelContext, taskId: string) {
       const state = stateFor(context);
       state.selectedTaskId = taskId;
