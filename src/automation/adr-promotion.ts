@@ -107,7 +107,8 @@ export class AdrPromotion {
       t.status!=="done"&&t.status!=="integrated")||
       workflow.amendments.some(a=>a.status!=="cancelled"&&a.status!=="completed"))
       throw new Error("ADR promotion requires a completely resolved Workflow");
-    const verified=[];
+    const verified:Array<{taskId:string;task:string;qcRunId:string;
+      commit:string;evidenceRef:string}>=[];
     for(const task of Object.values(workflow.tasks)){
       if(task.spec.kind!=="implementation")continue;
       if(task.status!=="integrated"||task.lastQc?.verdict!=="pass")
