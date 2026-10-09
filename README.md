@@ -15,11 +15,12 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - Pure deterministic, cycle-checked DAG engine with `completed`, `qc_passed`, `integrated`, and `qc_finalized` dependency gates.
 - Per-role concurrency validation, implementation attempts, QC verdicts bound to the matching commit SHA / criteria revision / attempt, and a configurable QC budget.
 - A one-shot human barrier that pauses the next post-QC action, inserts independent parallel diagnosis tasks, waits for synthesis, and requires an explicit resume decision.
+- **Task-scoped intervention requests:** reserve a durable QC barrier immediately, even while Sol is still planning; accept a typed Sol plan before or after QC, and reject downstream work until the hold is resolved.
 - SQLite-backed workspace-scoped workflow state, revision compare-and-swap, durable command-idempotency receipts, bounded event history.
-- **PI WEB Browser API v4 / Server API v3 plugin** with a **simulation-only** four-view panel: Cockpit, DAG, Kanban, Journal. The demo never launches an agent; all visible actions are explicitly labeled simulation.
+- **PI WEB Browser API v4 / Server API v3 plugin** with a **simulation-only** four-view panel: Cockpit, DAG, Kanban, Journal. The demo never launches an agent; all visible actions are explicitly labeled simulation. A Task Lens is accessible from Cockpit, DAG and Kanban. It persists a selected-Task intervention and shows a simulated Sol plan; native direct-agent steer is deliberately disabled.
 - Native `node:test` coverage for state-machine safety and persistence.
 
-**NOT YET implemented:** actual Pi/PI WEB agent execution, model/effort handshake, parallel worktrees, live transcript aggregation, direct native steer, photographic evidence, automatic storage cleanup, ADR publication, Android-specific UX, or TTS. The simulator is intentionally honest rather than faking agent status.
+**NOT YET implemented:** actual Pi/PI WEB agent execution, **real Sol planner dispatch**, model/effort handshake, parallel worktrees, live transcript aggregation, direct native steer, photographic evidence, automatic storage cleanup, ADR publication, Android-specific UX, or TTS. The simulator is intentionally honest rather than faking agent status.
 
 ## Architecture and ADRs
 
@@ -27,6 +28,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - [ADR-0002 — Deterministic DAG, QC barriers, and Workflow Amendments](docs/adr/0002-deterministic-dag-and-live-interventions.md)
 - [ADR-0003 — Evidence, Live Journal, retention, knowledge promotion](docs/adr/0003-evidence-journal-retention-and-knowledge.md)
 - [ADR-0004 — Cockpit, provider adapters, implementation order](docs/adr/0004-cockpit-provider-adapters-and-delivery-order.md)
+- [ADR-0005 — Task-scoped interventions and Sol planner boundary](docs/adr/0005-task-scoped-interventions.md)
 
 ## Development
 

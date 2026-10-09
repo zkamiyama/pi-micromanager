@@ -84,3 +84,7 @@ Not yet implemented: actual Pi dispatch, lease expiry/recovery, evidence snapsho
 - Sol-owned YAML overwrite: races with daemon state transitions.
 - Hardcoded endless loop in the agent: difficult to interrupt and audit.
 - Automatically restarting whenever QC fails: ignores human intervention and can consume the entire retry budget unnecessarily.
+
+## 2026-10-09 addendum — planning-stage Task Lens
+
+[ADR-0005](0005-task-scoped-interventions.md) adds a task-scoped `request_intervention` command and `planning` amendment state. The engine **reserves the barrier before calling Sol**; Sol supplies a later typed `plan_intervention`. QC may finalize first and remain held, or Sol may prepare the plan before the selected QC finishes. Direct Luna/QC steer does not route through Sol, but the live transport remains unimplemented in the v0.1 simulation.
