@@ -68,8 +68,10 @@ the existing authoritative `WorkflowAction.integrate` via durable CAS and an
 idempotent command receipt. The proof row recovers safely after a crash
 between the Workflow transaction and updating its own confirmed status.
 
-The action is **strictly observational**: Micromanager never runs Git merge,
-cherry-pick, reset, push, branch removal, or deletes any Worktree. The operator
+This **integration-verification action** is strictly observational: it never
+runs Git merge, cherry-pick, reset, push, branch removal, or deletes a Worktree.
+ADR-0011 introduces a **separate, explicit** post-QC host publishing path
+(`git.push` and Draft PR creation) subject to Workflow permissions. The operator
 performs real Git integration with their own review policy first. A dependent
 Task's implementation Run independently checks upstream Git ancestry in
 its own worktree before launching, so an `integrated` DAG gate alone does not
@@ -80,8 +82,9 @@ falsely imply that other worktrees contain the code.
 - Worktree **creation** now has an explicit supported workflow, but it is not
   fully automatic provisioning into PI WEB's workspace registry. The actual
   PI WEB Workspace ID is still supplied by the operator.
-- No cleanup, automatic Git merge, conflict resolution, review PR creation or
-  push is performed by this slice.
+- No cleanup, automatic Git merge or conflict resolution is performed by
+  the integration verifier. ADR-0011 handles optional, exact-QC automated
+  Git Push and Draft PR creation separately, not as an integration verdict.
 - The source/session/evidence and target ancestry checks are automated, but
   do not prove all product-level acceptance criteria. Provider-authenticated
   Git host E2E and security review must precede production operation.
