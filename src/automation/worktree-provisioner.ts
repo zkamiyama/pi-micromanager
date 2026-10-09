@@ -74,6 +74,14 @@ export class ManagedWorktreeProvisioner {
         UNIQUE(scope,workflow_id,task_id));`);
   }
   close():void{this.db.close();}
+  /** Restore the exact persisted plan after browser/server restart. Read-only. */
+  find(projectId:string,orchestraWorkspaceId:string,workflowId:string,taskId:string):WorktreePlan|null{
+    if(!safeId(workflowId)||!safeId(taskId))throw new Error("Invalid Workflow/Task ID");
+    const row=this.db.prepare("SELECT "+FIELDS+
+      " FROM worktree_plans WHERE scope=? AND workflow_id=? AND task_id=?")
+      .get(automationScope(projectId,orchestraWorkspaceId),workflowId,taskId) as PlanRow|undefined;
+    return row??null;
+  }
   private load(id:string):PlanRow {
     if(!/^[a-f0-9-]{36}$/.test(id))throw new Error("Invalid Worktree plan identity");
     const row=this.db.prepare("SELECT "+FIELDS+" FROM worktree_plans WHERE id=?")
