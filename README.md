@@ -30,7 +30,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. The planner window represents a real Session only when Sol is actually running.
 
-**Still not implemented/verified:** A stable public server-plugin Workspace list/ID API (managed IDs are host-verified against the currently pinned PI WEB Git provider), unattended goal → execution without explicit DAG approval/model/test setup, independent provider-authenticated multi-Agent E2E, automatic browser screenshot capture and broader artifact types, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, general unattended dependency conflict reconciliation and policy-bypassing protected-branch operations, ADR Git commit/PR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
+**Still not implemented/verified:** A stable public server-plugin Workspace list/ID API (managed IDs are host-verified against the PI WEB v1.202610.1 Git provider), unattended goal → execution without explicit DAG approval/model/test setup, independent provider-authenticated multi-Agent E2E, automatic browser screenshot capture and broader artifact types, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, general unattended dependency conflict reconciliation and policy-bypassing protected-branch operations, ADR Git commit/PR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
 
 ## Architecture and ADRs
 
@@ -294,7 +294,7 @@ uncertain, use **Inspect reserved Worktree**; never issue another blind create.
 PI WEB's Git provider discovers linked Worktrees on demand without any
 registration step. For manual configuration, copy the Workspace ID from PI WEB.
 With `managedWorktrees: true`, Autopilot creates missing Worktrees on explicit
-Start, calculates candidate IDs according to the pinned PI WEB Git provider,
+Start, calculates candidate IDs according to the PI WEB v1.202610.1 Git provider,
 and **validates each candidate via PI WEB's public `workspaces.resolve`**
 before saving the mapping. The browser HTTP route
 `GET /api/projects/:projectId/workspaces` also lists current Worktrees,

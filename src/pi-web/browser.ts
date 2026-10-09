@@ -851,7 +851,7 @@ const plugin: PiWebPlugin = {
                   gate the GitHub auto-merge.</p>
                 <button ?disabled=${state.busy||state.autopilotEnabled}
                   @click=${()=>insertAutoManagedWorktrees(context)}>
-                  Auto-provision DAG Worktrees + final integration (opt in)</button>
+                  Auto-provision DAG Worktrees + final GitHub auto-merge (opt in)</button>
                 <label>Final integration Workspace ID
                   <input .value=${state.finalWorktreeWorkspaceId}
                     ?disabled=${state.busy||state.autopilotEnabled}

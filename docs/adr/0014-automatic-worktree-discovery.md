@@ -3,7 +3,7 @@
 - Status: Implemented experimentally; mocked PI WEB and real/disposable Git tests; authenticated real-host E2E pending
 - Date: 2026-10-09
 - Extends/supersedes: ADR-0008 manual-ID requirement and ADR-0013 configured-final-Worktree requirement
-- PI WEB reference version: `@jmfederico/pi-web` `^1.202610.1` (implementation inspected at `v1.202610.1`)
+- PI WEB reference version: `@jmfederico/pi-web` `^1.202610.1` (implementation inspected at `v1.202610.1`; caret permits later compatible releases, so the ID derivation is checked at runtime)
 
 ## Corrected fact: PI WEB does not register Worktrees
 
@@ -17,7 +17,7 @@ creates a valid checkout for an already registered Git project. Browser
 Workspace lists may refresh only on tab focus; this is not a limit on the
 host's fresh Workspace authority resolver.
 
-Primary PI WEB sources (version pinned):
+Primary PI WEB sources (version explicitly inspected):
 
 - [FAQ: discovery and refresh](https://github.com/jmfederico/pi-web/blob/v1.202610.1/docs/faq.html)
 - [Bundled Git Workspace provider: worktree list and key=path](https://github.com/jmfederico/pi-web/blob/v1.202610.1/pi-web-plugins/git/server-plugin.ts)
@@ -84,7 +84,7 @@ The current PI WEB Git provider uses the absolute linked Worktree path
 as its `ProviderWorkspace.key`. PI WEB's registry computes
 `sha1(projectId + ":" + providerKey).slice(0,12)` for its Workspace
 ID. This **is an implementation detail, not a documented public ABI**.
-To enable unattended server-plugin setup against the pinned host version:
+To enable unattended server-plugin setup against the inspected host version:
 
 1. Use host-mediated argv-only `git worktree add --no-track -b`; reserve
    the exact scope/branch/base SHA/destination in SQLite *before* mutation.
@@ -142,6 +142,6 @@ sandboxing/credential isolation remains a separate security boundary.
   pending until exact `MERGED`.
 - `tests/worktree-provisioner.test.mjs`: real/Mock Git reservation,
   worktree path/ref/HEAD checks and no duplicate mutation.
-- Keep the PI WEB pinned version and derivation checks under review;
+- Keep the inspected PI WEB version and derivation checks under review;
   if server-plugin `workspaces.list` is published, remove the hash
   dependency and match current host-listed `Workspace.path` directly.
