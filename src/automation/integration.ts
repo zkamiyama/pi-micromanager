@@ -83,10 +83,8 @@ export class IntegrationVerifier {
     // validation of an integration performed by the operator outside MAMC).
     if(target.provider?.metadata?.isGitWorktree!==true)
       throw new Error("Target must be an existing PI WEB Git workspace");
-    const active=this.options.agents.list(projectId,orchestraWorkspaceId,"active")
-      .some(b=>b.workspaceId===targetWorkspaceId&&
-        !["sealed","failed"].includes(b.phase));
-    if(active)throw new Error("Target has an active or unsealed Pi Run");
+    if(this.options.agents.hasUnsealedWorkspace(projectId,targetWorkspaceId))
+      throw new Error("Target has an active or unsealed Pi Run");
     const head=await requireCleanGit(this.options.host,target.path);
     if(expectedHead&&head!==expectedHead)
       throw new Error("Target Worktree HEAD moved since the preview; request a new preview");
