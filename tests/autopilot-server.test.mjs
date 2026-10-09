@@ -133,7 +133,9 @@ function fakePluginHost(shared,options={}) {
           return result(args[1]+"\n");
         if(command==="rev-parse HEAD")
           return result(args[1]==="/repo/consumer"?convergence.head+"\n":
-            (args[1]==="/repo/final"||isManagedFinal(args[1]))?finalization.head+"\n":
+            args[1]==="/repo/final"?finalization.head+"\n":
+            isManagedFinal(args[1])?(finalization.settled?finalization.head:
+              createdWorktrees.get(args[1]).sha)+"\n":
             args[1]==="/repo/integrated"?"c".repeat(40)+"\n":SHA+"\n");
         if(command==="status --porcelain")
           return result("");
