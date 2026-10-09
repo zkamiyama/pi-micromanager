@@ -16,7 +16,7 @@ const receiptEntry = "pi-micromanager:receipt";
 const claimEntry = "pi-micromanager:claim";
 const jobEntry = "pi-micromanager:job:v1";
 const reportEntry = "pi-micromanager:report:v1";
-const safeReadTools=new Set(["read","grep","find","ls","mm_qc_report","mm_task_report"]);
+const safeReadTools=new Set(["read","grep","find","ls","mm_qc_report","mm_task_report","mm_plan_intervention"]);
 function digest(control: RuntimeControl): string {
   return createHash("sha256").update(JSON.stringify(control)).digest("hex");
 }
@@ -140,6 +140,33 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
       recorded=report;
       pi.events.emit(REPORT_CHANNEL,report);
       return {content:[{type:"text" as const,text:"Task result recorded for the Orchestrator."}],
+        details:report};
+    },
+  });
+
+  pi.registerTool({
+    name:"mm_plan_intervention",label:"Submit Sol investigation plan",
+    description:"Propose 1..4 independent investigators for this human-requested QC intervention. "+
+      "Models must be exact provider/model choices given by the Orchestrator. "+
+      "The deterministic Workflow engine validates the plan; no Task changes are made by this tool.",
+    parameters:Type.Object({
+      summary:Type.String({minLength:1,maxLength:2000}),
+      agents:Type.Array(Type.Object({
+        id:Type.String({minLength:1,maxLength:32}),
+        title:Type.String({minLength:1,maxLength:200}),
+        role:Type.Union([Type.Literal("architect"),Type.Literal("reviewer")]),
+        model:Type.String({minLength:1,maxLength:160}),
+      }),{minItems:1,maxItems:4}),
+    }),
+    async execute(_toolId,params){
+      if(!job||job.kind!=="planning")throw new Error("Not bound to a Sol planning Run");
+      if(recorded)throw new Error("A plan was already submitted");
+      const report:RunReport={kind:"plan",runId:job.runId,summary:params.summary,
+        agents:params.agents,at:Date.now()};
+      pi.appendEntry(reportEntry,report);
+      recorded=report;
+      pi.events.emit(REPORT_CHANNEL,report);
+      return {content:[{type:"text" as const,text:"Plan submitted for deterministic validation."}],
         details:report};
     },
   });
