@@ -7,6 +7,8 @@
 - Run on the checked-out branch: `npm run test:adversarial`.
   The regular `npm run check` includes the same tests plus all existing
   Worktree, real-Git, GitHub publication, and server-plugin integration tests.
+- GitHub Actions runs the full suite on **Node.js 22 and 24** to cover both
+  PI WEB's minimum supported runtime family and the current CI runtime.
 
 ## Model of concurrency
 
