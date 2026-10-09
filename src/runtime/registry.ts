@@ -125,12 +125,11 @@ export class AgentRegistry {
         if(!sameReservation(previous,input)) throw new Error("Run ID already refers to a different execution");
         this.db.exec("COMMIT");return previous;
       }
-      if(input.seat==="implementer"||input.seat==="qc"){
-        // QC on a worktree is a snapshot read lease. Neither a writer nor a
-        // reviewer may race an unfinished writer, and a writer cannot invalidate
-        // a QC snapshot until the QC evidence is durably sealed.
+      if(input.seat==="implementer"||input.seat==="qc"||input.seat==="architect"){
+        // QC/diagnosis on a linked worktree holds a read lease. Writers may not
+        // race either class of read-only reviewer, including Astra diagnoses.
         const conflicting=input.seat==="implementer"?
-          "seat IN ('implementer','qc')":"seat='implementer'";
+          "seat IN ('implementer','qc','architect')":"seat='implementer'";
         const busy=this.db.prepare("SELECT COUNT(*) AS n FROM execution_runs WHERE project_id=? AND workspace_id=?"+
           " AND "+conflicting+" AND phase NOT IN ('sealed','failed')")
           .get(input.projectId,input.workspaceId) as {n:number};
