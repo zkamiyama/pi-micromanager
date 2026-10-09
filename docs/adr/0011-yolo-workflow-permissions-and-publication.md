@@ -16,6 +16,7 @@ Autopilot Workflow. A Workflow may optionally define a durable policy:
     "default": "allow",
     "actions": {
       "git.commit": "allow",
+      "git.integrate": "allow",
       "git.push": "ask",
       "github.pr.create": "allow",
       "github.pr.merge": "ask",
@@ -67,8 +68,9 @@ The GitHub CLI `gh` must already be installed and authenticated in the
 host environment; credentials are never stored in Micromanager's SQLite
 configuration. GitHub CLI listings independently check that an existing
 PR belongs to the exact head SHA, head branch, repository, base branch and
-is open. A PR created by the tool must still be Draft. **No Git merge,
-auto-merge, release, PR ready conversion, push of a protected branch or
+is open. A PR created by the tool must still be Draft. **No GitHub PR merge,
+auto-merge, conflict-resolving Git merge, release, PR ready conversion,
+push of a protected branch or
 destructive Worktree cleanup** is implemented.
 
 ## `ask` is a durable approval, not a blocking model popup
@@ -107,6 +109,23 @@ The current release is a **single-server-plugin** scheduler, not a
 distributed leader-election service. Reconciliation is limited to the
 observable Git/GitHub state: network outage or remote rebases may still
 need human intervention.
+
+## Dependent Git convergence (ADR-0012)
+
+YOLO now supports an additional host-managed `git.integrate` action. After
+sealed QC, the scheduler first tries to fast-forward the exact QC commit into
+each clean, never-started **dependent** Git Worktree. Git itself must prove
+ancestry; `merge --ff-only` is the only automatic branch integration allowed
+and cannot merge diverged branches or protected main. An `ask` approval binds
+both the upstream QC SHA and the exact dependent Task/Worktree HEAD. An
+ambiguous native Git result is persisted and reconciled, never replayed
+unconditionally. Only after every dependent checkout contains the source
+commit does the DAG's `integrated` gate open.
+
+This is a real but limited Git Worktree fast-forward, **not** a GitHub PR
+merge, main branch merge, auto conflict resolver or code review. Terminal
+Tasks still need a separate integration/review decision. See
+[ADR-0012](0012-safe-automatic-git-convergence.md).
 
 ## Security boundary of Pi `tool_call`
 
