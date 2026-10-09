@@ -58,7 +58,7 @@ test("Workflow policy rejects unknown keys, invalid actions and invalid decision
     {actions:{"git.push":null}},
   ]){
     assert.throws(()=>validateDefinition({...workflow,permissions:policy}),
-      /invalid_permissions/);
+      error=>error.code==="invalid_permissions");
   }
   validateDefinition({...workflow,permissions:{
     default:"allow",actions:{"git.push":"ask","github.pr.create":"deny"},
