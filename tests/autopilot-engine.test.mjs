@@ -143,7 +143,11 @@ test("A human QC hold is preserved after automated QC finalization",async()=>{
       type:"request_intervention",interventionId:"human-hold",
       targetTaskId:"api",afterQcRunId:"next",instruction:"Stop and inspect alternatives",
     });
-    await x.tick();x.settled("impl-api-1");await x.tick();await x.tick();
+    for(let i=0;i<6&&!x.run("impl-api-1");i++)await x.tick();
+    assert.ok(x.run("impl-api-1"),"The implementation Run is launched after the planner reservation");
+    assert.ok(x.run("plan-human-hold"),"Sol's separate planning Run was launched");
+    x.settled("impl-api-1");
+    await x.tick();await x.tick();
     const qc=x.settled("qc-api-1");
     x.ledger.recordReport(qc,{kind:"qc",runId:"qc-api-1",verdict:"fail",
       summary:"Contract mismatch",at:Date.now()});
