@@ -27,6 +27,10 @@ admission** prevents new Task/Run dispatch; it does not abort running Pi turns.
 - Each launch re-resolves the actual workspace, rejects the main tree and
   dirty worktrees, and verifies Git's own repository root is the resolved
   worktree path. Git calls clear inherited `GIT_*` routing variables.
+- A dependent implementation Run must prove, with `git merge-base --is-ancestor`,
+  that its separate worktree contains every relevant upstream QC-passed Git SHA.
+  A ready DAG node whose worktree lacks those commits is paused for explicit
+  integration rather than silently implementing against stale source.
 - An immutable Run reservation precedes `pi-sessions.create`. A creation
   timeout must **not** be retried as another Session.
 - Worktree writer and QC/diagnosis reader reservations cannot overlap.
