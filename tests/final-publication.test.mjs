@@ -152,8 +152,11 @@ test("Final QC only publishes final SHA then readies the Draft PR and requests G
      .some(r=>r.action==="github.pr.merge"&&r.state==="completed"));
    assert.ok(!x.commands.some(x=>x.some(arg=>
      arg==="--admin"||arg==="--delete-branch"||arg==="--force"||arg==="reset")));
-   assert.equal(x.workflows.get("p","o","all-done").tasks["mm-final-integration"].status,
-     "passed","Remote merge cannot fabricate a Workflow QC transition");
+   const done=x.workflows.get("p","o","all-done");
+   assert.equal(done.tasks["mm-final-integration"].status,"integrated");
+   assert.equal(done.tasks.api.status,"integrated");
+   assert.equal(done.tasks["mm-final-integration"].lastQc.headSha,FINAL,
+     "A remotely merged PR never replaces original QC evidence");
  }finally{x.close();}
 });
 test("Merge ask holds the Draft PR and never calls gh pr ready until exact final QC approved",async()=>{
