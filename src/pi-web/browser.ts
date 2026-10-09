@@ -33,6 +33,12 @@ interface State {
   autopilotConfigured: boolean;
   autopilotConfigFor?:string;
   workflowDraft:string;
+  integrationTargetWorkspaceId:string;
+  integrationStatus:string;
+  integrationPreview?:{
+    id:string;workflowId:string;taskId:string;targetWorkspaceId:string;
+    sourceSha:string;targetHead:string;qcRunId:string;expiresAt:number;
+  };
   goalText:string;goalProvider:string;goalModel:string;goalEffort:string;
   goalStatus:string;goalProposalText:string;goalProposalReady:boolean;
   goalRef?:{draftWorkflowId:string;runId:string};
@@ -68,6 +74,7 @@ function stateFor(context: WorkspacePanelContext): State {
       goalStatus:goalRef?"A prior goal proposal can be checked":"No proposal in progress",
       goalProposalText:"",goalProposalReady:false,
       ...(goalRef?{goalRef}:{}),
+      integrationTargetWorkspaceId:"",integrationStatus:"",
       workflowDraft:JSON.stringify({
         id:"custom-feature",title:"Custom development workflow",maxQcRounds:5,
         maxParallelByRole:{planner:1,implementer:2,reviewer:2,architect:2},
@@ -243,9 +250,43 @@ const plugin: PiWebPlugin = {
       }catch(error){state.autopilotStatus=String(error);}
       finally{state.busy=false;context.host.requestRender();}
     }
+    async function integrationCommand(context:WorkspacePanelContext,taskId:string,
+      action:"preview"|"confirm"){
+      const state=stateFor(context),workflow=state.selected;
+      if(!workflow||state.busy)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        if(action==="preview"){
+          delete state.integrationPreview;
+          const proof=await send(context,"auto.integration.preview",{
+            workflowId:workflow.definition.id,taskId,
+            targetWorkspaceId:state.integrationTargetWorkspaceId.trim(),
+          }) as NonNullable<State["integrationPreview"]>;
+          if(proof.workflowId!==workflow.definition.id||proof.taskId!==taskId)
+            throw new Error("Unexpected integration proof scope");
+          state.integrationPreview=proof;
+          state.integrationStatus="Read-only Git ancestry confirmed. Review both SHAs before finalizing.";
+        }else{
+          const proof=state.integrationPreview;
+          if(!proof||proof.taskId!==taskId||proof.workflowId!==workflow.definition.id)
+            throw new Error("Preview the exact Task and Git target first");
+          const next=await send(context,"auto.integration.confirm",{
+            previewId:proof.id,
+          }) as WorkflowInstance;
+          state.selected=next;
+          state.workflows=state.workflows.map(w=>
+            w.definition.id===next.definition.id?next:w);
+          state.integrationStatus="Git integration verified; Task advanced to integrated. "+
+            "No merge, push or file change was performed by Micromanager.";
+          delete state.integrationPreview;
+        }
+      }catch(error){state.integrationStatus="Integration refused: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
     function selectTask(context: WorkspacePanelContext, taskId: string) {
       const state = stateFor(context);
       state.selectedTaskId = taskId;
+      delete state.integrationPreview;state.integrationStatus="";
       state.interventionMode = "workflow";
       context.host.requestRender();
     }
@@ -329,6 +370,39 @@ const plugin: PiWebPlugin = {
             }).catch(error=>{state.status="Cannot open Orchestra: "+String(error);context.host.requestRender();});
           }}>Open Task's live Run in Orchestra</button>
         </div>`}
+
+        ${task.spec.kind==="implementation"&&task.status==="passed"&&state.autopilotConfigured?
+          html`<div class="mm-integration" aria-label="Verify external Git integration">
+            <strong>Verify completed Git integration</strong>
+            <p>This verification is read-only. First integrate the QC-passed commit into
+              another Git Worktree yourself, then select its PI WEB workspace ID.
+              Preview checks target HEAD, source ancestry and sealed QC evidence.</p>
+            <label>Target workspace ID
+              <input maxlength="128" .value=${state.integrationTargetWorkspaceId}
+                placeholder="Existing integrated workspace ID"
+                ?disabled=${state.busy}
+                @input=${(e:Event)=>{
+                  state.integrationTargetWorkspaceId=(e.target as HTMLInputElement).value;
+                  delete state.integrationPreview;state.integrationStatus="";
+                  context.host.requestRender();
+                }}/></label>
+            <button ?disabled=${state.busy||state.autopilotEnabled||
+                !state.integrationTargetWorkspaceId.trim()}
+              @click=${()=>void integrationCommand(context,task.spec.id,"preview")}>
+              Preview verified Git state</button>
+            ${state.integrationPreview?.taskId===task.spec.id?html`
+              <div class="mm-integration-proof">
+                <p>QC Run: ${state.integrationPreview.qcRunId}</p>
+                <p>QC source: <code>${state.integrationPreview.sourceSha}</code></p>
+                <p>Target HEAD: <code>${state.integrationPreview.targetHead}</code></p>
+                <p>Target workspace: ${state.integrationPreview.targetWorkspaceId}</p>
+                <p>Expires: ${new Date(state.integrationPreview.expiresAt).toLocaleTimeString()}</p>
+                <button ?disabled=${state.busy||state.autopilotEnabled}
+                  @click=${()=>void integrationCommand(context,task.spec.id,"confirm")}>
+                  Confirm integration and unblock DAG</button>
+              </div>`:null}
+            ${state.integrationStatus?html`<p role="status">${state.integrationStatus}</p>`:null}
+          </div>`:null}
       </section>`;
     }
     const actionsFor = (context: WorkspacePanelContext, t: TaskState, w: WorkflowInstance) => {
@@ -542,6 +616,16 @@ const styles = `
   .mm-goal-credentials{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;}
   .mm-goal-credentials input{width:100%;box-sizing:border-box;background:var(--pi-surface);
     color:inherit;border:1px solid var(--pi-border-muted);border-radius:6px;padding:6px;}
+
+  .mm-integration{border:1px solid var(--pi-border-muted);background:var(--pi-surface);
+    border-radius:8px;padding:10px;margin:12px 0;font-size:12px;}
+  .mm-integration p{color:var(--pi-muted);overflow-wrap:anywhere;}
+  .mm-integration label{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  .mm-integration input{min-width:180px;max-width:100%;background:var(--pi-surface);
+    border:1px solid var(--pi-border-muted);border-radius:5px;color:inherit;padding:5px;}
+  .mm-integration-proof{margin-top:10px;padding:8px;border:1px dashed var(--pi-border-muted);
+    border-radius:7px;}
+  .mm-integration-proof code{overflow-wrap:anywhere;font-size:11px;}
   .mm-workflow-import{border:1px solid var(--pi-border-muted);border-radius:8px;
     padding:10px;margin:12px 0;background:var(--pi-surface);}
   .mm-workflow-import summary{cursor:pointer;font-weight:600;}
