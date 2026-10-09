@@ -120,6 +120,34 @@ const plugin:PiWebServerPlugin={
     conn.signal.addEventListener("abort",()=>{if(live.get(key)===bridge)live.delete(key);},{once:true});
     return bridge;
   }
+  /**
+   * A settled Run has left the live canvas, but its native Pi Session may
+   * contain a structured report whose original event was lost. Reconnect to
+   * that SAME session read-only, inspect durable turn state and replay report.
+   * A report is not accepted from an unrelated Session or wrong Run identity.
+   */
+  async function replaySettledReport(binding:AgentBinding):Promise<void>{
+    if(binding.phase!=="settled"||!binding.sessionId||
+      !binding.requestId.startsWith("auto:")||!sessionEvents)
+      throw new Error("Only a settled automated Pi Run can replay its report");
+    const conn=await sessionEvents.connect({
+      projectId:binding.projectId,workspaceId:binding.workspaceId,
+      sessionId:binding.sessionId,
+    });
+    const bridge=new PiSessionBridge(conn,()=>{},report=>{
+      if(report.runId!==binding.runId)
+        throw new Error("Wrong Run identity in replayed native Pi report");
+      ledger.recordReport(binding,report);
+    });
+    try{
+      const inspected=await bridge.send({type:"inspect",requestId:randomUUID()},7000);
+      if(classifyRecoveredRun(binding.runId,inspected)!=="settled"||
+        inspected.hasReport!==true)
+        throw new Error("Settled Pi report replay lacks a valid durable turn proof");
+      if(!ledger.report(binding))
+        throw new Error("Pi inspection confirmed a report, but it was not delivered");
+    }finally{bridge.stop();}
+  }
   function registered(ctx:ServerPluginPeerRequestContext,sessionId:string):AgentBinding {
     return agents.get(ctx.project.id,ctx.workspace.id,sessionId);
   }
@@ -203,6 +231,7 @@ const plugin:PiWebServerPlugin={
     host,workflows:store,agents,
     getSessions:()=>sessions,getWorkspaces:()=>workspaces,probe,
     validateRun:plannedRunId,notify:notifyRun,
+    replaySettledReport,
   }));
   return {
     start({capabilities}){
@@ -337,6 +366,10 @@ const plugin:PiWebServerPlugin={
                   notice="Planner Session state could not be proved; no automatic replay";
               }catch(error){notice="Proposal inspection unavailable: "+String(error).slice(0,250);}
             }
+            if(binding.phase==="settled"&&!ledger.report(binding)){
+              try{await replaySettledReport(binding);}
+              catch(error){notice=String(error).slice(0,280);}
+            }
             const report=ledger.report(binding);
             return j({phase:binding.phase,runId,draftWorkflowId,
               proposal:report?.kind==="workflow_plan"?report.definition:null,
@@ -354,6 +387,8 @@ const plugin:PiWebServerPlugin={
               (binding.phase!=="settled"&&binding.phase!=="sealed")||
               (binding.latestKind==="agent_settled"&&binding.latestText==="Agent interrupted"))
               throw new Error("A completed, registered Sol proposal is required");
+            if(binding.phase==="settled"&&!ledger.report(binding))
+              await replaySettledReport(binding);
             const report=ledger.report(binding);
             if(!report||report.kind!=="workflow_plan")
               throw new Error("Sol did not submit a valid typed Workflow proposal");
