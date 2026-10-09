@@ -277,7 +277,7 @@ test("A mismatched replayed QC report pauses Autopilot instead of accepting fabr
 
 test("Plugin restart recovers the same settled Pi Session and resumes QC without duplicate dispatch",async()=>{
   const before=fakePluginHost();
-  let after;
+  let after, beforeClosed=false;
   try{
     await before.activate();
     await before.request("create",definition);
@@ -290,6 +290,7 @@ test("Plugin restart recovers the same settled Pi Session and resumes QC without
     // Shutdown while a Pi turn is still running. Its hosted session remains
     // alive and settles while this server plugin is completely inactive.
     await before.cleanup(true);
+    beforeClosed=true;
     impl.finish();
     after=fakePluginHost(before.shared);
     await after.activate();
@@ -307,10 +308,15 @@ test("Plugin restart recovers the same settled Pi Session and resumes QC without
       summary:"Independent QC completed",at:Date.now()});
     await eventually(async()=>((await after.request("get","wf")).tasks.api.status==="passed"));
     assert.equal(after.sessions.size,2);
-    assert.equal((await after.request("auto.status",{workflowId:"wf"})).enabled,false,
+    await eventually(async()=>{
+      const status=await after.request("auto.status",{workflowId:"wf"});
+      return status?.enabled===false?status:undefined;
+    });
+    assert.equal((await after.request("get","wf")).tasks.api.status,"passed",
       "All Tasks are stable and worktree integration stays explicit");
   }finally{
     if(after)await after.cleanup();
+    else if(beforeClosed)rmSync(before.shared.dir,{recursive:true,force:true});
     else await before.cleanup();
   }
 });
