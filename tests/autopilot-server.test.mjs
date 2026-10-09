@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join,resolve } from "node:path";
+import { createHash } from "node:crypto";
 import serverPlugin from "../dist/pi-web/server.js";
 import { CONTROL_CHANNEL, RECEIPT_CHANNEL, ACTIVITY_CHANNEL } from "../dist/runtime/protocol.js";
 import { REPORT_CHANNEL } from "../dist/automation/report.js";
@@ -23,7 +24,7 @@ const config = {
   test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
 };
 
-function fakePluginHost(shared) {
+function fakePluginHost(shared,options={}) {
   const dir = shared?.dir??mkdtempSync(join(tmpdir(),"pi-mm-server-"));
   const lifetime = new AbortController();
   const sessions = shared?.sessions??new Map();
@@ -33,11 +34,16 @@ function fakePluginHost(shared) {
   const createdWorktrees=new Map();
   const convergence={head:BASE,merges:0};
   let serial = sessions.size;
+  const managedId=path=>createHash("sha1").update("project:"+resolve(path))
+    .digest("hex").slice(0,12);
+  const managedPath=id=>[...createdWorktrees.keys()].find(path=>managedId(path)===id);
+  const isManagedFinal=path=>[...createdWorktrees].some(([p,t])=>
+    p===path&&t.branch.endsWith("/mm-final-integration"));
   const workspace = id => ({
-    id,projectId:"project",path:id==="orchestra"?"/repo":
+    id,projectId:"project",path:managedPath(id)??(id==="orchestra"?"/repo":
       id==="wt-integrated"?"/repo/integrated":
       id==="worktree-consumer"?"/repo/consumer":
-      id==="worktree-final"?"/repo/final":"/repo/api",
+      id==="worktree-final"?"/repo/final":"/repo/api"),
     isMain:id==="orchestra",
     label:id,
     ...(id==="orchestra"?{}:{provider:{metadata:{isGitWorktree:true}}}),
@@ -45,7 +51,10 @@ function fakePluginHost(shared) {
   const workspaces = {
     version:1,
     async resolve({projectId,workspaceId}) {
-      if(projectId!=="project"||!["orchestra","worktree-api","wt-integrated","worktree-consumer","worktree-final"].includes(workspaceId))
+      const managed=managedPath(workspaceId);
+      if(projectId!=="project"||
+        (managed&&options.discovery?.allowed===false)||
+        (!managed&&!["orchestra","worktree-api","wt-integrated","worktree-consumer","worktree-final"].includes(workspaceId)))
         throw new Error("Unknown linked workspace");
       return {project:{id:"project",name:"Project",path:"/repo"},
         workspace:workspace(workspaceId)};
@@ -124,12 +133,12 @@ function fakePluginHost(shared) {
           return result(args[1]+"\n");
         if(command==="rev-parse HEAD")
           return result(args[1]==="/repo/consumer"?convergence.head+"\n":
-            args[1]==="/repo/final"?finalization.head+"\n":
+            (args[1]==="/repo/final"||isManagedFinal(args[1]))?finalization.head+"\n":
             args[1]==="/repo/integrated"?"c".repeat(40)+"\n":SHA+"\n");
         if(command==="status --porcelain")
           return result("");
         if(command.startsWith("merge-base --is-ancestor ")){
-          if(args[1]==="/repo/final"){
+          if(args[1]==="/repo/final"||isManagedFinal(args[1])){
             const [, ,source,head]=command.split(" ");
             const checked=head==="HEAD"?finalization.head:head;
             return {...result(""),exitCode:
@@ -153,17 +162,18 @@ function fakePluginHost(shared) {
           return result("Fast-forward\n");
         }
         if(command==="symbolic-ref --quiet --short HEAD")
-          return result(args[1]==="/repo/final"?"feature/final\n":"feature/api\n");
+          return result((createdWorktrees.get(args[1])?.branch??
+            (args[1]==="/repo/final"?"feature/final":"feature/api"))+"\n");
         if(command==="remote get-url origin")
           return result("https://github.com/acme/repo.git\n");
-        if(command.startsWith("ls-remote --heads origin refs/heads/feature/")){
+        if(command.startsWith("ls-remote --heads origin refs/heads/")){
           const branch=command.split(" ").at(-1);
           return result(publication.remoteSha?
             publication.remoteSha+"\t"+branch+"\n":"");
         }
-        if(command.startsWith("push --porcelain origin HEAD:refs/heads/feature/")){
+        if(command.startsWith("push --porcelain origin HEAD:refs/heads/")){
           publication.pushCount++;
-          publication.remoteSha=args[1]==="/repo/final"?FINAL:SHA;
+          publication.remoteSha=args[1]==="/repo/final"||isManagedFinal(args[1])?FINAL:SHA;
           return result("Published mock Git branch\n");
         }
         if(command.startsWith("show-ref --verify --quiet "))
@@ -188,7 +198,7 @@ function fakePluginHost(shared) {
         if(args[0]==="pr"&&args[1]==="create"){
           publication.createCount++;
           publication.pr={number:7,url:"https://github.com/acme/repo/pull/7",
-            headRefName:finalization.settled?"feature/final":"feature/api",
+            headRefName:args[args.indexOf("--head")+1],
             baseRefName:"main",headRefOid:finalization.settled?FINAL:SHA,
             isDraft:true,state:"OPEN",autoMergeRequest:null};
           return result(publication.pr.url);
@@ -677,5 +687,101 @@ test("PI WEB full-DAG YOLO creates a fresh final merge Pi Session, final QC, the
    assert.equal(state.tasks["mm-final-integration"].lastQc.headSha,FINAL);
    assert.ok(!host.calls.some(x=>x.args.includes("--admin")||
      x.args.includes("--force")||x.args.includes("--delete-branch")));
+ }finally{await host.cleanup();}
+});
+
+test("Opt-in managed DAG start creates and resolves Task/final Worktrees before any Pi Run",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   await host.request("create",{...definition,id:"managed-flow"});
+   const configured=await host.request("auto.configure",{workflowId:"managed-flow",config:{
+     ...config,workspaces:{},managedWorktrees:true,
+     finalization:{workspaceId:"auto",autoMerge:true},
+     publication:{remote:"origin",baseBranch:"main",draft:true},
+   }});
+   assert.equal(configured.enabled,false);
+   assert.equal(host.createdWorktrees.size,0,"Configuration alone never runs Git worktree add");
+   assert.equal(host.sessions.size,0);
+   const started=await host.request("auto.start",{workflowId:"managed-flow"});
+   assert.equal(started.enabled,true);
+   assert.equal(host.createdWorktrees.size,2);
+   assert.notEqual(started.config.workspaces.api,"auto");
+   assert.notEqual(started.config.finalization.workspaceId,"auto");
+   assert.notEqual(started.config.workspaces.api,started.config.finalization.workspaceId);
+   const expected=[...host.createdWorktrees.keys()].map(path=>
+     createHash("sha1").update("project:"+resolve(path)).digest("hex").slice(0,12));
+   assert.ok(expected.includes(started.config.workspaces.api));
+   assert.ok(expected.includes(started.config.finalization.workspaceId));
+   await host.request("auto.start",{workflowId:"managed-flow"});
+   assert.equal(host.createdWorktrees.size,2,"Repeated Start never creates duplicate Worktrees");
+   await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-api-1")));
+ }finally{await host.cleanup();}
+});
+
+test("Undiscoverable PI WEB Workspace fails closed and resumes from exact Git receipt",async()=>{
+ const discovery={allowed:false},host=fakePluginHost(undefined,{discovery});
+ try{
+   await host.activate();
+   await host.request("create",{...definition,id:"discovery-flow"});
+   await host.request("auto.configure",{workflowId:"discovery-flow",config:{
+     ...config,workspaces:{},managedWorktrees:true,
+   }});
+   await assert.rejects(host.request("auto.start",{workflowId:"discovery-flow"}),
+     /did not discover/);
+   assert.equal(host.createdWorktrees.size,1);
+   assert.equal(host.sessions.size,0,"Never launch Pi with an unverified Workspace identity");
+   discovery.allowed=true;
+   const started=await host.request("auto.start",{workflowId:"discovery-flow"});
+   assert.equal(started.enabled,true);
+   assert.equal(host.createdWorktrees.size,1,
+     "Inspect the existing reserved Git Worktree, do not duplicate git add");
+   assert.equal(host.calls.filter(c=>c.file==="git"&&c.args.includes("add")).length,1);
+ }finally{await host.cleanup();}
+});
+
+test("Auto-provisioned final Worktree completes QC-gated GitHub MERGED flow",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   await host.request("create",{...definition,id:"auto-final-flow"});
+   await host.request("auto.configure",{workflowId:"auto-final-flow",config:{
+     ...config,workspaces:{},managedWorktrees:true,
+     finalization:{workspaceId:"auto",autoMerge:true},
+     publication:{remote:"origin",baseBranch:"main",draft:true},
+   }});
+   await host.request("auto.start",{workflowId:"auto-final-flow"});
+   const implementation=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-api-1")&&
+     s.commands.some(c=>c.type==="message")));
+   implementation.finish();
+   const qc=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="qc-api-1")&&
+     s.commands.some(c=>c.type==="message")));
+   qc.finish({kind:"qc",runId:"qc-api-1",verdict:"pass",
+     summary:"Task checked",at:Date.now()});
+   const finalRun=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-mm-final-integration-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
+   assert.equal(host.publication.pushCount,0);
+   finalRun.finish();
+   const finalQC=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="qc-mm-final-integration-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
+   finalQC.finish({kind:"qc",runId:"qc-mm-final-integration-1",verdict:"pass",
+     summary:"Integrated commit checked",at:Date.now()});
+   await eventually(()=>host.publication.mergeCount===1,15000);
+   assert.equal(host.publication.pr.state,"OPEN",
+     "An auto-merge request is not a merged PR");
+   assert.equal(host.publication.pushCount,1);
+   host.publication.pr.state="MERGED";
+   host.publication.pr.autoMergeRequest=null;
+   await eventually(async()=>(await host.request("get","auto-final-flow"))
+     .tasks["mm-final-integration"]?.status==="integrated",15000);
+   const wf=await host.request("get","auto-final-flow");
+   assert.equal(wf.tasks.api.status,"integrated");
+   assert.equal(host.createdWorktrees.size,2);
+   assert.equal(host.sessions.size,4);
  }finally{await host.cleanup();}
 });
