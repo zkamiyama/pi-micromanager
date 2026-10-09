@@ -116,9 +116,18 @@ workflow transition and evidence were committed.
 ## Explicit limitations
 
 The public PI WEB `workspaces` v1 capability resolves **existing** workspaces;
-it does not create/register fresh linked worktrees. Automatic provisioner/GC
-therefore remains blocked pending a public host capability or a separately
-supervised provisioner with safe ownership and discovery.
+it does not create/register or list new Workspace IDs. ADR-0008 now adds
+an **explicit reviewed** Git Worktree provisioning operation under the
+plugin's private data directory, with durable reservation before the
+non-idempotent Git add and verification afterward. The operator still
+selects the newly discovered Git Worktree in PI WEB and records its genuine
+opaque Workspace ID; fully automatic Workspace registration and safe
+worktree/session GC remain blocked pending upstream public capabilities.
+
+ADR-0008 also adds separate **read-only integration preview** and
+**human-confirmed Git ancestry proof** against sealed QC evidence. Only
+the explicit confirmation changes the DAG to `integrated`; this is not
+an automatic Git merge, cherry-pick or push.
 
 Autopilot executes **validated, reviewed DAGs**. The Sol goal-proposal
 workflow can turn a natural-language objective into an initial, read-only,
