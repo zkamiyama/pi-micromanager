@@ -81,8 +81,10 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
     if(Object.keys(f).some(k=>!["workspaceId","autoMerge"].includes(k)))
       throw new Error("Unknown finalization field");
     const workspaceId=str(f.workspaceId,128);
-    if(Object.values(workspaces).includes(workspaceId))
-      throw new Error("Final integration Workspace must be distinct from all coding Worktrees");
+    if(Object.values(workspaces).includes(workspaceId)||
+      (raw.reviewWorkspaces!==undefined&&
+        Object.values(workspaceMap(raw.reviewWorkspaces)).includes(workspaceId)))
+      throw new Error("Final integration Workspace must be distinct from all code/QC Worktrees");
     if(f.autoMerge!==true&&f.autoMerge!==false)
       throw new Error("Finalization autoMerge must be a boolean");
     finalization={workspaceId,autoMerge:f.autoMerge};
