@@ -279,8 +279,86 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         ...(action==="abort"?{}:{text:s.message}),
       });
     };
+
+    const newest=[...s.active].sort((a,b)=>
+      b.createdAt.localeCompare(a.createdAt)||b.runId.localeCompare(a.runId));
+    const pageCount=Math.max(1,Math.ceil(newest.length/12));
+    const visible=newest.slice(s.canvasPage*12,(s.canvasPage+1)*12);
+    const dependencies:CanvasDependency[]=[];
+    for(const b of visible){
+      const task=s.workflows.find(w=>w.definition.id===b.workflowId)?.tasks[b.taskId];
+      for(const dependency of task?.spec.dependsOn??[])dependencies.push({
+        workflowId:b.workflowId,fromTaskId:dependency.taskId,toTaskId:b.taskId,
+      });
+    }
+    const graph=buildCanvasGraph(visible.map(b=>({
+      key:runKey(b.workflowId,b.runId),workflowId:b.workflowId,taskId:b.taskId,
+    })),dependencies,s.nodePositions);
+    const byKey=new Map(visible.map(b=>[runKey(b.workflowId,b.runId),b]));
+    const planners=newest.filter(b=>b.seat==="planner"&&!!b.sessionId);
+    const planner=planners.find(b=>b.sessionId===s.plannerSessionId)??planners[0];
+    const plannerKey=planner?runKey(planner.workflowId,planner.runId):"";
+    const plannerAvailable=!!planner&&isCommandReady(planner);
+    const wirePath=(link:(typeof graph.links)[number]):string=>{
+      const dx=link.to.x-link.from.x,dy=link.to.y-link.from.y;
+      if(link.kind==="dependency")return "M "+link.from.x+" "+link.from.y+
+        " C "+(link.from.x+dx*.45)+" "+link.from.y+
+        ", "+(link.to.x-dx*.45)+" "+link.to.y+", "+link.to.x+" "+link.to.y;
+      return "M "+link.from.x+" "+link.from.y+
+        " C "+link.from.x+" "+(link.from.y-72)+
+        ", "+link.to.x+" "+(link.to.y+58)+", "+link.to.x+" "+link.to.y;
+    };
+    const renderNode=(node:(typeof graph.nodes)[number])=>{
+      const b=byKey.get(node.key);
+      if(!b)return null;
+      const key=node.key,latest=(s.activity.get(b.sessionId??"")??[]).slice(-3);
+      const ready=isCommandReady(b),expanded=s.density[b.seat]==="expanded";
+      return html`<article class="mm-f-node ${s.selectedSessionId&&b.sessionId===s.selectedSessionId&&!s.canvasDimmed?"mm-f-selected":""}"
+          style=${`left:${node.x}px;top:${node.y}px;`}
+          aria-label=${"Pi Run "+b.runId} @click=${()=>focus(ctx,b)}>
+        <div class="mm-f-node-head" role="button" tabindex="0"
+          title="Drag to move; arrow keys move this Agent (Shift for larger steps)."
+          aria-label=${"Focus or move "+b.seat+" "+b.runId}
+          @pointerdown=${(e:PointerEvent)=>{focus(ctx,b);startDrag(ctx,key,{x:node.x,y:node.y},e);}}
+          @pointermove=${(e:PointerEvent)=>moveDrag(ctx,e)}
+          @pointerup=${(e:PointerEvent)=>endDrag(ctx,e)}
+          @pointercancel=${(e:PointerEvent)=>endDrag(ctx,e)}
+          @keydown=${(e:KeyboardEvent)=>{
+            if(e.key==="Enter"||e.key===" "){e.preventDefault();focus(ctx,b);}
+            else nudge(ctx,key,{x:node.x,y:node.y},e);
+          }}>
+          <span class="mm-f-node-dot ${b.phase==="running"?"mm-f-running":b.phase==="uncertain"||b.phase==="blocked"?"mm-f-needs-attention":""}"></span>
+          <strong>${b.seat.toUpperCase()}</strong>
+          <span class="mm-f-node-phase">${b.phase}</span>
+          <span class="mm-f-drag-handle" aria-hidden="true">⠿</span>
+        </div>
+        <div class="mm-f-node-meta">
+          <strong title=${b.taskId}>${b.taskId}</strong>
+          <small title=${b.runId}>${b.runId} · ${b.model?b.provider+"/"+b.model:"Not configured"}</small>
+        </div>
+        <div class="mm-f-node-log" aria-label=${"Public activity for "+b.runId}>
+          ${expanded&&latest.length?latest.map(item=>html`<p><small>${item.kind}</small> ${item.text||"(no text)"}</p>`):
+            html`<p>${b.latestText??(b.sessionId?"Waiting for Pi activity…":"Pi Session not created.")}</p>`}
+        </div>
+        <div class="mm-f-node-compose">
+          <select aria-label=${"Delivery mode for "+b.runId} .value=${modeFor(s,b)}
+            ?disabled=${s.busy||!ready||b.phase==="configured"}
+            @change=${(e:Event)=>{s.nodeModes.set(key,(e.target as HTMLSelectElement).value as Mode);refresh(ctx);}}>
+            ${b.phase==="configured"?html`<option value="newTurn">Start</option>`:html`
+              <option value="steer">Steer</option><option value="followUp">Follow-up</option>`}
+          </select>
+          <textarea rows="1" maxlength="16000" aria-label=${"Message "+b.runId}
+            placeholder=${ready?"Message this Agent…":"Reconnect / configure to message"}
+            .value=${s.nodeDrafts.get(key)??""} ?disabled=${!ready||s.busy}
+            @input=${(e:Event)=>{s.nodeDrafts.set(key,(e.target as HTMLTextAreaElement).value);refresh(ctx);}}></textarea>
+          <button title=${"Send directly to "+b.runId} aria-label=${"Send to "+b.runId}
+            ?disabled=${!ready||s.busy||!s.nodeDrafts.get(key)?.trim()}
+            @click=${(e:Event)=>{e.stopPropagation();void sendNode(ctx,b);}}>↗</button>
+        </div>
+      </article>`;
+    };
     return html`<style>${css}</style><section class="mm-fleet" aria-label="Live Agent Runs">
-      <header><h2>Active Pi executions</h2><p>Fresh Pi Session for every implementation attempt, QC run and diagnosis. Finished runs move to history.</p></header>
+      <header><h2>Orchestra · Live Runs</h2><p>Floating Pi Agent conversations above the Orchestrator. Each card is a real one-shot Run; settled sessions move to History.</p></header>
       <div class="mm-f-toolbar">
         <button @click=${()=>void load(ctx)} ?disabled=${s.busy}>Refresh runs</button>
         <button @click=${()=>{s.controller?.abort();s.channel?.close();delete s.controller;s.listening=false;void listen(ctx);}}
@@ -293,14 +371,65 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
           @change=${(ev:Event)=>{s.density[role]=(ev.target as HTMLSelectElement).value as "compact"|"expanded";refresh(ctx)}}>
           <option value="compact">Compact</option><option value="expanded">Expanded</option>
         </select></label>`)}</div>
-      <div class="mm-f-grid">${s.active.length?s.active.map(b=>html`<article class="mm-f-card">
-        <strong>${b.seat.toUpperCase()} · ${b.taskId}</strong>
-        <small>Run ${b.runId} · ${b.phase}</small>
-        <small>${b.model?b.provider+"/"+b.model:"Unconfigured"} · ${b.sessionId?.slice(0,12)??"Creating..."}</small>
-        ${s.density[b.seat]==="expanded"?html`<p>${b.latestText??"No streamed public text yet."}</p>`:null}
-        <button @click=${()=>{s.selectedSessionId=b.sessionId??"";refresh(ctx)}}
-          ?disabled=${!b.sessionId}>Inspect / Steer</button>
-      </article>`):html`<p>No active sessions. New Task runs appear here when dispatched.</p>`}</div>
+
+      <div class="mm-f-canvas-nav">
+        <span>${newest.length} live/pending Runs · ${pageCount>1?"Page "+(s.canvasPage+1)+"/"+pageCount:"All Runs visible"}</span>
+        <span class="mm-f-canvas-legend"><i></i> Orchestra membership <b></b> Task dependency</span>
+        <button ?disabled=${s.canvasPage===0} @click=${()=>{s.canvasPage--;refresh(ctx);}}>← Previous</button>
+        <button ?disabled=${s.canvasPage>=pageCount-1} @click=${()=>{s.canvasPage++;refresh(ctx);}}>Next →</button>
+      </div>
+      <p class="mm-f-hint">Drag a header to move its window. Click empty space to fade nodes; click an Agent to focus it. On narrow panels, scroll the canvas horizontally.</p>
+      <div class="mm-f-canvas-scroll" role="region" aria-label="Connected agent canvas" tabindex="0">
+        <div class="mm-f-canvas ${s.canvasDimmed?"mm-f-dimmed":""}"
+          style=${`width:${graph.width}px;height:${graph.height}px;`}>
+          <button class="mm-f-blanket" aria-label="Clear focus and fade agent nodes"
+            @click=${()=>{s.canvasDimmed=true;refresh(ctx);}}></button>
+          <svg class="mm-f-connections" width=${graph.width} height=${graph.root.y+10}
+            viewBox=${`0 0 ${graph.width} ${graph.root.y+10}`} aria-hidden="true">
+            ${graph.links.map(link=>html`<path d=${wirePath(link)}
+              fill="none" stroke=${link.kind==="dependency"?"var(--pi-accent)":"var(--pi-border-muted)"}
+              stroke-width=${link.kind==="dependency"?2:1.5}
+              stroke-dasharray=${link.kind==="orchestra"?"6 6":""}
+              stroke-linecap="round" />`)}
+            <circle cx=${graph.root.x} cy=${graph.root.y} r="5" fill="var(--pi-accent)" />
+          </svg>
+          ${graph.nodes.map(node=>renderNode(node))}
+          ${!visible.length?html`<p class="mm-f-canvas-empty">
+            No Pi agent Runs are active. New sessions appear as floating chat windows after a Task Run is admitted and launched.
+          </p>`:null}
+          <section class="mm-f-orchestrator"
+            style=${`left:${graph.root.x-340}px;top:${graph.root.y+20}px;`}
+            aria-label="Orchestrator console">
+            <div class="mm-f-orch-title">
+              <strong>◇ Orchestrator</strong>
+              <small>Current workspace · observed Pi activity</small>
+              <span>${planners.length?"● "+planners.length+" planner Run(s)":"○ No planner Run"}</span>
+            </div>
+            <div class="mm-f-orch-feed" aria-label="Latest live run summaries">
+              ${newest.length?newest.slice(0,3).map(b=>html`<p><b>${b.seat} · ${b.taskId}</b>
+                ${b.latestText??b.phase}</p>`):html`<p>No live activity yet. This area observes Runs; it does not fabricate an agent conversation.</p>`}
+            </div>
+            <div class="mm-f-orch-compose">
+              ${planners.length>1?html`<select aria-label="Planner Run" .value=${planner?.sessionId??""}
+                @change=${(e:Event)=>{s.plannerSessionId=(e.target as HTMLSelectElement).value;refresh(ctx);}}>
+                ${planners.map(b=>html`<option value=${b.sessionId??""}>${b.taskId} / ${b.runId}</option>`)}
+              </select>`:null}
+              <textarea rows="1" maxlength="16000"
+                aria-label="Message the live planner Pi Session"
+                placeholder=${plannerAvailable?"Direct message to planner Pi Run…":"No connected planner Pi Run"}
+                ?disabled=${!plannerAvailable||s.busy}
+                .value=${s.nodeDrafts.get(plannerKey)??""}
+                @input=${(e:Event)=>{s.nodeDrafts.set(plannerKey,(e.target as HTMLTextAreaElement).value);refresh(ctx);}}></textarea>
+              <button ?disabled=${!plannerAvailable||s.busy||!s.nodeDrafts.get(plannerKey)?.trim()}
+                @click=${()=>{if(planner)void sendNode(ctx,planner);}}>Send</button>
+            </div>
+            <small class="mm-f-orch-foot">
+              ${planner? "Direct to "+planner.runId+" · "+(plannerAvailable?modeFor(s,planner):"Reconnect/configure before sending") :
+                "No live planner is connected. Workflow simulation and Task Lens are in the Micromanager tab."}
+            </small>
+          </section>
+        </div>
+      </div>
       <details class="mm-f-history"><summary>Finished executions (${s.history.length})</summary>
         ${s.history.map(b=>html`<button @click=${()=>{s.selectedSessionId=b.sessionId??"";refresh(ctx)}}>
           ${b.taskId} / ${b.runId} · ${b.phase}</button>`)}
