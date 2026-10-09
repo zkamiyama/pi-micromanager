@@ -263,14 +263,20 @@ const plugin: PiWebPlugin = {
     }
 
     async function managedWorktreeCommand(context:WorkspacePanelContext,
-      action:"preview"|"create"|"inspect"){
+      action:"preview"|"create"|"inspect"|"status"){
       const state=stateFor(context),workflow=state.selected;
       if(!workflow||state.busy||state.autopilotEnabled)return;
       state.busy=true;context.host.requestRender();
       try{
-        const proof=await send(context,"auto.worktree."+action,action==="preview"?
+        const proof=await send(context,"auto.worktree."+action,
+          action==="preview"||action==="status"?
           {workflowId:workflow.definition.id,taskId:state.worktreeTaskId}:
-          {planId:state.worktreePlan?.id}) as NonNullable<State["worktreePlan"]>;
+          {planId:state.worktreePlan?.id}) as State["worktreePlan"];
+        if(!proof){
+          delete state.worktreePlan;
+          state.worktreeStatus="No saved Worktree plan for this Task.";
+          return;
+        }
         if(proof.workflowId!==workflow.definition.id||proof.taskId!==state.worktreeTaskId)
           throw new Error("Managed Git worktree scope mismatch");
         state.worktreePlan=proof;
@@ -596,6 +602,9 @@ const plugin: PiWebPlugin = {
                   <button ?disabled=${state.busy||state.autopilotEnabled||!state.worktreeTaskId}
                     @click=${()=>void managedWorktreeCommand(context,"preview")}>
                     Preview Worktree</button>
+                  <button ?disabled=${state.busy||!state.worktreeTaskId}
+                    @click=${()=>void managedWorktreeCommand(context,"status")}>
+                    Load saved plan</button>
                   <button ?disabled=${state.busy||state.autopilotEnabled||
                     state.worktreePlan?.stage!=="prepared"}
                     @click=${()=>void managedWorktreeCommand(context,"create")}>
