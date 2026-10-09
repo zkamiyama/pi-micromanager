@@ -244,8 +244,17 @@ export class AutomaticIntegrator {
         this.complete(row);
         return "acted";
       }
-      // Each dependent Worktree has been verified at a commit containing
-      // this QC SHA. Only now may the deterministic integrated gate open.
+      // Re-resolve ALL dependent Worktrees and their current Git ancestry
+      // before declaring the upstream Task integrated; an earlier child may
+      // have changed while an independent target was being inspected.
+      for(const target of targets){
+        const workspaceId=record.config.workspaces[target.spec.id];
+        if(!workspaceId)throw new Error("Dependent Worktree configuration disappeared");
+        this.ensureCurrent(record,source.spec.id,qc.runId,qc.headSha,target.spec.id);
+        const latestCheckout=await this.resolveTarget(p,workspaceId);
+        await requireAncestor(this.opt.host,latestCheckout.path,qc.headSha,
+          latestCheckout.head);
+      }
       this.ensureCurrent(record,source.spec.id,qc.runId,qc.headSha,targets[0]!.spec.id);
       const latest=this.opt.workflows.get(p,o,w);
       this.opt.workflows.act(p,o,w,latest.revision,
