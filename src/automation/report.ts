@@ -1,8 +1,12 @@
 /** One-shot structured Pi Run result. A model report is evidence input, NOT a QC gate itself. */
 export const REPORT_CHANNEL = "pi-micromanager:run-report:v1";
+export interface PlanInvestigator {
+  id:string; title:string; role:"architect"|"reviewer";model:string;
+}
 export type RunReport =
   | { kind:"qc"; runId:string; verdict:"pass"|"fail"|"inconclusive"; summary:string; at:number }
-  | { kind:"task"; runId:string; summary:string; at:number };
+  | { kind:"task"; runId:string; summary:string; at:number }
+  | { kind:"plan"; runId:string; summary:string;agents:PlanInvestigator[];at:number };
 const runPattern = /^[a-z][a-z0-9-]{0,127}$/;
 export function parseRunReport(value:unknown):RunReport|undefined {
   if(!value||typeof value!=="object"||Array.isArray(value))return;
@@ -15,5 +19,21 @@ export function parseRunReport(value:unknown):RunReport|undefined {
     return {kind:"qc",runId:v.runId,verdict:v.verdict,summary:v.summary,at:v.at};
   }
   if(v.kind==="task")return {kind:"task",runId:v.runId,summary:v.summary,at:v.at};
+  if(v.kind==="plan"){
+    if(!Array.isArray(v.agents)||v.agents.length<1||v.agents.length>4)return;
+    const agents:PlanInvestigator[]=[];
+    const ids=new Set<string>();
+    for(const item of v.agents){
+      if(!item||typeof item!=="object"||Array.isArray(item))return;
+      const a=item as Record<string,unknown>;
+      if(typeof a.id!=="string"||!/^[a-z][a-z0-9-]{0,31}$/.test(a.id)||
+        ids.has(a.id)||typeof a.title!=="string"||!a.title.trim()||a.title.length>200||
+        (a.role!=="architect"&&a.role!=="reviewer")||
+        typeof a.model!=="string"||!a.model.trim()||a.model.length>160)return;
+      ids.add(a.id);
+      agents.push({id:a.id,title:a.title,role:a.role,model:a.model});
+    }
+    return {kind:"plan",runId:v.runId,summary:v.summary,agents,at:v.at};
+  }
   return;
 }
