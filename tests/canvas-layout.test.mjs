@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildCanvasGraph, runKey, NODE_WIDTH, NODE_HEIGHT, CANVAS_WIDTH,
+  clampCanvasPosition, canvasLinkPath, canvasArrowTransform,
 } from "../dist/pi-web/canvas-layout.js";
 
 const agent = (workflowId, taskId, runId) => ({
@@ -58,4 +59,21 @@ test("node positions are bounded; invalid or stale coordinates do not break rend
   assert.equal(graph.nodes[1].x, initial.nodes[1].x);
   assert.equal(graph.nodes[1].y, initial.nodes[1].y);
   assert.equal(graph.width, CANVAS_WIDTH);
+});
+
+test("drag clamping and live connector paths follow repositioned nodes",()=>{
+  const a=agent("w","api","r-api"),b=agent("w","qc","r-qc");
+  const dependency={workflowId:"w",fromTaskId:"api",toTaskId:"qc"};
+  const initial=buildCanvasGraph([a,b],[dependency]);
+  const clamped=clampCanvasPosition({x:99999,y:-99},initial.root.y);
+  assert.equal(clamped.x,CANVAS_WIDTH-NODE_WIDTH-12);
+  assert.equal(clamped.y,12);
+  const moved=buildCanvasGraph([a,b],[dependency],new Map([[a.key,clamped]]));
+  const dependencyBefore=initial.links.find(l=>l.kind==="dependency");
+  const dependencyAfter=moved.links.find(l=>l.kind==="dependency");
+  assert.notEqual(canvasLinkPath(dependencyBefore),canvasLinkPath(dependencyAfter));
+  assert.match(canvasLinkPath(dependencyAfter),/^M /);
+  assert.match(canvasArrowTransform(dependencyAfter),/^translate\(/);
+  assert.equal(moved.nodes[0].x,clamped.x);
+  assert.equal(moved.nodes[0].y,clamped.y);
 });
