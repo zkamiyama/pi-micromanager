@@ -42,8 +42,12 @@ export function buildJobPrompt(workflow:WorkflowInstance,task:TaskState,kind:Job
   reportSnippets:readonly string[]=[]):string {
   const depends=task.spec.dependsOn.map(d=>d.taskId+" ("+d.gate+")").join(", ")||"none";
   const qcSource=task.parentTaskId?workflow.tasks[task.parentTaskId]?.lastQc:undefined;
+  const criteria=task.spec.acceptanceCriteria?.map((line,index)=>
+    (index+1)+". "+line).join("\n");
   const common="Workflow: "+workflow.definition.title+"\nTask: "+task.spec.title+
     "\nTask ID: "+task.spec.id+"\nDependencies: "+depends+
+    (task.spec.description?"\nRequirements:\n"+task.spec.description+"\n":"")+
+    (criteria?"\nAcceptance criteria:\n"+criteria+"\n":"")+
     "\nAttempt: "+task.attempts+
     (qcSource?"\nFrozen parent QC: "+qcSource.runId+" verdict="+qcSource.verdict+" SHA="+qcSource.headSha+"\n":"\n")+
     "Work only in the selected repository workspace. "+
