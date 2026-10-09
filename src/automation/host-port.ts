@@ -62,7 +62,13 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       }else await workspace(job.projectId,job.workspaceId);
       const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
       const task=current.tasks[job.taskId];
-      if(!task||options.validateRun(task,job.seat)!==job.runId)
+      if(!task)throw new Error("Unknown Task");
+      if(job.kind==="planning"){
+        const amendment=current.amendments.find(a=>a.targetTaskId===job.taskId&&
+          a.status==="planning"&&"plan-"+a.id===job.runId);
+        if(!amendment||job.seat!=="planner")
+          throw new Error("Stale/invalid Sol planning Run");
+      }else if(options.validateRun(task,job.seat)!==job.runId)
         throw new Error("Stale or invalid Task admission");
       const reservation:Reservation={
         projectId:job.projectId,orchestraWorkspaceId:job.orchestraWorkspaceId,
