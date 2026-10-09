@@ -20,6 +20,8 @@ export interface ExecutorPort {
   launch(job:LaunchJob):Promise<AgentBinding>;
   verify(binding:AgentBinding,config:AutopilotConfig,expectedSha?:string):Promise<Verification>;
   checkSnapshot?(binding:AgentBinding,expectedSha:string):Promise<void>;
+  /** Re-read an already settled Pi Session's durable report without replaying a turn. */
+  recoverReport?(binding:AgentBinding):Promise<void>;
   onTransition?(binding:AgentBinding):void;
 }
 const roles:Record<TaskState["spec"]["role"],Seat>={
@@ -158,6 +160,8 @@ export class AutopilotEngine {
         if(!existing.requestId.startsWith("auto:"))
           throw new Error("Human-owned planning Run cannot be automatically adopted");
         if(existing.phase==="settled"){
+          if(!this.ledger.report(existing)&&this.port.recoverReport)
+            await this.port.recoverReport(existing);
           const report=this.ledger.report(existing);
           if(!report||report.kind!=="plan")
             throw new Error("Sol settled without a structured intervention plan");
@@ -305,6 +309,8 @@ export class AutopilotEngine {
   }
   private async finalize(record:AutopilotRecord,current:WorkflowInstance,task:TaskState,
     binding:AgentBinding,kind:JobKind):Promise<void>{
+    if(kind!=="implementation"&&!this.ledger.report(binding)&&this.port.recoverReport)
+      await this.port.recoverReport(binding);
     const report=this.ledger.report(binding);
     if(binding.latestKind==="agent_settled"&&binding.latestText==="Agent interrupted")
       throw new Error("Run "+binding.runId+" was interrupted, not completed");
