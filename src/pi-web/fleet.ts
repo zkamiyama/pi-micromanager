@@ -393,6 +393,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       <div class="mm-f-canvas-nav">
         <span>${newest.length} live/pending Runs · ${pageCount>1?"Page "+(s.canvasPage+1)+"/"+pageCount:"All Runs visible"}</span>
         <span class="mm-f-canvas-legend"><i></i> Orchestra membership <b></b> Task dependency</span>
+        <button @click=${()=>{s.nodePositions.clear();s.canvasDimmed=false;refresh(ctx);}}>Reset layout</button>
         <button ?disabled=${s.canvasPage===0} @click=${()=>{s.canvasPage--;refresh(ctx);}}>← Previous</button>
         <button ?disabled=${s.canvasPage>=pageCount-1} @click=${()=>{s.canvasPage++;refresh(ctx);}}>Next →</button>
       </div>
@@ -408,7 +409,11 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
               fill="none" stroke=${link.kind==="dependency"?"var(--pi-accent)":"var(--pi-border-muted)"}
               stroke-width=${link.kind==="dependency"?2:1.5}
               stroke-dasharray=${link.kind==="orchestra"?"6 6":""}
-              stroke-linecap="round" />`)}
+              stroke-linecap="round" />
+              ${link.kind==="dependency"?html`<polygon points="-8,-4 0,0 -8,4"
+                transform=${"translate("+link.to.x+" "+link.to.y+") rotate("+
+                  (Math.atan2(link.to.y-link.from.y,link.to.x-link.from.x)*180/Math.PI)+")"}
+                fill="var(--pi-accent)" />`:null}`)}
             <circle cx=${graph.root.x} cy=${graph.root.y} r="5" fill="var(--pi-accent)" />
           </svg>
           ${graph.nodes.map(node=>renderNode(node))}
@@ -551,7 +556,7 @@ const css=`
   .mm-f-node{position:absolute;z-index:2;width:280px;height:234px;box-sizing:border-box;display:flex;flex-direction:column;
     border:1px solid var(--pi-border-muted);border-radius:10px;background:var(--pi-surface);
     box-shadow:0 8px 24px rgba(0,0,0,.13);overflow:hidden;transition:opacity .18s ease,border-color .18s ease;}
-  .mm-f-node.mm-f-selected{border-color:var(--pi-accent);box-shadow:0 8px 25px rgba(0,0,0,.16);}
+  .mm-f-node.mm-f-selected{z-index:4;border-color:var(--pi-accent);box-shadow:0 8px 25px rgba(0,0,0,.16);}
   .mm-f-dimmed .mm-f-node{opacity:.35;}
   .mm-f-dimmed .mm-f-connections{opacity:.27;}
   .mm-f-node-head{display:flex;align-items:center;gap:8px;padding:9px 10px;cursor:grab;touch-action:none;
