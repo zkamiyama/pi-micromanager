@@ -235,9 +235,12 @@ const plugin:PiWebServerPlugin={
             const input=object(ctx.input),workflowId=id(input.workflowId);
             const action=object(input.action) as unknown as WorkflowAction;
             const running=ledger.get(p,o,workflowId)?.enabled===true;
-            if(running&&!["request_intervention","cancel_amendment","resume_after_diagnosis"].includes(action.type))
+            const automatedRuns=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
+              b.requestId.startsWith("auto:"));
+            if((running||automatedRuns)&&
+              !["request_intervention","cancel_amendment","resume_after_diagnosis"].includes(action.type))
               throw new WorkflowError("autopilot_owns_transition",
-                "Autopilot owns automatic Task/QC transitions; pause before using simulation controls");
+                "Autopilot owns real Task/QC transitions; simulation commands cannot overwrite its history");
             if(!Number.isSafeInteger(input.expectedRevision))throw new WorkflowError("invalid_revision","Expected revision required");
             const next=store.act(p,o,workflowId,input.expectedRevision as number,
               id(input.commandId),action);
