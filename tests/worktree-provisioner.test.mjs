@@ -63,7 +63,9 @@ test("Provisioning preview is non-mutating and creates an owned branch only afte
     assert.match(plan.branch,/^mm\/[a-f0-9]{16}\/flow\/api$/);
     assert.match(plan.path,/managed-worktrees/);
     assert.equal(x.registered.size,0);
-    const created=await x.manager.create("project","orchestra",plan.id);
+    await assert.rejects(x.manager.create("project","orchestra",plan.id,"/other"),
+      /project path changed/);
+    const created=await x.manager.create("project","orchestra",plan.id,"/repo");
     assert.equal(created.stage,"created");
     assert.equal(created.path,plan.path);
     assert.equal(created.baseSha,SHA);
