@@ -98,7 +98,7 @@ export class ScreenshotEvidence {
     const scope=automationScope(projectId,orchestraWorkspaceId);
     return this.db.prepare("SELECT "+IMAGE_FIELDS+" FROM screenshot_evidence"+
       " WHERE scope=? AND workflow_id=? ORDER BY created_at DESC LIMIT 40")
-      .all(scope,workflowId) as ScreenshotArtifact[];
+      .all(scope,workflowId) as unknown as ScreenshotArtifact[];
   }
   private row(projectId:string,orchestraWorkspaceId:string,workflowId:string,id:string):ArtifactRow {
     if(!/^[0-9a-f-]{36}$/.test(id))throw new Error("Invalid screenshot ID");
