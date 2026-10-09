@@ -24,6 +24,8 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **New opt-in Autopilot (PR #7):** A real Sol goal-proposal Session can first turn a natural-language objective into a strictly validated DAG for **explicit human approval**. After approval and Worktree/model configuration, the server-side scheduler runs **validated, saved** DAGs in fresh Pi Sessions. It admits ready implementation Tasks, checks Git commits and real test exit codes, starts independent read-only QC, honors QC retry budgets and human holds, dispatches Sol's typed intervention plan and parallel frozen-snapshot diagnosis/synthesis, and persists bounded evidence receipts. An unknown/aborted Run **pauses safely**; server restart reconciles existing Sessions from durable Pi turn markers before resuming. Automatic Git merge/push is prohibited.
 
+**Evidence Journal & confirmed retention (PR #7):** The Journal tab can read a finite, evidence-linked projection of Task status, QC SHA/verdict, one-shot Pi Runs and durable evidence references. The operator may preview and confirm pruning public activity projections over 30 days old **only when** their Runs are sealed and entire Workflows are complete; no native Pi JSONL, QC evidence, command receipt, Workflow state or Git Worktree is removed. Test outputs are retained as bounded exit/size/SHA-256 fingerprints rather than potentially sensitive stdout/stderr.
+
 **Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. The planner window represents a real Session only when Sol is actually running.
 
 **Still not implemented/verified:** Automatic discovery/registration of newly created Worktrees as PI WEB Workspace IDs, unattended goal → execution without explicit DAG approval/Workspace setup, independent provider-authenticated multi-Agent E2E, comprehensive screenshot and artifact evidence, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, Git merge/push and approved PR publication, ADR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
@@ -38,6 +40,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - [ADR-0006 — Ephemeral execution runs and dynamic live grid](docs/adr/0006-ephemeral-execution-runs.md)
 - [ADR-0007 — Opt-in durable Autopilot and fail-closed Pi execution](docs/adr/0007-opt-in-autopilot.md)
 - [ADR-0008 — Managed Worktree provisioning and verified Git integration](docs/adr/0008-git-worktree-provisioning-and-integration.md)
+- [ADR-0009 — Evidence-linked Journal and conservative activity retention](docs/adr/0009-journal-and-conservative-retention.md)
 
 ## Development
 
@@ -126,6 +129,36 @@ the upstream commit before automatic downstream execution.
 
 Review [ADR-0008](docs/adr/0008-git-worktree-provisioning-and-integration.md)
 for reservation/reconciliation details and the remaining PI WEB API limitation.
+
+## Evidence Journal and safe manual retention
+
+Open **Micromanager → Journal → Load evidence-linked journal** to inspect the
+authoritative Task lifecycle, QC verdict/commit SHA, native one-shot Run
+identities and matching immutable evidence references without copying the Pi
+transcript. The evidence summaries are finite local projections; raw host test
+stdout/stderr are not duplicated. The Workflow and native Pi Sessions remain
+the source of truth for their respective state.
+
+Within Journal, **Review old public activity retention** offers a read-only
+preview for activity older than **30–365 days**. Only activity rows from
+durably **sealed** Runs whose entire Workflows are integrated/completed are
+eligible. Pending human decisions, unmerged QC passes, unsealed or uncertain
+Runs and missing evidence prevent pruning. A second confirmation rechecks the
+exact cohort under a transaction; lost or stale previews fail closed. At most
+200 rows are selected per preview. The native Pi Session, Git Workspace,
+Task/QC history, evidence receipts and command idempotency receipts are
+**never** deleted by this operation.
+
+**Native Pi Session archival/deletion and Worktree GC are still deliberately
+not automatic.** The currently published PI WEB host capabilities do not
+provide session cleanup or workspace deletion APIs to paired plugins, and
+directly removing PI JSONL/worktrees would bypass host-owned lifecycle safety.
+
+The normal build CI additionally exercises **real Git commands** in a
+disposable test repository (Worktree creation, feature commit and verified
+fast-forward integration). This is neither a user's real PI WEB host nor an
+authenticated Pi provider test. For design/security boundaries, see
+[ADR-0009](docs/adr/0009-journal-and-conservative-retention.md).
 
 ## Orchestra canvas controls
 
