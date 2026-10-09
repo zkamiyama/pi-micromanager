@@ -459,3 +459,30 @@ test("PI WEB public server fully gates YOLO Git push and Draft PR on two exact a
     assert.equal(host.sessions.size,2,"Human approvals must not replay previous Pi Sessions");
   }finally{await host.cleanup();}
 });
+
+test("PI WEB git.commit ask defers Session creation until human grants that exact attempt",async()=>{
+  const host=fakePluginHost();
+  try{
+    await host.activate();
+    await host.request("create",{...definition,id:"commit-gated",
+      permissions:{default:"allow",actions:{"git.commit":"ask"}}});
+    await host.request("auto.configure",{workflowId:"commit-gated",config});
+    await host.request("auto.start",{workflowId:"commit-gated"});
+    const approval=await eventually(async()=>{
+      const saved=await host.request("auto.permissions",{workflowId:"commit-gated"});
+      return saved.approvals.find(a=>a.action==="git.commit");
+    });
+    assert.equal(approval.state,"pending");
+    assert.equal(approval.runId,"impl-api-1");
+    assert.equal(approval.headSha,"pre-commit");
+    assert.equal(host.sessions.size,0,
+      "Without permission, no model-backed Pi Session may be admitted");
+    assert.equal((await host.request("get","commit-gated")).tasks.api.status,"ready");
+    await host.request("auto.permission.decide",{approvalId:approval.id,decision:"approved"});
+    const launched=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.kind==="implementation")&&
+      s.commands.some(c=>c.type==="message")));
+    assert.ok(launched);
+    assert.equal(host.sessions.size,1);
+  }finally{await host.cleanup();}
+});
