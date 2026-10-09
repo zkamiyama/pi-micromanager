@@ -148,15 +148,6 @@ export class PublicationManager {
       return pr as unknown as PrResult;
     }).filter(pr=>pr.headRefName===branch);
   }
-  private async verifiedWorkspace(p:string,w:string,taskId:string,pub:PublicationConfig,
-    expectedSha:string){
-    const api=this.options.workspaces();
-    if(!api)throw new Error("PI WEB workspaces capability unavailable");
-    const workspaceId=this.options.ledger.get(p,w,w)?.config.workspaces[taskId];
-    // Workspaces are selected using the exact caller-supplied workflow config,
-    // never by a Session display name or branch prefix.
-    return workspaceId;
-  }
   /** At most one external side effect per tick, after all QC/permission gates. */
   async step(record:AutopilotRecord,workflow:WorkflowInstance):Promise<"acted"|"waiting"|"none">{
     const pub=record.config.publication;
@@ -197,6 +188,9 @@ export class PublicationManager {
       if(this.options.agents.hasUnsealedWorkspace(p,workspaceId))
         throw new Error("Worker lease changed during Git publication preflight");
       const donePush=this.existing(p,o,w,task.spec.id,"git.push",qc.runId);
+      if(donePush&&donePush.fingerprint!==fingerprint("git.push",
+        qc.runId,sha,branch,dest))
+        throw new Error("Git publication destination changed after reservation");
       if(!donePush||donePush.state!=="completed"){
         const approval=this.options.permissions.ensure(p,o,w,task.spec.id,
           "git.push",qc.runId,qc.headSha,pub);
@@ -205,15 +199,16 @@ export class PublicationManager {
         const remote=await this.remoteSha(target.path,pub,branch);
         if(remote&&remote!==sha)
           throw new Error("Remote branch has a different commit; never force push");
-        if(!donePush&&remote===sha){
+        if(remote===sha){
           const receipt=this.reserve(p,o,w,task.spec.id,"git.push",
             qc.runId,sha,branch,dest);
-          this.complete(receipt,"Remote already matched QC commit "+sha);
+          if(receipt.state!=="completed")
+            this.complete(receipt,"Remote matches QC commit "+sha);
           return "acted";
         }
+        if(donePush)
+          throw new Error("Reserved Git push is uncertain; remote does not contain expected QC SHA");
         const receipt=this.reserve(p,o,w,task.spec.id,"git.push",qc.runId,sha,branch,dest);
-        if(receipt.state==="reserved"&&donePush)
-          throw new Error("Reserved Git push is uncertain; inspect remote before any retry");
         if(receipt.state==="reserved"){
           const pushed=await git(this.options.host,target.path,
             ["push","--porcelain",pub.remote,"HEAD:refs/heads/"+branch],120000);
@@ -230,6 +225,9 @@ export class PublicationManager {
       if(approval.decision==="deny")continue;
       if(approval.decision==="ask")return "waiting";
       const previous=this.existing(p,o,w,task.spec.id,"github.pr.create",qc.runId);
+      if(previous&&previous.fingerprint!==fingerprint("github.pr.create",
+        qc.runId,sha,branch,dest))
+        throw new Error("GitHub PR target changed after reservation");
       if(previous?.state==="completed")continue;
       // An existing identical Draft PR is proof even if the previous gh call
       // returned uncertain. A missing PR after reservation needs a human.
