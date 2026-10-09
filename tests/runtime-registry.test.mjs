@@ -91,3 +91,21 @@ test("A QC Run cannot begin before its active writer relinquishes the worktree",
  db.reserve(impl);
  assert.throws(()=>db.reserve(reservation("qc-a-1","qc","linked-wt","review-1")) ,/leased/);
 }));
+
+test("An aborted Pi Run cannot lose its interruption proof to a late token or tool event",()=>fixture(db=>{
+ const run=reservation("qc-abort-1","qc","wt-review","abort-1");
+ db.reserve(run);db.assign(run,"aborted-session");
+ let binding=db.get("project","orchestra-main","aborted-session");
+ db.record(binding,{kind:"agent_started",text:"Agent started",at:1700000000000,sequence:1});
+ db.record(binding,{kind:"agent_settled",text:"Agent interrupted",at:1700000001000,sequence:2});
+ binding=db.get("project","orchestra-main","aborted-session");
+ assert.equal(binding.phase,"settled");
+ assert.equal(binding.latestKind,"agent_settled");
+ assert.equal(binding.latestText,"Agent interrupted");
+ db.record(binding,{kind:"message_delta",text:"Late buffered text",at:1700000002000,sequence:3});
+ db.record(binding,{kind:"tool_finished",text:"Late tool completion",at:1700000003000,sequence:4});
+ const terminal=db.get("project","orchestra-main","aborted-session");
+ assert.equal(terminal.phase,"settled");
+ assert.equal(terminal.latestKind,"agent_settled");
+ assert.equal(terminal.latestText,"Agent interrupted");
+}));
