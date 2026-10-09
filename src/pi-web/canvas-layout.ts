@@ -42,6 +42,14 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/** Keep pointer and keyboard moves within the canvas, above the Orchestrator dock. */
+export function clampCanvasPosition(position: CanvasPosition, rootY: number): CanvasPosition {
+  return {
+    x: clamp(position.x, 12, CANVAS_WIDTH - NODE_WIDTH - 12),
+    y: clamp(position.y, 12, rootY - NODE_HEIGHT - 12),
+  };
+}
+
 /** Nodes can be repositioned but never dragged off-canvas or over the Orchestrator dock. */
 export function buildCanvasGraph(
   runs: readonly CanvasRun[],
@@ -58,8 +66,7 @@ export function buildCanvasGraph(
     const y = override && Number.isFinite(override.y) ? override.y : defaultY;
     return {
       ...run,
-      x: clamp(x, 12, CANVAS_WIDTH - NODE_WIDTH - 12),
-      y: clamp(y, 12, root.y - NODE_HEIGHT - 12),
+      ...clampCanvasPosition({ x, y }, root.y),
     };
   });
   const links: CanvasLink[] = nodes.map(node => ({
