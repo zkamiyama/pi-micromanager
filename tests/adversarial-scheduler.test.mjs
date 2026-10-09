@@ -245,3 +245,79 @@ test("Workflow import rejects task kind/role combinations that bypass seat accou
  ]);
  assert.doesNotThrow(()=>newWorkflow(valid,NOW));
 });
+
+test("Reentrant scheduler ticks cannot duplicate Task admissions or launch the same Pi Run",async()=>{
+ const x=harness(defOf([impl("single")],{...roles,implementer:1},"single"));
+ try{
+   await Promise.all(Array.from({length:120},()=>x.tick()));
+   assert.equal(x.wf().tasks.single.attempts,1);
+   assert.equal(x.launches.length,0,"The first wave performs one CAS admission");
+   await Promise.all(Array.from({length:120},()=>x.tick()));
+   assert.equal(x.launches.length,1,"The next wave opens one and only one Pi Session");
+   assert.equal(x.run("impl-single-1").phase,"running");
+   await Promise.all(Array.from({length:120},()=>x.tick()));
+   assert.equal(x.launches.length,1,"A third wave cannot duplicate the hosted Run");
+ }finally{x.close();}
+});
+
+test("Four investigators use maximum 2 architect + 1 reviewer slots without oversubscription",()=>{
+ const def=defOf([impl("root")],
+  {implementer:1,reviewer:1,architect:2,planner:1},"diagnostic-pool");
+ let w=newWorkflow(def,NOW);
+ w=action(w,{type:"start",taskId:"root"});
+ w=action(w,finished("root"));
+ w=action(w,{type:"arm_diagnosis",amendmentId:"four",targetTaskId:"root",
+  afterQcRunId:"next",agents:[
+   {id:"architect-a",title:"Architecture one",role:"architect",model:"mock/fixed"},
+   {id:"architect-b",title:"Architecture two",role:"architect",model:"mock/fixed"},
+   {id:"reviewer-a",title:"Review one",role:"reviewer",model:"mock/fixed"},
+   {id:"reviewer-b",title:"Review two",role:"reviewer",model:"mock/fixed"},
+  ]});
+ w=action(w,qc("root",1,"fail"));
+ assert.equal(w.tasks.root.status,"held");
+ let peakArchitect=0,peakReviewer=0,launches=0;
+ const bindings=[];
+ const cfg=configFor([impl("root")]);
+ for(let step=0;step<75;step++){
+   const active=Object.values(w.tasks).filter(t=>t.status==="running"&&
+     t.spec.kind==="diagnosis");
+   const architects=active.filter(t=>t.spec.role==="architect").length;
+   const reviewers=active.filter(t=>t.spec.role==="reviewer").length;
+   peakArchitect=Math.max(peakArchitect,architects);
+   peakReviewer=Math.max(peakReviewer,reviewers);
+   assert.ok(architects<=2&&reviewers<=1,"Diagnostic role quota exceeded");
+   const next=planNext(w,bindings,cfg);
+   if(next?.action==="start"){
+     w=action(w,{type:"start",taskId:next.taskId});
+     continue;
+   }
+   if(next?.action==="launch"){
+     bindings.push({workflowId:def.id,taskId:next.taskId,seat:next.seat,
+       runId:next.runId,phase:"running"});
+     launches++;
+     continue;
+   }
+   const running=Object.values(w.tasks).find(t=>
+     t.status==="running"&&t.spec.kind==="diagnosis");
+   if(running){
+     const bound=bindings.find(x=>x.taskId===running.spec.id);
+     if(!bound)throw Error("Running investigator was not admitted");
+     bound.phase="settled";
+     w=action(w,{type:"complete",taskId:running.spec.id});
+     continue;
+   }
+   const diag=Object.values(w.tasks).filter(t=>t.spec.kind==="diagnosis");
+   if(diag.length===4&&diag.every(t=>t.status==="done"))break;
+   throw Error("Investigator deadlock: "+JSON.stringify(Object.values(w.tasks)
+     .map(t=>[t.spec.id,t.status])));
+ }
+ const diagnostic=Object.values(w.tasks).filter(t=>t.spec.kind==="diagnosis");
+ assert.equal(diagnostic.length,4);
+ assert.ok(diagnostic.every(t=>t.status==="done"));
+ assert.equal(launches,4);
+ assert.equal(peakArchitect,2);
+ assert.equal(peakReviewer,1);
+ assert.equal(w.tasks["synthesis-four"].status,"ready");
+ assert.equal(w.tasks.root.status,"held",
+   "The human barrier must remain until synthesis and explicit approval");
+});
