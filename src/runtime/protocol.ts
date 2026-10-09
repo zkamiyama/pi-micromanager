@@ -57,7 +57,7 @@ export function parseRuntimeControl(input: unknown): RuntimeControl | undefined 
     if(input.job!==undefined){
       if(!record(input.job)||!bounded(input.job.runId,128)||
         !/^[a-z][a-z0-9-]{0,127}$/.test(input.job.runId)||
-        !["implementation","qc","diagnosis","synthesis"].includes(String(input.job.kind)))return;
+        !["implementation","qc","diagnosis","synthesis","planning"].includes(String(input.job.kind)))return;
       job={runId:input.job.runId,kind:input.job.kind as RunJobContext["kind"]};
     }
     return { type: "configure", requestId, provider: input.provider, model: input.model,
