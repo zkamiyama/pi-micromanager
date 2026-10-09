@@ -176,9 +176,9 @@ No fake Agents, automatic dispatch, synthesized chats, or permanent Session reus
 ## Boundaries and safety
 
 - The control plane controls *workflow admission*, not the model's hidden reasoning; observable text and tools only.
-- No implicit production auto-merge, code mutation, model credential storage, or destructive workspace cleanup.
+- No implicit Git merge/push, provider credential storage or destructive Workspace cleanup. Code changes occur **only** through explicitly started Pi implementation Runs in validated, isolated Worktrees.
 - All real modifying agents must be in isolated worktrees before concurrent execution is permitted.
-- The eventual control plane will keep raw Pi transcript files in their owning host, store only finite event projections/evidence references and promote important ADRs through PRs in the target repo.
+- Native Pi transcripts stay with their owning host; Micromanager stores bounded public activity projections and immutable evidence references instead of copying raw JSONL. ADR promotion into target repos is not yet implemented.
 - TTS/Swarmfield is a later, deliberately low-priority experiment.
 
 ## License
@@ -187,6 +187,6 @@ MIT, see [LICENSE](LICENSE).
 
 ## Per-attempt fresh Pi Sessions
 
-Each Luna attempt and every QC Run creates a fresh Pi Session. The same model may be reused, but the old session context is **never** the next run. The dynamic **Live Runs** PI WEB panel shows running/pending sessions; settled runs move to History (no steer). The Workflow Task, not the Agent role, remains the durable object. Evidence must be sealed before a modifying worktree can be released. See [ADR-0006](docs/adr/0006-ephemeral-execution-runs.md).
+Each Luna attempt and every QC Run creates a fresh Pi Session. The same model may be reused, but the old session context is **never** the next run. The dynamic **Live Runs** PI WEB panel shows running/pending sessions; settled runs move to History (no steer). The Workflow Task, not the Agent role, remains the durable object. Evidence must be sealed before a modifying worktree can even become eligible for separate, manual lifecycle cleanup. See [ADR-0006](docs/adr/0006-ephemeral-execution-runs.md).
 
 The manual one-shot Pi creation form is experimental: it requires an admitted Task run, an existing linked worktree for a modifying Luna, a target PI WEB Workspace ID, and a configured provider/model. An opt-in, background, DAG-driven Autopilot scheduler and explicit managed Worktree creation are available, but authenticated real-provider E2E is not yet proven. The earlier DAG demo and its transition buttons remain simulation-only.
