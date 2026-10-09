@@ -46,3 +46,26 @@ test('revision CAS and command ID idempotency survive restart', () => {
     } finally { store.close(); }
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+
+test('Task-scoped hold survives SQLite restart and command-ID replays', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-mm-intervention-'));
+  const path = join(dir, 'store.sqlite');
+  let store;
+  try {
+    store = new WorkflowStore(path);
+    store.create('p', 'w', def());
+    const instruction = 'After next QC, pause for Sol to arrange independent diagnosis.';
+    const action = { type: 'request_intervention', interventionId: 'pause-next-qc',
+      targetTaskId: 'test', afterQcRunId: 'next', instruction };
+    const held = store.act('p', 'w', 'example', 0, 'human-request-1', action);
+    assert.equal(held.amendments[0].status, 'planning');
+    store.close();
+    store = new WorkflowStore(path);
+    assert.equal(store.get('p', 'w', 'example').amendments[0].instruction, instruction);
+    assert.equal(store.act('p', 'w', 'example', 0, 'human-request-1', action).revision, 1);
+    errCode(() => store.act('p', 'w', 'example', 0, 'human-request-1',
+      { ...action, targetTaskId: 'different' }), 'command_conflict');
+    errCode(() => store.act('p', 'w', 'example', 0, 'another-command', action), 'revision_conflict');
+    assert.equal(store.get('p', 'w', 'example').amendments.length, 1);
+  } finally { store?.close(); rmSync(dir, { recursive: true, force: true }); }
+});

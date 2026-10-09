@@ -136,10 +136,18 @@ function satisfies(task: TaskState, gate: Gate): boolean {
   if (gate === "qc_passed") return task.status === "passed" || task.status === "integrated";
   return ["done", "passed", "integrated"].includes(task.status);
 }
+/** A human hold blocks downstream work; only its own diagnostic nodes may read the finalized QC. */
+function dependencySatisfied(instance: WorkflowInstance, downstream: TaskState, dep: Dependency): boolean {
+  const upstream = instance.tasks[dep.taskId];
+  if (!upstream) return false;
+  if (upstream.status !== "held") return satisfies(upstream, dep.gate);
+  return downstream.spec.kind === "diagnosis" && downstream.parentTaskId === dep.taskId &&
+    dep.gate === "qc_finalized" && upstream.lastQc !== undefined;
+}
 function releaseReady(instance: WorkflowInstance): void {
   for (const t of Object.values(instance.tasks)) {
     if (t.status !== "blocked") continue;
-    if (t.spec.dependsOn.every(d => satisfies(instance.tasks[d.taskId]!, d.gate))) t.status = "ready";
+    if (t.spec.dependsOn.every(d => dependencySatisfied(instance, t, d))) t.status = "ready";
   }
 }
 export function newWorkflow(input: WorkflowDefinition, at: string): WorkflowInstance {
@@ -217,7 +225,7 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
     case "start": {
       const t = taskById(instance, action.taskId);
       invariant(t.status === "ready", "not_ready", `${t.spec.id} is not ready`);
-      invariant(t.spec.dependsOn.every(d => satisfies(taskById(instance, d.taskId), d.gate)), "blocked", "Dependencies not satisfied");
+      invariant(t.spec.dependsOn.every(d => dependencySatisfied(instance, t, d)), "blocked", "Dependencies not satisfied");
       invariant(activeRuns(instance, t.spec.role) < instance.definition.maxParallelByRole[t.spec.role], "capacity", "Role capacity exhausted");
       t.status = "running"; t.attempts += 1;
       message = `Started ${t.spec.id} attempt ${t.attempts}`;

@@ -137,3 +137,124 @@ test('cancelling an unactivated amendment resumes the original QC loop', () => {
   assert.equal(w.tasks.schema.status, 'ready');
   assert.equal(w.tasks['diag-investigate-a'], undefined);
 });
+
+const investigators = () => [
+  { id: 'astra', title: 'Investigate root cause', role: 'architect', model: 'astra-max' },
+  { id: 'opus', title: 'Find alternative solutions', role: 'architect', model: 'claude-opus' },
+];
+const request = (taskId = 'schema', id = 'human-change') => ({
+  type: 'request_intervention', interventionId: id, targetTaskId: taskId,
+  afterQcRunId: 'next', instruction: 'After the next QC, ask Astra and Opus to analyze in parallel.',
+});
+
+test('Task-scoped human intervention holds QC while Sol is still planning', () => {
+  let w = newWorkflow(definition(), now);
+  w = advance(w, { type: 'start', taskId: 'schema' });
+  w = advance(w, finish('schema'));
+  w = advance(w, request());
+  assert.equal(w.amendments[0].status, 'planning');
+  assert.equal(w.amendments[0].targetTaskId, 'schema');
+  w = advance(w, qc('schema', 1, 'fail'));
+  assert.equal(w.tasks.schema.status, 'held');
+  assert.equal(w.tasks.schema.qcRounds, 1);
+  assert.equal(w.tasks.api.status, 'blocked');
+  assert.equal(w.tasks['diag-human-change-astra'], undefined);
+  expectCode(() => advance(w, { type: 'start', taskId: 'schema' }), 'not_ready');
+  w = advance(w, { type: 'plan_intervention', interventionId: 'human-change',
+    rationale: 'Independent root-cause and alternative analyses before rework',
+    agents: investigators() });
+  assert.equal(w.amendments[0].status, 'activated');
+  assert.equal(w.tasks['diag-human-change-astra'].status, 'ready');
+  assert.equal(w.tasks['diag-human-change-opus'].status, 'ready');
+  assert.equal(w.tasks['synthesis-human-change'].status, 'blocked');
+  w = advance(w, { type: 'start', taskId: 'diag-human-change-astra' });
+  w = advance(w, { type: 'start', taskId: 'diag-human-change-opus' });
+  w = advance(w, { type: 'complete', taskId: 'diag-human-change-astra' });
+  assert.equal(w.tasks['synthesis-human-change'].status, 'blocked');
+  w = advance(w, { type: 'complete', taskId: 'diag-human-change-opus' });
+  w = advance(w, { type: 'start', taskId: 'synthesis-human-change' });
+  w = advance(w, { type: 'complete', taskId: 'synthesis-human-change' });
+  w = advance(w, { type: 'resume_after_diagnosis', amendmentId: 'human-change', decision: 'rework' });
+  assert.equal(w.tasks.schema.status, 'ready');
+  assert.equal(w.tasks.schema.qcRounds, 1);
+});
+
+test('Sol plan may be submitted before QC, but does not start diagnosis prematurely', () => {
+  let w = newWorkflow(definition(), now);
+  w = advance(w, { type: 'start', taskId: 'schema' });
+  w = advance(w, request('schema', 'planned-early'));
+  w = advance(w, { type: 'plan_intervention', interventionId: 'planned-early',
+    rationale: 'Independent review', agents: investigators() });
+  assert.equal(w.amendments[0].status, 'armed');
+  assert.equal(w.tasks['diag-planned-early-astra'], undefined);
+  w = advance(w, finish('schema'));
+  w = advance(w, qc('schema', 1, 'pass'));
+  assert.equal(w.tasks.schema.status, 'held');
+  assert.equal(w.tasks.api.status, 'blocked');
+  assert.equal(w.tasks['diag-planned-early-astra'].status, 'ready');
+  expectCode(() => advance(w, { type: 'integrate', taskId: 'schema' }), 'invalid_transition');
+});
+
+test('Human QC barrier blocks qc_finalized downstream gates except its own diagnosis tasks', () => {
+  const def = definition();
+  def.tasks[1].dependsOn = [{ taskId: 'schema', gate: 'qc_finalized' }];
+  let w = newWorkflow(def, now);
+  w = advance(w, { type: 'start', taskId: 'schema' });
+  w = advance(w, finish('schema'));
+  w = advance(w, request());
+  w = advance(w, qc('schema', 1, 'fail'));
+  assert.equal(w.tasks.api.status, 'blocked');
+  w = advance(w, { type: 'plan_intervention', interventionId: 'human-change',
+    rationale: 'Inspect root cause', agents: investigators() });
+  assert.equal(w.tasks.api.status, 'blocked');
+  assert.equal(w.tasks['diag-human-change-astra'].status, 'ready');
+});
+
+test('Intervention applies only to the clicked task; independent tasks stay ready', () => {
+  const def = definition();
+  def.tasks[1].dependsOn = [];
+  let w = newWorkflow(def, now);
+  w = advance(w, { type: 'start', taskId: 'schema' });
+  w = advance(w, finish('schema'));
+  w = advance(w, request());
+  w = advance(w, qc('schema', 1, 'fail'));
+  assert.equal(w.tasks.schema.status, 'held');
+  assert.equal(w.tasks.api.status, 'ready');
+  w = advance(w, { type: 'start', taskId: 'api' });
+  assert.equal(w.tasks.api.status, 'running');
+});
+
+test('Unplanned hold can be cancelled before or after QC without discarding evidence', () => {
+  let w = newWorkflow(definition(), now);
+  w = advance(w, { type: 'start', taskId: 'schema' });
+  w = advance(w, finish('schema'));
+  w = advance(w, request('schema', 'first-hold'));
+  w = advance(w, { type: 'cancel_amendment', amendmentId: 'first-hold' });
+  w = advance(w, qc('schema', 1, 'fail'));
+  assert.equal(w.tasks.schema.status, 'ready');
+  w = advance(w, { type: 'start', taskId: 'schema' });
+  w = advance(w, finish('schema'));
+  w = advance(w, request('schema', 'second-hold'));
+  w = advance(w, qc('schema', 2, 'pass'));
+  assert.equal(w.tasks.schema.status, 'held');
+  w = advance(w, { type: 'cancel_amendment', amendmentId: 'second-hold' });
+  assert.equal(w.tasks.schema.status, 'passed');
+  assert.equal(w.tasks.schema.qcRounds, 2);
+  assert.equal(w.tasks.api.status, 'ready');
+});
+
+test('Failed Sol plan leaves safe hold and rejects a second conflicting intervention', () => {
+  let w = newWorkflow(definition(), now);
+  w = advance(w, { type: 'start', taskId: 'schema' });
+  w = advance(w, finish('schema'));
+  w = advance(w, request());
+  expectCode(() => advance(w, request('schema', 'other-hold')), 'barrier_exists');
+  w = advance(w, qc('schema', 1, 'fail'));
+  expectCode(() => advance(w, { type: 'plan_intervention', interventionId: 'human-change', agents: [
+    { id: 'bad', title: 'Bad', role: 'implementer', model: 'any' },
+  ], rationale: 'Unsafe modifying agent' }), 'invalid_agents');
+  assert.equal(w.amendments[0].status, 'planning');
+  assert.equal(w.tasks.schema.status, 'held');
+  expectCode(() => advance(w, { type: 'plan_intervention', interventionId: 'unknown', agents: investigators(),
+    rationale: 'Wrong intervention' }), 'invalid_transition');
+});
