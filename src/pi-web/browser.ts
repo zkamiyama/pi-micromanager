@@ -950,16 +950,70 @@ const plugin: PiWebPlugin = {
                 <details class="mm-quick-setup" ?open=${!state.quickProfile}>
                   <summary>${state.quickProfile?"Project setup / change settings":
                     "First-time project setup (required)"}</summary>
-                  <p>These defaults are saved once per project Workspace. Replace the Pi model
-                    IDs and choose a real test command. <code>github.pr.merge: ask</code>
-                    requests review; <code>allow</code> permits hands-free merge after QC and
-                    GitHub CI. Sol cannot override your policy. A Plan &amp; run click explicitly
-                    authorizes new code changes under these settings.</p>
-                  <label for="mm-quick-config">Saved run profile (JSON)</label>
-                  <textarea id="mm-quick-config" rows="14" spellcheck="false"
-                    .value=${state.quickSetupDraft} ?disabled=${state.busy}
-                    @input=${(e:Event)=>{state.quickSetupDraft=
-                      (e.target as HTMLTextAreaElement).value;}}></textarea>
+                  <p>Setup is saved once per selected PI WEB project Workspace.
+                    Use a trusted Pi provider and model in the host session daemon.
+                    Each new goal gets isolated Git Worktrees.</p>
+                  <div class="mm-quick-form">
+                    <label>Pi provider ID
+                      <input maxlength="120" placeholder="Authenticated provider ID"
+                        .value=${state.quickSimpleProvider} ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickSimpleProvider=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>Model ID for all four roles
+                      <input maxlength="160" placeholder="Exact Pi model ID"
+                        .value=${state.quickSimpleModel} ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickSimpleModel=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>Test executable
+                      <input maxlength="256" placeholder="node"
+                        .value=${state.quickTestFile} ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickTestFile=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>Test arguments (one per line)
+                      <textarea rows="2" maxlength="2048" placeholder="--test"
+                        .value=${state.quickTestArgs} ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickTestArgs=
+                          (e.target as HTMLTextAreaElement).value;}}></textarea></label>
+                    <label>Git remote
+                      <input maxlength="60" .value=${state.quickRemote}
+                        ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickRemote=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>Target branch
+                      <input maxlength="120" .value=${state.quickBase}
+                        ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickBase=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>GitHub PR merge permission
+                      <select .value=${state.quickMerge} ?disabled=${state.busy||state.quickAdvanced}
+                        @change=${(e:Event)=>{state.quickMerge=
+                          (e.target as HTMLSelectElement).value as "allow"|"ask"|"deny";
+                          context.host.requestRender();}}>
+                        <option value="ask">Ask me before merge (safer)</option>
+                        <option value="allow">Auto-merge after QC + CI</option>
+                        <option value="deny">Draft PR only</option>
+                      </select></label>
+                  </div>
+                  ${state.quickMerge==="allow"&&!state.quickAdvanced?html`
+                    <p role="note">Automatic merge is enabled. Verify the GitHub target before saving.</p>`:null}
+                  <label class="mm-quick-advanced-toggle">
+                    <input type="checkbox" .checked=${state.quickAdvanced}
+                      ?disabled=${state.busy}
+                      @change=${(e:Event)=>{
+                        state.quickAdvanced=(e.target as HTMLInputElement).checked;
+                        context.host.requestRender();
+                      }}/>
+                    Advanced: separate models per role / full configuration JSON
+                  </label>
+                  ${state.quickAdvanced?html`
+                    <label for="mm-quick-config">Advanced project profile (JSON)</label>
+                    <textarea id="mm-quick-config" rows="14" spellcheck="false"
+                      .value=${state.quickSetupDraft} ?disabled=${state.busy}
+                      @input=${(e:Event)=>{state.quickSetupDraft=
+                        (e.target as HTMLTextAreaElement).value;}}></textarea>`:null}
+                  <p>Plan &amp; run authorizes modifying Pi code work; your
+                    saved permission policy, independent QC and GitHub rules remain in force.
+                    Only your reviewed setup controls merge rights.</p>
                   <button ?disabled=${state.busy}
                     @click=${()=>void configureQuick(context)}>Save project setup</button>
                 </details>
@@ -1392,6 +1446,13 @@ const styles = `
   .mm-quick-setup{margin-top:12px;border-top:1px solid var(--pi-border-muted);padding-top:10px;}
   .mm-quick-setup summary{cursor:pointer;font-size:12px;}
   .mm-quick-setup p{font-size:12px;color:var(--pi-muted);}
+  .mm-quick-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(195px,1fr));gap:6px 12px;}
+  .mm-quick-form label{min-width:0;}
+  .mm-quick-form input,.mm-quick-form select{display:block;width:100%;box-sizing:border-box;
+    padding:7px;border:1px solid var(--pi-border-muted);border-radius:6px;
+    background:var(--pi-surface);color:inherit;font:inherit;}
+  .mm-quick-advanced-toggle{display:flex!important;align-items:center;gap:6px;}
+
 
   .mm .mm-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; }
   .mm-card { border:1px solid var(--pi-border-muted); border-radius:10px; padding: 10px; min-width:0; }
