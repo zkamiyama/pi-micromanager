@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import serverPlugin from "../dist/pi-web/server.js";
@@ -26,9 +26,10 @@ function fakePluginHost(shared) {
   const lifetime = new AbortController();
   const sessions = shared?.sessions??new Map();
   const calls = [];
+  const createdWorktrees=new Map();
   let serial = sessions.size;
   const workspace = id => ({
-    id,projectId:"project",path:id==="orchestra"?"/repo":"/repo/api",
+    id,projectId:"project",path:id==="orchestra"?"/repo":id==="wt-integrated"?"/repo/integrated":"/repo/api",
     isMain:id==="orchestra",
     label:id,
     ...(id==="orchestra"?{}:{provider:{metadata:{isGitWorktree:true}}}),
@@ -36,7 +37,7 @@ function fakePluginHost(shared) {
   const workspaces = {
     version:1,
     async resolve({projectId,workspaceId}) {
-      if(projectId!=="project"||!["orchestra","worktree-api"].includes(workspaceId))
+      if(projectId!=="project"||!["orchestra","worktree-api","wt-integrated"].includes(workspaceId))
         throw new Error("Unknown linked workspace");
       return {project:{id:"project",name:"Project",path:"/repo"},
         workspace:workspace(workspaceId)};
@@ -108,13 +109,25 @@ function fakePluginHost(shared) {
       if(request.file==="git"){
         const command=args.slice(2).join(" ");
         if(command==="rev-parse --show-toplevel")
-          return result("/repo/api\n");
+          return result(args[1]+"\n");
         if(command==="rev-parse HEAD")
-          return result(SHA+"\n");
+          return result(args[1]==="/repo/integrated"?"c".repeat(40)+"\n":SHA+"\n");
         if(command==="status --porcelain")
           return result("");
         if(command.startsWith("merge-base --is-ancestor "))
           return result("");
+        if(command.startsWith("show-ref --verify --quiet "))
+          return {...result(""),exitCode:1};
+        if(command.startsWith("worktree add --no-track -b ")){
+          const branch=args[6],path=args[args.length-2],sha=args[args.length-1];
+          mkdirSync(path,{recursive:true,mode:0o700});
+          createdWorktrees.set(path,{branch,sha});
+          return result("");
+        }
+        if(command==="worktree list --porcelain -z"){
+          return result([...createdWorktrees].map(([path,tree])=>
+            "worktree "+path+"\0HEAD "+tree.sha+"\0branch refs/heads/"+tree.branch+"\0\0").join(""));
+        }
         throw new Error("Unexpected git command: "+command);
       }
       if(request.file==="node"&&args.join(" ")==="--test")
@@ -157,7 +170,7 @@ function fakePluginHost(shared) {
     await resolved.dispose(new AbortController().signal);
     if(!preserve)rmSync(dir,{recursive:true,force:true});
   };
-  return {activate,request,cleanup,sessions,calls,shared:{dir,sessions}};
+  return {activate,request,cleanup,sessions,calls,createdWorktrees,shared:{dir,sessions}};
 }
 async function eventually(callback,timeout=6500){
   const started=Date.now();
@@ -319,4 +332,56 @@ test("Plugin restart recovers the same settled Pi Session and resumes QC without
     else if(beforeClosed)rmSync(before.shared.dir,{recursive:true,force:true});
     else await before.cleanup();
   }
+});
+
+test("Public Worktree API creates one reviewed linked Git branch without starting Pi Sessions",async()=>{
+  const host=fakePluginHost();
+  try{
+    await host.activate();
+    await host.request("create",definition);
+    const preview=await host.request("auto.worktree.preview",{workflowId:"wf",taskId:"api"});
+    assert.equal(preview.stage,"prepared");
+    assert.equal(host.createdWorktrees.size,0);
+    const created=await host.request("auto.worktree.create",{planId:preview.id});
+    assert.equal(created.stage,"created");
+    assert.match(created.branch,/^mm\/[a-f0-9]{16}\/wf\/api$/);
+    assert.equal((await host.request("auto.worktree.inspect",{planId:preview.id})).stage,"created");
+    assert.equal(host.createdWorktrees.size,1);
+    assert.equal(host.sessions.size,0,"Creating a Worktree never creates a Pi Session");
+    const status=await host.request("auto.status",{workflowId:"wf"});
+    assert.equal(status,null,"The operator must still configure the linked PI WEB workspace ID");
+  }finally{await host.cleanup();}
+});
+test("Public integration API advances a QC-passed DAG only after reviewed target SHA proof",async()=>{
+  const host=fakePluginHost();
+  try{
+    await host.activate();
+    await host.request("create",definition);
+    await host.request("auto.configure",{workflowId:"wf",config});
+    await host.request("auto.start",{workflowId:"wf"});
+    const impl=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.kind==="implementation")&&
+      s.commands.some(c=>c.type==="message")));
+    impl.finish();
+    const qc=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.kind==="qc")&&
+      s.commands.some(c=>c.type==="message")));
+    qc.finish({kind:"qc",runId:"qc-api-1",verdict:"pass",
+      summary:"Validated API and tests",at:Date.now()});
+    await eventually(async()=>((await host.request("get","wf")).tasks.api.status==="passed"));
+    await eventually(async()=>(await host.request("auto.status",{workflowId:"wf"}))?.enabled===false);
+    assert.equal((await host.request("get","wf")).tasks.api.status,"passed");
+    const preview=await host.request("auto.integration.preview",{
+      workflowId:"wf",taskId:"api",targetWorkspaceId:"wt-integrated"});
+    assert.equal(preview.sourceSha,SHA);
+    assert.equal(preview.targetHead,"c".repeat(40));
+    assert.equal((await host.request("get","wf")).tasks.api.status,"passed",
+      "Preview never mutates the authoritative Task DAG");
+    const integrated=await host.request("auto.integration.confirm",{previewId:preview.id});
+    assert.equal(integrated.tasks.api.status,"integrated");
+    assert.equal(host.sessions.size,2);
+    assert.ok(!host.calls.some(call=>call.file==="git"&&
+      ["merge","push","cherry-pick","reset"].includes(call.args[2])),
+      "The verification API must not perform a Git mutation");
+  }finally{await host.cleanup();}
 });
