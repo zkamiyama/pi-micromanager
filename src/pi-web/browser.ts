@@ -4,6 +4,7 @@ import type { PiWebPlugin, WorkspacePanelContext } from "@jmfederico/pi-web/plug
 import type { WorkflowAction, WorkflowDefinition, WorkflowInstance, TaskState, Role } from "../core/workflow.js";
 import type { WorkflowJournal } from "../automation/journal.js";
 import type { RetentionPreview } from "../automation/retention.js";
+import type { AdrDraft, AdrFields } from "../automation/adr-promotion.js";
 
 const DEMO: WorkflowDefinition = {
   id: "demo-auth", title: "Auth migration — workflow preview", maxQcRounds: 5,
@@ -21,6 +22,10 @@ type InterventionMode = "workflow" | "implementer" | "qc";
 interface State {
   workflows: WorkflowInstance[];
   journal?:WorkflowJournal;
+  adrTargetWorkspaceId:string;
+  adrFields:AdrFields;
+  adrStatus:string;
+  adrDraft?:AdrDraft;
   screenshotRunId:string;
   screenshotPath:string;
   screenshotStatus:string;
@@ -77,7 +82,11 @@ function stateFor(context: WorkspacePanelContext): State {
         "runId" in value&&typeof value.runId==="string")
         goalRef={draftWorkflowId:value.draftWorkflowId,runId:value.runId};
     }catch{/* Browser storage may be blocked. */}
-    state = { workflows: [], screenshotRunId:"",screenshotPath:"screenshots/qc.png",
+    state = { workflows: [],
+      adrTargetWorkspaceId:"",adrStatus:"",
+      adrFields:{filename:"0010-record-decision.md",title:"Architectural decision",
+        context:"",options:"",decision:"",consequences:""},
+      screenshotRunId:"",screenshotPath:"screenshots/qc.png",
       screenshotStatus:"",retentionDays:30,retentionStatus:"", status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
       detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
       autopilotDraft:JSON.stringify({
@@ -131,6 +140,7 @@ const plugin: PiWebPlugin = {
           if (state.selected?.definition.id !== id){
             delete state.journal;delete state.retentionPreview;
             delete state.screenshotPreview;
+            delete state.adrDraft;state.adrStatus="";
             state.screenshotRunId="";state.screenshotStatus="";
             delete state.selectedTaskId;delete state.worktreePlan;
             state.worktreeTaskId="";state.worktreeStatus="";
@@ -261,6 +271,32 @@ const plugin: PiWebPlugin = {
 
 
 
+
+    async function adrCommand(context:WorkspacePanelContext,command:"preview"|"stage"|"latest"|"inspect"){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(!workflowId||state.busy)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        let input:unknown;
+        if(command==="preview"){
+          delete state.adrDraft;
+          input={workflowId,targetWorkspaceId:state.adrTargetWorkspaceId.trim(),
+            fields:state.adrFields};
+        }else if(command==="latest")input={workflowId};
+        else input={draftId:state.adrDraft?.id};
+        const draft=await send(context,"auto.adr."+command,input) as AdrDraft|null;
+        state.adrDraft=draft??undefined;
+        state.adrStatus=!draft?"No saved ADR proposal yet.":
+          draft.state==="staged"?
+          "Exact ADR draft bytes staged in the review Worktree. Git commit, Push and PR "+
+          "publication remain separate human actions.":
+          draft.state==="reserved"?
+          "Write reserved or uncertain. Use Inspect; do NOT stage again blindly.":
+          "Proposed ADR is read-only. Review exact content, target Git SHA and "+
+          "evidence links before staging.";
+      }catch(error){state.adrStatus="ADR operation refused: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
     async function captureScreenshot(context:WorkspacePanelContext){
       const state=stateFor(context),workflowId=state.selected?.definition.id;
       if(state.busy||!workflowId||!state.screenshotRunId||
@@ -839,6 +875,64 @@ const plugin: PiWebPlugin = {
                         <time>${e.at}</time><p><strong>${e.type}</strong> · ${e.message}</p>
                       </article>`)}
                     </div>
+
+                    <details class="mm-adr">
+                      <summary>Propose a verified architecture decision (ADR)</summary>
+                      <p>This is a human-authored ADR proposal grounded in sealed QC
+                        evidence and screenshot SHA references. All Tasks must first
+                        be integrated/completed. No Git commit, Push or PR is automatic.</p>
+                      <label>Separate, clean review Worktree ID
+                        <input maxlength="128" .value=${state.adrTargetWorkspaceId}
+                          ?disabled=${state.busy}
+                          placeholder="PI WEB linked non-main Worktree ID"
+                          @input=${(e:Event)=>{
+                            state.adrTargetWorkspaceId=(e.target as HTMLInputElement).value;
+                            delete state.adrDraft;context.host.requestRender();
+                          }}/></label>
+                      ${(["filename","title","context","options","decision","consequences"] as const)
+                        .map(key=>html`<label>${key}
+                          ${key==="filename"||key==="title"?html`
+                            <input maxlength=${key==="filename"?"80":"200"}
+                              .value=${state.adrFields[key]}
+                              ?disabled=${state.busy}
+                              @input=${(e:Event)=>{
+                                state.adrFields[key]=(e.target as HTMLInputElement).value;
+                                delete state.adrDraft;context.host.requestRender();
+                              }}/>`:html`<textarea rows="3" maxlength="4000"
+                              .value=${state.adrFields[key]}
+                              ?disabled=${state.busy}
+                              @input=${(e:Event)=>{
+                                state.adrFields[key]=(e.target as HTMLTextAreaElement).value;
+                                delete state.adrDraft;context.host.requestRender();
+                              }}></textarea>`}
+                        </label>`)}
+                      <div class="mm-actions">
+                        <button ?disabled=${state.busy||state.autopilotEnabled||
+                          !state.adrTargetWorkspaceId.trim()}
+                          @click=${()=>void adrCommand(context,"preview")}>
+                          Preview evidence-backed ADR</button>
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void adrCommand(context,"latest")}>
+                          Recover saved draft</button>
+                      </div>
+                      ${state.adrDraft?html`<div class="mm-adr-preview">
+                        <p>Target Git HEAD: <code>${state.adrDraft.targetHead}</code></p>
+                        <p>Content SHA-256: <code>${state.adrDraft.sha256}</code></p>
+                        <p>File: docs/adr/${state.adrDraft.filename}</p>
+                        <p>Status: ${state.adrDraft.state}</p>
+                        <textarea readonly rows="16" spellcheck="false"
+                          .value=${state.adrDraft.content}></textarea>
+                        <div class="mm-actions">
+                          <button ?disabled=${state.busy||state.adrDraft.state!=="prepared"}
+                            @click=${()=>void adrCommand(context,"stage")}>
+                            Stage exact reviewed ADR file in Git Worktree</button>
+                          <button ?disabled=${state.busy}
+                            @click=${()=>void adrCommand(context,"inspect")}>
+                            Inspect staged/reserved file</button>
+                        </div>
+                      </div>`:null}
+                      <p role="status" aria-live="polite">${state.adrStatus}</p>
+                    </details>
                     <details class="mm-retention">
                       <summary>Review old public activity retention (manual)</summary>
                       <p>Only events older than 30 days in fully completed
@@ -914,6 +1008,19 @@ const styles = `
   .mm-journal-task p,.mm-journal-run p,.mm-retention p{font-size:12px;color:var(--pi-muted);
     overflow-wrap:anywhere;margin:5px 0;}
   .mm-journal code{font-size:11px;overflow-wrap:anywhere;}
+
+  .mm-adr{border:1px solid var(--pi-border-muted);border-radius:8px;
+    padding:10px;margin:14px 0;font-size:12px;}
+  .mm-adr summary{cursor:pointer;font-weight:600;}
+  .mm-adr p{font-size:12px;color:var(--pi-muted);overflow-wrap:anywhere;}
+  .mm-adr label{display:grid;gap:4px;font-size:12px;margin:8px 0;}
+  .mm-adr textarea,.mm-adr input{width:100%;box-sizing:border-box;
+    border:1px solid var(--pi-border-muted);border-radius:6px;
+    padding:8px;background:var(--pi-surface);color:inherit;}
+  .mm-adr textarea{resize:vertical;font:12px ui-monospace,monospace;}
+  .mm-adr-preview{border:1px dashed var(--pi-border-muted);border-radius:8px;
+    padding:8px;margin:10px 0;}
+  .mm-adr-preview code{overflow-wrap:anywhere;}
   .mm-retention{border:1px solid var(--pi-border-muted);border-radius:8px;
     padding:10px;margin:14px 0;font-size:12px;}
   .mm-retention summary{cursor:pointer;font-weight:600;}
