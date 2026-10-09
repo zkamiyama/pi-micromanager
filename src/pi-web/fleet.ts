@@ -37,6 +37,8 @@ interface GridState {
   loadStatus:string;
   busy:boolean; loaded:boolean;
   listening:boolean; connecting:boolean;
+  retryCount:number;
+  retryTimer?:ReturnType<typeof setTimeout>;
   channel?:PluginPeerChannel;
   controller?:AbortController;
   needsReload:boolean;
@@ -72,7 +74,7 @@ function stateFor(ctx:WorkspacePanelContext):GridState{
       evidenceRef:"",
       density:{planner:"expanded",implementer:"compact",qc:"expanded",architect:"expanded"},
       activity:new Map(),historyLoaded:new Set(),historyLoading:new Set(),loadStatus:"Not connected.",busy:false,loaded:false,
-      listening:false,connecting:false,needsReload:false,canvasDimmed:preferences.dimmed,canvasPage:0,filterRole:"all",filterQuery:"",
+      listening:false,connecting:false,retryCount:0,needsReload:false,canvasDimmed:preferences.dimmed,canvasPage:0,filterRole:"all",filterQuery:"",
        plannerSessionId:"",nodePositions:preferences.positions,nodeDensity:preferences.density,
        nodeDrafts:new Map(),nodeModes:new Map(),deliveryStatus:new Map()};
     states.set(k,s);
@@ -113,7 +115,24 @@ function validatedActivity(value:unknown):Activity|undefined{
   return {kind:e.kind as string,text:e.text,at:e.at as number,sequence:e.sequence as number};
 }
 export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePanelContribution {
+  let activeScope="";
   function refresh(ctx:WorkspacePanelContext){ctx.host.requestRender();}
+  function stopObserving(s:GridState):void {
+    if(s.retryTimer){clearTimeout(s.retryTimer);delete s.retryTimer;}
+    s.controller?.abort();s.channel?.close();
+    delete s.controller;delete s.channel;
+    s.listening=false;s.connecting=false;
+  }
+  function scheduleReconnect(ctx:WorkspacePanelContext):void {
+    const s=stateFor(ctx);
+    if(lifetime.aborted||activeScope!==scope(ctx)||s.retryTimer||s.retryCount>=5)return;
+    const delay=Math.min(30000,1000*2**s.retryCount++);
+    s.retryTimer=setTimeout(()=>{
+      delete s.retryTimer;
+      if(!lifetime.aborted&&activeScope===scope(ctx))void listen(ctx);
+    },delay);
+    s.loadStatus="Live stream disconnected. Reconnecting ("+s.retryCount+"/5)…";
+  }
   async function api(ctx:WorkspacePanelContext,operation:string,input:unknown){
     if(!ctx.peer?.request)throw new Error("PI WEB server plugin is not active");
     return ctx.peer.request(operation,input as never);
@@ -224,18 +243,22 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         },
       });
       if(ctl.signal.aborted||lifetime.aborted){channel.close();return}
-      s.channel=channel;s.listening=true;s.loadStatus="Listening for actual Pi session activity.";
+      s.channel=channel;s.listening=true;s.retryCount=0;s.loadStatus="Listening for actual Pi session activity.";
       void channel.closed.then(()=>{
         if(s.channel!==channel)return;
-        delete s.channel;s.listening=false;
-        s.loadStatus="Live connection closed. Reconnect to resume observing.";
+        delete s.channel;delete s.controller;s.listening=false;
+        scheduleReconnect(ctx);
+        if(s.retryCount>=5)s.loadStatus="Live stream reconnect limit reached. Use Reconnect stream.";
         refresh(ctx);
       });
-    }catch(error){s.loadStatus="Live connection unavailable: "+String(error)}
-    finally{s.connecting=false;refresh(ctx)}
+    }catch(error){
+      s.loadStatus="Live connection unavailable: "+String(error);
+      if(s.controller===ctl)delete s.controller;
+      if(!ctl.signal.aborted)scheduleReconnect(ctx);
+    }finally{s.connecting=false;refresh(ctx)}
   }
   lifetime.addEventListener("abort",()=>{
-    for(const s of states.values()){s.controller?.abort();s.channel?.close();s.activity.clear();
+    for(const s of states.values()){stopObserving(s);s.activity.clear();
       s.nodePositions.clear();s.nodeDensity.clear();s.nodeDrafts.clear();s.nodeModes.clear();s.deliveryStatus.clear();
       s.historyLoaded.clear();s.historyLoading.clear();}
     states.clear();
@@ -388,9 +411,16 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
   }
 
   function render(ctx:WorkspacePanelContext){
+    const current=scope(ctx);
+    if(current!==activeScope){
+      activeScope=current;
+      // PI WEB can retain a plugin across workspace/machine switches. Observe
+      // only the selected scope; inactive workspace event channels are closed.
+      for(const [key,other] of states)if(key!==current)stopObserving(other);
+    }
     const s=stateFor(ctx);
     if(!s.loaded&&!s.busy)queueMicrotask(()=>{if(!lifetime.aborted)void load(ctx);});
-    if(!s.listening&&!s.connecting&&!s.controller&&!lifetime.aborted)
+    if(!s.listening&&!s.connecting&&!s.controller&&!s.retryTimer&&!lifetime.aborted&&s.retryCount<5)
       queueMicrotask(()=>{if(!lifetime.aborted)void listen(ctx);});
     const wf=s.workflows.find(w=>w.definition.id===s.workflowId);
     const task=wf?.tasks[s.taskId];
@@ -519,7 +549,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       <header><h2>Orchestra · Live Runs</h2><p>Floating Pi Agent conversations above the Orchestrator. Each card is a real one-shot Run; settled sessions move to History.</p></header>
       <div class="mm-f-toolbar">
         <button @click=${()=>void load(ctx)} ?disabled=${s.busy}>Refresh runs</button>
-        <button @click=${()=>{s.controller?.abort();s.channel?.close();delete s.controller;s.listening=false;void listen(ctx);}}
+        <button @click=${()=>{stopObserving(s);s.retryCount=0;void listen(ctx);}}
           ?disabled=${s.connecting}>Reconnect stream</button>
         <small>${s.listening?"● Events connected":"○ Events disconnected"}</small>
       </div>
