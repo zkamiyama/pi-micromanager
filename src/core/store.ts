@@ -76,6 +76,14 @@ export class WorkflowStore {
       return instance;
     });
   }
+  /** Whether an exact automation transition was committed (used before sealing a Run). */
+  wasApplied(projectId:string,workspaceId:string,workflowId:string,commandId:string):boolean{
+    const row=this.db.prepare("SELECT 1 AS applied FROM command_receipts "+
+      "WHERE scope=? AND workflow_id=? AND command_id=?")
+      .get(this.scope(projectId,workspaceId),workflowId,commandId) as
+      {applied:number}|undefined;
+    return row?.applied===1;
+  }
   /** Atomic CAS + durable request deduplication. Unsafe retry never replays an action. */
   act(projectId: string, workspaceId: string, id: string, expectedRevision: number, commandId: string, action: WorkflowAction, at = new Date().toISOString()): WorkflowInstance {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(commandId)) throw new WorkflowError("invalid_command_id", "Invalid command ID");
