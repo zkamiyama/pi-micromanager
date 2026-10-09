@@ -8,7 +8,7 @@ import type {WorkflowStore} from "../core/store.js";
 import type {AgentRegistry,AgentBinding} from "../runtime/registry.js";
 import type {AutopilotLedger} from "./ledger.js";
 import {automationScope} from "./ledger.js";
-import {gitHead,gitSha,requireCleanGit,requireAncestor,type GitHost} from "./git.js";
+import {gitSha,requireCleanGit,requireAncestor,type GitHost} from "./git.js";
 
 export interface IntegrationPreview {
   id:string;workflowId:string;taskId:string;targetWorkspaceId:string;
@@ -118,6 +118,13 @@ export class IntegrationVerifier {
     if(row.scope!==automationScope(projectId,orchestraWorkspaceId))
       throw new Error("Integration preview belongs to a different Orchestra");
     const commandId="integration:"+id;
+    // Crash-safe cross-database finish: the authoritative CAS may have
+    // committed before the preview receipt was marked confirmed.
+    if(this.options.workflows.wasApplied(projectId,orchestraWorkspaceId,
+      row.workflowId,commandId)){
+      this.db.prepare("UPDATE integration_previews SET state='confirmed' WHERE id=?").run(id);
+      return this.options.workflows.get(projectId,orchestraWorkspaceId,row.workflowId);
+    }
     if(row.state==="confirmed"){
       if(!this.options.workflows.wasApplied(projectId,orchestraWorkspaceId,
         row.workflowId,commandId))throw new Error("Integration receipt is inconsistent");
