@@ -140,7 +140,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       s.channel=channel;s.listening=true;s.loadStatus="Listening for actual Pi session activity.";
       void channel.closed.then(()=>{
         if(s.channel!==channel)return;
-        s.channel=undefined;s.listening=false;
+        delete s.channel;s.listening=false;
         s.loadStatus="Live connection closed. Reconnect to resume observing.";
         refresh(ctx);
       });
@@ -194,7 +194,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       <header><h2>Active Pi executions</h2><p>Fresh Pi Session for every implementation attempt, QC run and diagnosis. Finished runs move to history.</p></header>
       <div class="mm-f-toolbar">
         <button @click=${()=>void load(ctx)} ?disabled=${s.busy}>Refresh runs</button>
-        <button @click=${()=>{s.controller?.abort();s.channel?.close();s.controller=undefined;s.listening=false;void listen(ctx);}}
+        <button @click=${()=>{s.controller?.abort();s.channel?.close();delete s.controller;s.listening=false;void listen(ctx);}}
           ?disabled=${s.connecting}>Reconnect stream</button>
         <small>${s.listening?"● Events connected":"○ Events disconnected"}</small>
       </div>
@@ -230,7 +230,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
             </select>
           </label>
           <textarea rows="3" .value=${s.message}
-            @input=${(e:Event)=>{s.message=(e.target as HTMLTextAreaElement).value;}}></textarea>
+            @input=${(e:Event)=>{s.message=(e.target as HTMLTextAreaElement).value;refresh(ctx);}}></textarea>
           <div class="mm-f-toolbar">
             <button ?disabled=${s.busy||!selected.connected||!s.message.trim()}
               @click=${()=>send(s.mode)}>Send directly to this Pi Session</button>
@@ -241,7 +241,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         ${selected.phase==="settled"?html`<div>
           <p>Agent settled. This Session is never reused. Preserve verification evidence before sealing.</p>
           <input .value=${s.evidenceRef} placeholder="Durable evidence reference"
-            @input=${(e:Event)=>{s.evidenceRef=(e.target as HTMLInputElement).value;}} />
+            @input=${(e:Event)=>{s.evidenceRef=(e.target as HTMLInputElement).value;refresh(ctx);}} />
           <button ?disabled=${s.busy||!s.evidenceRef.trim()} @click=${()=>send("seal")}>Seal completed run</button>
         </div>`:null}
         ${phaseEnded(selected.phase)?html`<p>Historical run: steering disabled. New work requires a fresh execution.</p>`:null}
@@ -257,9 +257,9 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         </select></label>
         <p>${eligible?"Eligible "+taskRole+" execution: "+runId:"Selected Task has no admitted run; use the Workflow engine first."}</p>
         <label>Existing Pi workspace ID<input .value=${s.targetWorkspaceId}
-          @input=${(e:Event)=>{s.targetWorkspaceId=(e.target as HTMLInputElement).value;}}/></label>
+          @input=${(e:Event)=>{s.targetWorkspaceId=(e.target as HTMLInputElement).value;refresh(ctx);}}/></label>
         <label>Provider<input .value=${s.provider} @input=${(e:Event)=>{s.provider=(e.target as HTMLInputElement).value;}} /></label>
-        <label>Model ID<input .value=${s.model} @input=${(e:Event)=>{s.model=(e.target as HTMLInputElement).value;}}/></label>
+        <label>Model ID<input .value=${s.model} @input=${(e:Event)=>{s.model=(e.target as HTMLInputElement).value;refresh(ctx);}}/></label>
         <label>Effort<input .value=${s.effort} @input=${(e:Event)=>{s.effort=(e.target as HTMLInputElement).value;}}/></label>
         <button ?disabled=${s.busy||!eligible||!s.model.trim()||!s.targetWorkspaceId.trim()}
           @click=${create}>Create a fresh Pi Session · ${runId}</button>
