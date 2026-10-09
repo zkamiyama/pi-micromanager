@@ -46,6 +46,7 @@ interface State {
   interventionMode: InterventionMode;
   interventionDraft: string;
   autopilotDraft: string;
+  finalWorktreeWorkspaceId:string;
   autopilotStatus: string;
   permissionStatus:string;
   approvalRequests:ApprovalRequest[];
@@ -96,6 +97,7 @@ function stateFor(context: WorkspacePanelContext): State {
       screenshotRunId:"",screenshotPath:"screenshots/qc.png",
       screenshotStatus:"",retentionDays:30,retentionStatus:"", status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
       detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
+      finalWorktreeWorkspaceId:"",
       autopilotDraft:JSON.stringify({
         workspaces:{},
         models:{
@@ -383,6 +385,22 @@ const plugin: PiWebPlugin = {
         }
       }catch(error){s.retentionStatus="Retention refused: "+String(error);}
       finally{s.busy=false;context.host.requestRender();}
+    }
+
+    function insertFinalWorkspace(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.autopilotEnabled||!state.finalWorktreeWorkspaceId.trim())return;
+      try{
+        const raw=JSON.parse(state.autopilotDraft) as Record<string,unknown>;
+        raw.finalization={
+          workspaceId:state.finalWorktreeWorkspaceId.trim(),autoMerge:true,
+        };
+        state.autopilotDraft=JSON.stringify(raw,null,2);
+        state.autopilotStatus="Final integration Workspace staged in JSON. "+
+          "Verify a distinct clean, linked non-main Git Worktree, then save "+
+          "configuration. Final QC and Workflow permissions gate the merge.";
+      }catch(error){state.autopilotStatus=String(error);}
+      context.host.requestRender();
     }
     async function permissionCommand(context:WorkspacePanelContext,
       kind:"load"|"approved"|"rejected",approvalId?:string){
@@ -803,11 +821,27 @@ const plugin: PiWebPlugin = {
                   <span>${state.autopilotEnabled?"● Running":"○ Paused / offline"}</span></summary>
                 <p>YOLO by default: a configured publication target automatically pushes
                   QC-approved commits and creates Draft GitHub PRs. Workflow permissions can
-                  override git.push / github.pr.create to ask or deny. Merge and production
-                  deployment are separate approval-gated operations. Choose the correct remote,
+                  override git.push / github.pr.create to ask or deny. Final PR merge uses the Workflow's merge permission; production
+                  deployment remains separately gated. Choose the correct remote,
                   base branch and credentials. Legacy configurations never push unexpectedly.
                   Exact models, linked Worktrees and host tests are still required.</p>
                 <label for="mm-auto-config">Autopilot configuration (JSON)</label>
+                <p>For end-to-end YOLO, select a separate linked Git Worktree
+                  for the final combined code. After the original DAG is QC-passed,
+                  a fresh Pi Run merges all approved SHAs, is independently QC-checked,
+                  and then opens and auto-merges the final GitHub PR.</p>
+                <label>Final integration Workspace ID
+                  <input .value=${state.finalWorktreeWorkspaceId}
+                    ?disabled=${state.busy||state.autopilotEnabled}
+                    placeholder="Existing linked non-main Git Worktree ID"
+                    @input=${(e:Event)=>{
+                      state.finalWorktreeWorkspaceId=(e.target as HTMLInputElement).value;
+                      context.host.requestRender();
+                    }}/></label>
+                <button ?disabled=${state.busy||state.autopilotEnabled||
+                  !state.finalWorktreeWorkspaceId.trim()}
+                  @click=${()=>insertFinalWorkspace(context)}>
+                  Enable full-DAG integration + YOLO PR auto-merge</button>
                 <textarea id="mm-auto-config" rows="12" spellcheck="false"
                   .value=${state.autopilotDraft} ?disabled=${state.busy||state.autopilotEnabled}
                   @input=${(e:Event)=>{state.autopilotDraft=(e.target as HTMLTextAreaElement).value;}}></textarea>
@@ -824,8 +858,10 @@ const plugin: PiWebPlugin = {
                   <strong>Workflow permissions · allow / ask / deny</strong>
                   <p>Default: ${w?.definition.permissions?.default??"allow"} (YOLO).
                     Git integration fast-forwards clean unstarted dependent
-                    Worktrees after sealed QC. Divergent branches require human
-                    reconciliation; merge and deployment remain separate.
+                    Worktrees after sealed QC. Divergent branches still require human
+                    reconciliation during Task dependency convergence.
+                    Final integration is a dedicated Pi Run with final QC;
+                    GitHub PR merge is YOLO unless the Workflow overrides it.
                     Edit Workflow JSON before import to change decisions.
                     Strong Pi shell restrictions still require an OS sandbox.</p>
                   <button ?disabled=${state.busy||!w}
