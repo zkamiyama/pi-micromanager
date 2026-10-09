@@ -166,13 +166,13 @@ const plugin: PiWebPlugin = {
       state.busy=true;context.host.requestRender();
       try{
         const result=await send(context,"auto.proposal",ref) as
-          {phase:string;proposal:WorkflowDefinition|null;summary:string|null};
+          {phase:string;proposal:WorkflowDefinition|null;summary:string|null;notice?:string};
         if(result.proposal){
           state.goalProposalText=JSON.stringify(result.proposal,null,2);
           state.goalStatus="Sol proposal ready for your review: "+
             (result.summary??"Validated Task DAG");
-        }else state.goalStatus="Proposal phase: "+result.phase+
-          ". Wait for the real Pi Session to finish, then check again.";
+        }else state.goalStatus=result.notice??("Proposal phase: "+result.phase+
+          ". Wait for the real Pi Session to finish, then check again.");
       }catch(error){state.goalStatus="Cannot read proposal: "+String(error);}
       finally{state.busy=false;context.host.requestRender();}
     }
