@@ -54,6 +54,15 @@ const plugin:PiWebServerPlugin={
   const viewers=new Set<Fanout>();
   const orchestraKey=(project:string,orchestraWorkspaceId:string)=>JSON.stringify([project,orchestraWorkspaceId]);
   const bridgeKey=(binding:AgentBinding)=>JSON.stringify([binding.projectId,binding.orchestraWorkspaceId,binding.sessionId]);
+  function notifyRun(binding:AgentBinding):void {
+    const scope=orchestraKey(binding.projectId,binding.orchestraWorkspaceId);
+    for(const viewer of viewers){
+      if(viewer.scope!==scope)continue;
+      try{viewer.send(j({type:"run_changed",workflowId:binding.workflowId,
+        runId:binding.runId,phase:binding.phase}));}
+      catch{viewers.delete(viewer);}
+    }
+  }
   function emit(binding:AgentBinding,event:RuntimeActivity):void {
     agents.record(binding,event);
     const scope=orchestraKey(binding.projectId,binding.orchestraWorkspaceId);
@@ -157,12 +166,13 @@ const plugin:PiWebServerPlugin={
               if(existing.requestId!==run.requestId)throw new Error("Run already reserved for another command");
               return j({...existing,note:"Existing run returned. No second Pi Session created."});
             }
-            agents.reserve(run);
+            notifyRun(agents.reserve(run));
             if(!sessions)throw new Error("PI WEB pi-sessions capability missing");
             // If create times out, keep the reservation. Manual reconciliation is
             // needed; an unknown result is never retried as a new Pi session.
             const created=await sessions.create({projectId:p,workspaceId:run.workspaceId});
             let binding=agents.assign(run,created.sessionId);
+            notifyRun(binding);
             const checked=await probe(binding);
             binding=agents.get(p,o,created.sessionId);
             if(checked.status!=="ok"){
@@ -175,6 +185,7 @@ const plugin:PiWebServerPlugin={
             binding=agents.update(binding,receipt.status==="ok"?"configured":
               receipt.status==="uncertain"?"uncertain":"blocked",
               receipt.status==="ok"?{provider,model,...(effort?{effort}:{})}:undefined);
+            notifyRun(binding);
             return j({...binding,configuration:receipt});
           }
           case "agents.attach":{
@@ -194,17 +205,20 @@ const plugin:PiWebServerPlugin={
             if(receipt.status!=="ok"||receipt.fresh!==true)
               throw new Error("Reconciliation requires an idle Pi Session without prior conversation history");
             agents.reserve(run);
-            agents.assign(run,sessionId);
+            notifyRun(agents.assign(run,sessionId));
             let binding=agents.get(p,o,sessionId);
             binding=agents.update(binding,"connected");
             await connect(binding);
+            notifyRun(binding);
             return j({...binding,configuration:receipt});
           }
           case "agents.reconnect":{
             const input=object(ctx.input);
             const binding=registered(ctx,id(input.sessionId));
             const checked=await probe(binding);
-            return j({...agents.get(p,o,binding.sessionId!),probeStatus:checked.status});
+            const current=agents.get(p,o,binding.sessionId!);
+            notifyRun(current);
+            return j({...current,probeStatus:checked.status});
           }
           case "agents.configure":{
             const input=object(ctx.input);
@@ -221,6 +235,7 @@ const plugin:PiWebServerPlugin={
             binding=agents.update(binding,receipt.status==="ok"?"configured":
               receipt.status==="uncertain"?"uncertain":"blocked",
               receipt.status==="ok"?{provider,model,...(effort?{effort}:{})}:undefined);
+            notifyRun(binding);
             return j({...binding,configuration:receipt});
           }
           case "agents.command":{
@@ -247,12 +262,14 @@ const plugin:PiWebServerPlugin={
               agents.update(binding,"running");
             if(receipt.status==="uncertain")
               agents.update(binding,"uncertain");
+            notifyRun(agents.get(p,o,binding.sessionId!));
             return j(receipt);
           }
           case "agents.seal":{
             const input=object(ctx.input);
             const binding=registered(ctx,id(input.sessionId));
             const sealed=agents.seal(p,o,binding.sessionId!,nonempty(input.evidenceRef,512));
+            notifyRun(sealed);
             const bridge=live.get(bridgeKey(binding));
             if(bridge){bridge.stop();live.delete(bridgeKey(binding));}
             return j(sealed);

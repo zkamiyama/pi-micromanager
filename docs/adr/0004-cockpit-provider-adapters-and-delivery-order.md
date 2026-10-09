@@ -24,6 +24,16 @@ The human may directly steer Sol, Luna, Astra, QC, or the workflow itself. Paren
 - **Live Journal:** chronological source-linked events plus inline test metrics and optional screenshots; derived from persisted evidence, not a second LLM controlling workflow.
 - **Storage & Knowledge:** dry-run retention, protected evidence, orphan worktrees, pending ADR promotion (later).
 
+## UI refinement: connected floating Runs (2026-10-09)
+
+The Live Runs surface now prioritizes a **single Orchestrator dock below floating Agent chat nodes** rather than a fixed grid of permanent seat cards. The supplied mock is an interaction reference, not a visual spec. Keep the established PI WEB surface, accent, border and muted tokens; avoid an unrelated terminal theme or full-page host overlay.
+
+Each Run is keyed by the immutable `workflowId + runId` identity. New nodes appear as active/pending Runs are registered; settled Runs move to History. A dashed connection indicates common orchestra ownership, while any solid Task-to-Task edge is derived exclusively from the persisted DAG and only drawn when both Tasks are represented on the current page. Nothing here implies a hidden agent communication channel.
+
+Pointer and keyboard positioning are presentational only. Browser-local layout, fade state and Run density survive refresh within the same machine/project/workspace scope, but never store chat drafts or message content. Clicking the canvas background fades nodes without cancelling Runs, modifying the DAG or relinquishing intervention capability. Node selection restores readability. Per-Run text drafts and receipts must remain scoped to their own Session. The Orchestrator composer is disabled unless a genuinely connected planner Session exists; no fabricated Sol transcript or auto-spawning is allowed.
+
+This remains a normal PI WEB workspace panel with bounded paging, search/filter controls and scrolling. Task Lens uses public PI WEB navigation to focus a matching Run, with no cross-Task fallback. The live event stream has bounded retry/backoff and stops subscriptions when switching scopes. Full-viewport freeform placement would require a host-approved capability, not private DOM manipulation.
+
 ## Technical UI restrictions
 
 PI WEB Browser API v4 supports `workspacePanels` and `applicationPanels`, but their placement is a **tab surface** (third column), not a guaranteed fullscreen tiled terminal grid. v0.1 registers an ordinary Workspace panel; large-screen full grid and multi-project orchestras need a compatible full-width host capability or a carefully isolated standalone client rather than a fragile DOM hack.
