@@ -212,3 +212,18 @@ test("Reserved ADR writing is recovered only from exact file bytes, never overwr
     assert.equal(x.promotion.inspect("p","o",plan.id).state,"staged");
   }finally{x.close();}
 });
+test("ADR preview quota bounds repeated proposals but does not mutate Git",async()=>{
+  const x=fixture();
+  try{
+    for(let i=0;i<8;i++){
+      const proposal=await x.promotion.preview("p","o","flow","adr-review",{
+        ...fields,title:fields.title+" "+i,
+      });
+      assert.equal(proposal.state,"prepared");
+    }
+    await assert.rejects(x.promotion.preview("p","o","flow","adr-review",fields),
+      /Too many pending ADR previews/);
+    assert.equal(cmd(x.target,"status","--porcelain"),"",
+      "Read-only ADR previews must not create files or change Git");
+  }finally{x.close();}
+});
