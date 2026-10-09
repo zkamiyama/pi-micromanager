@@ -257,7 +257,7 @@ const plugin: PiWebPlugin = {
             const tasks = w ? Object.values(w.tasks) : [];
             return html`<style>${styles}</style><section class="mm">
               <header><h2>pi-micromanager</h2><p>See everything. Hear everything. Steer anything. Welcome to Cognitive Overload!</p></header>
-              <aside role="note">v0.1 foundation: workflow simulation only. No Pi Agent processes are launched or controlled yet.</aside>
+              <aside role="note">DAG/Cockpit demo buttons are simulation-only. Autopilot below is a separate opt-in, real Pi Session executor. No automatic merging or Worktree deletion.</aside>
               <div class="toolbar">
                 <button ?disabled=${state.busy} @click=${() => { void refresh(context); }}>Reload</button>
                 <button ?disabled=${state.busy} @click=${() => { void createDemo(context); }}>Create/load demo DAG</button>
@@ -266,6 +266,25 @@ const plugin: PiWebPlugin = {
                 </select>
               </div>
               <p role="status" aria-live="polite">${state.status}</p>
+              <details class="mm-autopilot">
+                <summary><strong>Autopilot · Real Orchestrator</strong>
+                  <span>${state.autopilotEnabled?"● Running":"○ Paused / offline"}</span></summary>
+                <p>Supply exact Pi models, existing linked Git Worktree workspace IDs per Task,
+                  and a real test argv. Automated launches remain under deterministic DAG/QC gates.</p>
+                <label for="mm-auto-config">Autopilot configuration (JSON)</label>
+                <textarea id="mm-auto-config" rows="12" spellcheck="false"
+                  .value=${state.autopilotDraft} ?disabled=${state.busy||state.autopilotEnabled}
+                  @input=${(e:Event)=>{state.autopilotDraft=(e.target as HTMLTextAreaElement).value;}}></textarea>
+                <div class="mm-actions">
+                  <button ?disabled=${state.busy||state.autopilotEnabled||!w}
+                    @click=${()=>void autopilotCommand(context,"configure")}>Save configuration</button>
+                  <button ?disabled=${state.busy||state.autopilotEnabled||!w}
+                    @click=${()=>void autopilotCommand(context,"start")}>Start Autopilot</button>
+                  <button ?disabled=${state.busy||!state.autopilotEnabled||!w}
+                    @click=${()=>void autopilotCommand(context,"pause")}>Pause admission</button>
+                </div>
+                <p role="status" aria-live="polite">${state.autopilotStatus}</p>
+              </details>
               <nav aria-label="Views">${(["cockpit", "dag", "kanban", "journal"] as const).map(view => html`
                 <button class=${state.view === view ? "selected" : ""} @click=${() => { state.view = view; context.host.requestRender(); }}>${view.toUpperCase()}</button>
               `)}</nav>
@@ -324,6 +343,15 @@ const styles = `
   .mm-events p {margin:0;}
   .mm-task-selected { outline: 2px solid var(--pi-accent-border); }
   .mm-intervene { font-size: 11px !important; margin-top: 6px; }
+  .mm-autopilot {border:1px solid var(--pi-border-muted);background:var(--pi-surface);
+    border-radius:9px;padding:11px;margin:12px 0;}
+  .mm-autopilot summary {cursor:pointer;display:flex;align-items:center;gap:10px;justify-content:space-between;}
+  .mm-autopilot summary span{font-size:11px;color:var(--pi-muted);}
+  .mm-autopilot p{font-size:12px;color:var(--pi-muted);}
+  .mm-autopilot label{font-size:12px;display:block;margin:8px 0 5px;}
+  .mm-autopilot textarea{width:100%;box-sizing:border-box;min-height:120px;resize:vertical;
+    background:var(--pi-surface);border:1px solid var(--pi-border-muted);color:inherit;
+    border-radius:6px;font:12px ui-monospace,SFMono-Regular,monospace;padding:9px;}
   .mm-lens { border: 1px solid var(--pi-accent-border); border-radius: 9px; padding: 12px; margin: 12px 0; background: var(--pi-surface); }
   .mm-lens-head { display:flex; justify-content:space-between; align-items:start; gap:8px; }
   .mm-lens-head p,.mm-lens-content p { margin:5px 0 9px; font-size:12px; color:var(--pi-muted); }
