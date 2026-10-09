@@ -21,6 +21,8 @@ import { ActivityRetention } from "../automation/retention.js";
 import { buildJournal } from "../automation/journal.js";
 import { ScreenshotEvidence } from "../automation/screenshots.js";
 import { AdrPromotion } from "../automation/adr-promotion.js";
+import { PermissionLedger } from "../automation/permissions.js";
+import { PublicationManager } from "../automation/publication.js";
 import { classifyRecoveredRun } from "../automation/recovery.js";
 import type { AutopilotRecord } from "../automation/ledger.js";
 
@@ -59,6 +61,13 @@ const plugin:PiWebServerPlugin={
   const store=new WorkflowStore(join(host.dataDirectory,"workflows.sqlite"));
   const agents=new AgentRegistry(join(host.dataDirectory,"agents.sqlite"));
   const ledger=new AutopilotLedger(join(host.dataDirectory,"autopilot.sqlite"));
+  const permissions=new PermissionLedger(
+    join(host.dataDirectory,"workflow-permissions.sqlite"),store,ledger);
+  const publisher=new PublicationManager({
+    path:join(host.dataDirectory,"publication.sqlite"),host,
+    workflows:store,agents,ledger,permissions,
+    workspaces:()=>workspaces,
+  });
   const screenshots=new ScreenshotEvidence({
     path:join(host.dataDirectory,"screenshot-evidence.sqlite"),
     dataDirectory:host.dataDirectory,workflows:store,agents,ledger,host,
@@ -259,12 +268,15 @@ const plugin:PiWebServerPlugin={
       }
     }
   }
-  autopilot=new AutopilotEngine(store,agents,ledger,createHostExecutor({
-    host,workflows:store,agents,
-    getSessions:()=>sessions,getWorkspaces:()=>workspaces,probe,
-    validateRun:plannedRunId,notify:notifyRun,
-    replaySettledReport,
-  }));
+  autopilot=new AutopilotEngine(store,agents,ledger,{
+    ...createHostExecutor({
+      host,workflows:store,agents,
+      getSessions:()=>sessions,getWorkspaces:()=>workspaces,probe,
+      validateRun:plannedRunId,notify:notifyRun,
+      replaySettledReport,
+    }),
+    publish:(record,workflow)=>publisher.step(record,workflow),
+  });
   return {
     start({capabilities}){
       sessions=capabilities.resolve(PI_WEB_HOST_PI_SESSIONS_CAPABILITY);
@@ -446,6 +458,19 @@ const plugin:PiWebServerPlugin={
               notifyRun(sealed);
             }
             return j(created);
+          }
+          case "auto.permissions":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            return j({approvals:permissions.list(p,o,workflowId),
+              publication:publisher.list(p,o,workflowId)});
+          }
+          case "auto.permission.decide":{
+            const input=object(ctx.input),approvalId=id(input.approvalId);
+            if(input.decision!=="approved"&&input.decision!=="rejected")
+              throw new Error("Approval decision must be approved or rejected");
+            const approved=permissions.decide(p,o,approvalId,input.decision);
+            scheduleAutopilot(p,o,approved.workflowId);
+            return j(approved);
           }
           case "auto.adr.latest":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
@@ -755,7 +780,7 @@ const plugin:PiWebServerPlugin={
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       for(const bridge of live.values())bridge.stop();
-      live.clear();viewers.clear();adr.close();screenshots.close();retention.close();provisioner.close();integration.close();ledger.close();agents.close();store.close();
+      live.clear();viewers.clear();publisher.close();permissions.close();adr.close();screenshots.close();retention.close();provisioner.close();integration.close();ledger.close();agents.close();store.close();
     },
   };
  },
