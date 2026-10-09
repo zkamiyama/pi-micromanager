@@ -245,3 +245,32 @@ test("Read-only Sol goal report does not create or execute a DAG before explicit
     assert.equal(status,null,"Acceptance does not start Autopilot");
   }finally{await host.cleanup();}
 });
+test("A mismatched replayed QC report pauses Autopilot instead of accepting fabricated completion",async()=>{
+  const host=fakePluginHost();
+  try{
+    await host.activate();
+    await host.request("create",definition);
+    await host.request("auto.configure",{workflowId:"wf",config});
+    await host.request("auto.start",{workflowId:"wf"});
+    const impl=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.kind==="implementation")&&
+      s.commands.some(c=>c.type==="message")));
+    impl.finish();
+    const qc=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.kind==="qc")&&
+      s.commands.some(c=>c.type==="message")));
+    // The exact Pi Session survived a notification loss but has an invalid,
+    // foreign Run report. It must not pass QC or create a new implementation.
+    qc.report={kind:"qc",runId:"qc-foreign-1",verdict:"pass",
+      summary:"Spoofed completion",at:Date.now()};
+    qc.reported=true;
+    qc.finish();
+    const paused=await eventually(async()=>{
+      const status=await host.request("auto.status",{workflowId:"wf"});
+      return !status?.enabled?status:undefined;
+    });
+    assert.match(paused.status,/Wrong Run identity|mismatched|report replay/i);
+    assert.equal((await host.request("get","wf")).tasks.api.status,"awaiting_qc");
+    assert.equal(host.sessions.size,2,"No duplicate Run after unsafe report replay");
+  }finally{await host.cleanup();}
+});
