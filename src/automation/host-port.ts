@@ -1,0 +1,132 @@
+/** Public PI WEB Host API adapter for the deterministic Autopilot engine. */
+import { randomUUID } from "node:crypto";
+import type {
+  ServerPluginActivationContext, PiWebHostPiSessionsV1,
+  PiWebHostWorkspacesV1,
+} from "@jmfederico/pi-web/server-plugin-api";
+import type { WorkflowStore } from "../core/store.js";
+import type { TaskState } from "../core/workflow.js";
+import type { AgentBinding, AgentRegistry, Reservation, Seat } from "../runtime/registry.js";
+import type { PiSessionBridge } from "../runtime/session-bridge.js";
+import type { ExecutorPort, LaunchJob } from "./engine.js";
+
+export interface HostPortOptions {
+  host:ServerPluginActivationContext;
+  workflows:WorkflowStore;
+  agents:AgentRegistry;
+  getSessions():PiWebHostPiSessionsV1|undefined;
+  getWorkspaces():PiWebHostWorkspacesV1|undefined;
+  probe(binding:AgentBinding):Promise<{bridge:PiSessionBridge;status:string}>;
+  validateRun(task:TaskState,seat:Seat):string;
+  notify(binding:AgentBinding):void;
+}
+export function createHostExecutor(options:HostPortOptions):ExecutorPort {
+  const {host,workflows,agents,probe,notify}=options;
+  async function workspace(projectId:string,workspaceId:string){
+    const api=options.getWorkspaces();
+    if(!api)throw new Error("PI WEB workspaces capability unavailable");
+    const authority=await api.resolve({projectId,workspaceId});
+    if(authority.project.id!==projectId||authority.workspace.projectId!==projectId||
+      authority.workspace.id!==workspaceId)throw new Error("Workspace authority mismatch");
+    return authority.workspace;
+  }
+  async function gitRead(path:string,args:string[]):Promise<string> {
+    const r=await host.execFile({file:"git",args:["-C",path,...args],
+      signal:host.lifetimeSignal,timeoutMs:10000});
+    if(r.exitCode!==0||r.signal||r.stdoutTruncated||r.stderrTruncated)
+      throw new Error("Git check failed: "+(r.stderr||r.stdout).slice(-280));
+    return r.stdout.trim();
+  }
+  async function snapshot(path:string):Promise<{sha:string;clean:boolean}>{
+    const sha=await gitRead(path,["rev-parse","HEAD"]);
+    const status=await gitRead(path,["status","--porcelain"]);
+    if(!/^[0-9a-f]{40,64}$/.test(sha))throw new Error("No Git HEAD in resolved workspace");
+    return {sha,clean:status.length===0};
+  }
+  async function linkedWorktree(projectId:string,workspaceId:string){
+    const w=await workspace(projectId,workspaceId);
+    if(w.isMain||w.provider?.metadata?.isGitWorktree!==true)
+      throw new Error("Automatic code execution requires an existing linked, isolated PI WEB Git worktree");
+    return w;
+  }
+  return {
+    async launch(job:LaunchJob){
+      const sessions=options.getSessions();
+      if(!sessions)throw new Error("Pi sessions capability unavailable");
+      if(job.kind==="implementation"||job.kind==="qc"){
+        const w=await linkedWorktree(job.projectId,job.workspaceId);
+        const before=await snapshot(w.path);
+        if(!before.clean)throw new Error("Dirty Worktree; refusing automated Pi launch");
+        if(job.kind==="qc"&&before.sha!==job.headSha)
+          throw new Error("QC snapshot SHA differs from the implementation commit");
+      }else await workspace(job.projectId,job.workspaceId);
+      const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
+      const task=current.tasks[job.taskId];
+      if(!task||options.validateRun(task,job.seat)!==job.runId)
+        throw new Error("Stale or invalid Task admission");
+      const reservation:Reservation={
+        projectId:job.projectId,orchestraWorkspaceId:job.orchestraWorkspaceId,
+        workspaceId:job.workspaceId,workflowId:job.workflowId,
+        taskId:job.taskId,runId:job.runId,seat:job.seat,requestId:"auto:"+randomUUID(),
+      };
+      if(agents.getRun(job.projectId,job.orchestraWorkspaceId,job.workflowId,job.runId))
+        throw new Error("Already reserved: never create the same one-shot Run twice");
+      notify(agents.reserve(reservation));
+      // Any uncertain sessions.create response intentionally leaves this durable
+      // reservation untouched; operator reconciliation is required.
+      const created=await sessions.create({projectId:job.projectId,workspaceId:job.workspaceId});
+      let binding=agents.assign(reservation,created.sessionId);
+      notify(binding);
+      const checked=await probe(binding);
+      binding=agents.get(job.projectId,job.orchestraWorkspaceId,created.sessionId);
+      if(checked.status!=="ok")throw new Error("Pi companion did not acknowledge its probe");
+      const configured=await checked.bridge.send({
+        type:"configure",requestId:randomUUID(),provider:job.model.provider,
+        model:job.model.model,...(job.model.effort?{effort:job.model.effort}:{}),
+        job:{runId:job.runId,kind:job.kind},
+        sessionName:"AUTO "+job.seat+" "+job.taskId+" "+job.runId,
+      },10000);
+      if(configured.status!=="ok"||configured.provider!==job.model.provider||
+        configured.model!==job.model.model||
+        (job.model.effort!==undefined&&configured.effort!==job.model.effort)){
+        binding=agents.update(binding,configured.status==="uncertain"?"uncertain":"blocked");
+        notify(binding);
+        throw new Error("Exact model/effort setup failed or was not acknowledged");
+      }
+      binding=agents.update(binding,"configured",{provider:job.model.provider,model:job.model.model,
+        ...(job.model.effort?{effort:job.model.effort}:{})});
+      notify(binding);
+      const started=await checked.bridge.send({
+        type:"message",requestId:randomUUID(),text:job.prompt,delivery:"newTurn",
+      },10000);
+      if(started.status!=="ok"){
+        binding=agents.update(binding,started.status==="uncertain"?"uncertain":"blocked");
+        notify(binding);
+        throw new Error("Pi did not acknowledge the automatic start ("+started.status+")");
+      }
+      binding=agents.update(binding,"running");
+      notify(binding);
+      return binding;
+    },
+    async verify(binding,config,expectedSha){
+      const w=await linkedWorktree(binding.projectId,binding.workspaceId);
+      const before=await snapshot(w.path);
+      if(expectedSha!==undefined&&before.sha!==expectedSha)
+        throw new Error("QC SHA mismatch; refuse to finalize verdict");
+      if(!before.clean)throw new Error("Uncommitted files in inspected worktree");
+      const result=await host.execFile({
+        file:config.test.file,args:config.test.args,cwd:w.path,
+        timeoutMs:config.test.timeoutMs,signal:host.lifetimeSignal,
+      });
+      const after=await snapshot(w.path);
+      const clean=before.clean&&after.clean&&before.sha===after.sha;
+      const testsPassed=result.exitCode===0&&!result.signal&&
+        !result.stdoutTruncated&&!result.stderrTruncated;
+      const details="argv="+JSON.stringify([config.test.file,...config.test.args]).slice(0,350)+
+        " exit="+String(result.exitCode)+" truncated="+String(result.stdoutTruncated||result.stderrTruncated)+
+        " stderr="+result.stderr.slice(-400);
+      return {headSha:after.sha,clean,testsPassed,details};
+    },
+    onTransition:notify,
+  };
+}
