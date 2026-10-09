@@ -1,4 +1,5 @@
 /** One-shot structured Pi Run result. A model report is evidence input, NOT a QC gate itself. */
+import { parseDefinition, type WorkflowDefinition } from "../core/workflow.js";
 export const REPORT_CHANNEL = "pi-micromanager:run-report:v1";
 export interface PlanInvestigator {
   id:string; title:string; role:"architect"|"reviewer";model:string;
@@ -6,7 +7,9 @@ export interface PlanInvestigator {
 export type RunReport =
   | { kind:"qc"; runId:string; verdict:"pass"|"fail"|"inconclusive"; summary:string; at:number }
   | { kind:"task"; runId:string; summary:string; at:number }
-  | { kind:"plan"; runId:string; summary:string;agents:PlanInvestigator[];at:number };
+  | { kind:"plan"; runId:string; summary:string;agents:PlanInvestigator[];at:number }
+  | { kind:"workflow_plan"; runId:string; summary:string;
+      definition:WorkflowDefinition;at:number };
 const runPattern = /^[a-z][a-z0-9-]{0,127}$/;
 export function parseRunReport(value:unknown):RunReport|undefined {
   if(!value||typeof value!=="object"||Array.isArray(value))return;
@@ -19,6 +22,16 @@ export function parseRunReport(value:unknown):RunReport|undefined {
     return {kind:"qc",runId:v.runId,verdict:v.verdict,summary:v.summary,at:v.at};
   }
   if(v.kind==="task")return {kind:"task",runId:v.runId,summary:v.summary,at:v.at};
+  if(v.kind==="workflow_plan"){
+    try{
+      if(JSON.stringify(v.definition).length>12000)return;
+      const definition=parseDefinition(v.definition);
+      if(definition.tasks.length>16||definition.tasks.some(t=>
+        t.kind!=="implementation"||t.role!=="implementer"||
+        !t.description||!t.acceptanceCriteria?.length))return;
+      return {kind:"workflow_plan",runId:v.runId,summary:v.summary,definition,at:v.at};
+    }catch{return;}
+  }
   if(v.kind==="plan"){
     if(!Array.isArray(v.agents)||v.agents.length<1||v.agents.length>4)return;
     const agents:PlanInvestigator[]=[];
