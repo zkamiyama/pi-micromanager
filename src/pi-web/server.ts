@@ -341,6 +341,9 @@ const plugin:PiWebServerPlugin={
             return j({phase:binding.phase,runId,draftWorkflowId,
               proposal:report?.kind==="workflow_plan"?report.definition:null,
               summary:report?.kind==="workflow_plan"?report.summary:null,
+              canAccept:!!report&&report.kind==="workflow_plan"&&
+                ["settled","sealed"].includes(binding.phase)&&
+                !(binding.latestKind==="agent_settled"&&binding.latestText==="Agent interrupted"),
               ...(notice?{notice}:{})});
           }
           case "auto.acceptProposal":{
