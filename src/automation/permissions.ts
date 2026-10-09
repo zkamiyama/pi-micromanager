@@ -117,8 +117,8 @@ export class PermissionLedger {
       targetTaskId,targetWorkspaceId,targetHead);
     const existing=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
       " WHERE scope=? AND workflow_id=? AND task_id=? AND action='git.integrate'"+
-      " AND fingerprint=?").get(scope,workflowId,sourceTaskId,fingerprint)
-      as ApprovalRow|undefined;
+      " AND fingerprint=?").get(scope,workflowId,sourceTaskId,fingerprint) as
+      ApprovalRow|undefined;
     if(existing)return {decision:existing.state==="approved"?"allow":
       existing.state==="rejected"?"deny":"ask",approval:existing};
     const id=randomUUID(),at=new Date().toISOString();
@@ -131,8 +131,8 @@ export class PermissionLedger {
       .run(id,scope,workflowId,sourceTaskId,runId,sourceSha,target,fingerprint,at,at);
     const row=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
       " WHERE scope=? AND workflow_id=? AND task_id=? AND action='git.integrate'"+
-      " AND fingerprint=?").get(scope,workflowId,sourceTaskId,fingerprint)
-      as unknown as ApprovalRow;
+      " AND fingerprint=?").get(scope,workflowId,sourceTaskId,fingerprint) as
+      unknown as ApprovalRow;
     return {decision:row.state==="approved"?"allow":
       row.state==="rejected"?"deny":"ask",approval:row};
   }
