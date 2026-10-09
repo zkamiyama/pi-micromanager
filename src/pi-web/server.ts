@@ -283,8 +283,9 @@ const plugin:PiWebServerPlugin={
     }),
     publish:(record,workflow)=>publisher.step(record,workflow),
     converge:(record,workflow)=>convergence.step(record,workflow),
-    authorizeImplementation:(record,_workflow,taskId,nextAttempt)=>{
-      const workspaceId=record.config.workspaces[taskId];
+    authorizeImplementation:(record,workflow,taskId,nextAttempt)=>{
+      const workspaceId=workflow.tasks[taskId]?.spec.systemPurpose==="final-integration"?
+        record.config.finalization?.workspaceId:record.config.workspaces[taskId];
       if(!workspaceId)throw new Error("Missing linked implementation Workspace");
       return permissions.ensureCommit(record.projectId,record.orchestraWorkspaceId,
         record.workflowId,taskId,nextAttempt,workspaceId).decision;
