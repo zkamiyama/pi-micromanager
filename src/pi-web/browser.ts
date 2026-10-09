@@ -2,6 +2,8 @@
 import { createLiveRunPanel, selectOrchestraTask } from "./fleet.js";
 import type { PiWebPlugin, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { WorkflowAction, WorkflowDefinition, WorkflowInstance, TaskState, Role } from "../core/workflow.js";
+import type { WorkflowJournal } from "../automation/journal.js";
+import type { RetentionPreview } from "../automation/retention.js";
 
 const DEMO: WorkflowDefinition = {
   id: "demo-auth", title: "Auth migration — workflow preview", maxQcRounds: 5,
@@ -18,6 +20,10 @@ type Detail = "compact" | "expanded";
 type InterventionMode = "workflow" | "implementer" | "qc";
 interface State {
   workflows: WorkflowInstance[];
+  journal?:WorkflowJournal;
+  retentionDays:number;
+  retentionPreview?:RetentionPreview;
+  retentionStatus:string;
   selected?: WorkflowInstance;
   status: string;
   busy: boolean;
@@ -67,7 +73,7 @@ function stateFor(context: WorkspacePanelContext): State {
         "runId" in value&&typeof value.runId==="string")
         goalRef={draftWorkflowId:value.draftWorkflowId,runId:value.runId};
     }catch{/* Browser storage may be blocked. */}
-    state = { workflows: [], status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
+    state = { workflows: [], retentionDays:30,retentionStatus:"", status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
       detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
       autopilotDraft:JSON.stringify({
         workspaces:{},
@@ -118,6 +124,7 @@ const plugin: PiWebPlugin = {
         const id = workflowId ?? state.selected?.definition.id ?? state.workflows[0]?.definition.id;
         if (id) {
           if (state.selected?.definition.id !== id){
+            delete state.journal;delete state.retentionPreview;
             delete state.selectedTaskId;delete state.worktreePlan;
             state.worktreeTaskId="";state.worktreeStatus="";
           }
@@ -245,6 +252,45 @@ const plugin: PiWebPlugin = {
     }
 
 
+
+    async function loadEvidenceJournal(context:WorkspacePanelContext){
+      const s=stateFor(context),workflowId=s.selected?.definition.id;
+      if(s.busy||!workflowId)return;
+      s.busy=true;context.host.requestRender();
+      try{
+        const value=await send(context,"auto.journal",{workflowId}) as WorkflowJournal;
+        if(value.workflowId!==workflowId)throw new Error("Journal scope changed");
+        s.journal=value;
+        s.status="Loaded verified journal revision "+value.revision+".";
+      }catch(error){s.status="Journal unavailable: "+String(error);}
+      finally{s.busy=false;context.host.requestRender();}
+    }
+    async function retentionCommand(context:WorkspacePanelContext,kind:"preview"|"confirm"){
+      const s=stateFor(context);
+      if(s.busy)return;
+      s.busy=true;context.host.requestRender();
+      try{
+        if(kind==="preview"){
+          delete s.retentionPreview;
+          const result=await send(context,"auto.retention.preview",{days:s.retentionDays}) as
+            RetentionPreview|null;
+          if(!result){s.retentionStatus=
+            "No eligible old activity: unresolved workflows, QC evidence and native Pi sessions are protected.";}
+          else{
+            s.retentionPreview=result;
+            s.retentionStatus="Read-only retention preview created. Review before confirmation.";
+          }
+        }else{
+          const plan=s.retentionPreview;
+          if(!plan||plan.state!=="prepared")throw new Error("Preview first");
+          const done=await send(context,"auto.retention.confirm",{previewId:plan.id}) as RetentionPreview;
+          s.retentionPreview=done;
+          s.retentionStatus="Pruned "+done.deletedRows+
+            " old public activity rows. Workflow, QC evidence and native Pi Sessions are untouched.";
+        }
+      }catch(error){s.retentionStatus="Retention refused: "+String(error);}
+      finally{s.busy=false;context.host.requestRender();}
+    }
     async function autopilotCommand(context:WorkspacePanelContext,operation:"configure"|"start"|"pause"){
       const state=stateFor(context),workflowId=state.selected?.definition.id;
       if(!workflowId||state.busy)return;
@@ -673,7 +719,68 @@ const plugin: PiWebPlugin = {
                 </svg></div>`; })() : null}
                 ${state.view === "kanban" ? html`<div class="mm-kanban">${(["blocked", "ready", "running", "awaiting_qc", "held", "passed", "done", "integrated", "needs_human"] as const).map(status => html`
                   <section><strong>${status}</strong>${tasks.filter(t=>t.status===status).map(t=>html`<button class="mm-pill" @click=${() => selectTask(context,t.spec.id)}>${t.spec.title}</button>`)}</section>`)}</div>` : null}
-                ${state.view === "journal" ? html`<div class="mm-events">${[...w.events].reverse().map(e=>html`<article><time>${e.at}</time><p><strong>${e.type}</strong> · ${e.message}</p></article>`)}</div>` : null}
+
+                ${state.view === "journal" ? html`
+                  <section class="mm-journal" aria-label="Evidence-linked Workflow journal">
+                    <div class="mm-actions">
+                      <button ?disabled=${state.busy} @click=${()=>void loadEvidenceJournal(context)}>
+                        Load evidence-linked journal</button>
+                    </div>
+                    ${state.journal?.workflowId===w.definition.id?html`
+                      ${state.journal.notes.map(note=>html`<p role="note">${note}</p>`)}
+                      <h3>Task and QC evidence</h3>
+                      ${state.journal.tasks.map(t=>html`<article class="mm-journal-task">
+                        <strong>${t.title}</strong>
+                        <p>${t.id} · ${t.status} · attempts ${t.attempts} · QC ${t.qcRounds}</p>
+                        ${t.lastQc?html`<p>QC ${t.lastQc.verdict}
+                          · Run ${t.lastQc.runId}
+                          · Git <code>${t.lastQc.headSha}</code></p>`:null}
+                      </article>`)}
+                      <h3>One-shot Pi Runs (up to 120)</h3>
+                      ${state.journal.runs.map(run=>html`<article class="mm-journal-run">
+                        <strong>${run.seat} · ${run.runId}</strong>
+                        <p>Task ${run.taskId} · ${run.phase} · ${run.updatedAt}</p>
+                        ${run.evidence?html`
+                          <p>Evidence <code>${run.evidence.ref}</code></p>
+                          <p>${run.evidence.summary}</p>
+                        `:null}
+                      </article>`)}
+                    `:html`<p>Load the verified Task/Run evidence references above.</p>`}
+                    <h3>Authoritative Workflow events</h3>
+                    <div class="mm-events">
+                      ${[...w.events].reverse().map(e=>html`<article>
+                        <time>${e.at}</time><p><strong>${e.type}</strong> · ${e.message}</p>
+                      </article>`)}
+                    </div>
+                    <details class="mm-retention">
+                      <summary>Review old public activity retention (manual)</summary>
+                      <p>Only events older than 30 days in fully completed
+                        Workflows with sealed Runs and retained evidence qualify.
+                        This never deletes Pi Session transcripts, Task state,
+                        Worktrees, or QC evidence.</p>
+                      <label>Age threshold (days)
+                        <input type="number" min="30" max="365" .value=${String(state.retentionDays)}
+                          ?disabled=${state.busy}
+                          @change=${(e:Event)=>{
+                            state.retentionDays=Number((e.target as HTMLInputElement).value);
+                            delete state.retentionPreview;state.retentionStatus="";
+                            context.host.requestRender();
+                          }}/></label>
+                      <button ?disabled=${state.busy}
+                        @click=${()=>void retentionCommand(context,"preview")}>
+                        Preview retention (read-only)</button>
+                      ${state.retentionPreview?html`
+                        <p>Eligible rows: ${state.retentionPreview.rowCount},
+                          retained Run count: ${state.retentionPreview.affectedRuns},
+                          approximate bytes: ${state.retentionPreview.estimatedBytes}</p>
+                        <p>Preview expires at
+                          ${new Date(state.retentionPreview.expiresAt).toLocaleTimeString()}</p>
+                        <button ?disabled=${state.busy||state.retentionPreview.state!=="prepared"}
+                          @click=${()=>void retentionCommand(context,"confirm")}>
+                          Confirm pruning public activity only</button>`:null}
+                      <p role="status">${state.retentionStatus}</p>
+                    </details>
+                  </section>` : null}
               `}
             </section>`;
           },
@@ -706,6 +813,19 @@ const styles = `
   .mm-kanban {display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px;}
   .mm-kanban section {border:1px solid var(--pi-border-muted);padding:8px;border-radius:8px;min-height:76px;}
   .mm-pill {background:var(--pi-surface);border-radius:6px;padding:6px;margin-top:7px;font-size:12px;}
+
+  .mm-journal h3{font-size:13px;margin:16px 0 6px;}
+  .mm-journal-task,.mm-journal-run{border:1px solid var(--pi-border-muted);
+    border-radius:8px;padding:9px;margin:7px 0;font-size:12px;overflow-wrap:anywhere;}
+  .mm-journal-task p,.mm-journal-run p,.mm-retention p{font-size:12px;color:var(--pi-muted);
+    overflow-wrap:anywhere;margin:5px 0;}
+  .mm-journal code{font-size:11px;overflow-wrap:anywhere;}
+  .mm-retention{border:1px solid var(--pi-border-muted);border-radius:8px;
+    padding:10px;margin:14px 0;font-size:12px;}
+  .mm-retention summary{cursor:pointer;font-weight:600;}
+  .mm-retention label{display:flex;gap:8px;align-items:center;margin:8px 0;}
+  .mm-retention input{max-width:100px;padding:6px;border:1px solid var(--pi-border-muted);
+    border-radius:6px;background:var(--pi-surface);color:inherit;}
   .mm-events article {border-bottom:1px solid var(--pi-border-muted);padding:7px 0;font-size:12px;}
   .mm-events p {margin:0;}
   .mm-task-selected { outline: 2px solid var(--pi-accent-border); }
