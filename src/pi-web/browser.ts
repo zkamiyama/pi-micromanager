@@ -880,9 +880,9 @@ const plugin: PiWebPlugin = {
                       · Request <code>${job.requestId.slice(0,8)}</code></p>
                     <div class="mm-quick-steps" aria-label="Pipeline">
                       ${["Plan","Prepare","Execute","Complete"].map((title,index)=>html`
-                        <span class=${(({reserved:-1,planning:0,starting:1,
-                          running:2,finished:3,needs_attention:-1,cancelled:-1}
-                          as Record<string,number>)[job.phase]??-1)>=index?
+                        <span class=${(job.phase==="finished"?3:
+                          job.phase==="running"?2:job.phase==="starting"?1:
+                          job.phase==="planning"?0:-1)>=index?
                           "mm-step-done":""}>${title}</span>`)}
                     </div>
                     <div class="mm-actions">
