@@ -18,13 +18,13 @@ const config={
   models:{implementer:profile,qc:profile,architect:profile,planner:profile},
   test:{file:"node",args:["--test"],timeoutMs:30000},maxAttempts:3,
 };
-function setup(){
+function setup(workflowDefinition=definition,settings=config){
   const dir=mkdtempSync(join(tmpdir(),"pi-mm-auto-"));
   const store=new WorkflowStore(join(dir,"workflow.sqlite"));
   const registry=new AgentRegistry(join(dir,"runs.sqlite"));
   const ledger=new AutopilotLedger(join(dir,"auto.sqlite"));
-  store.create("project","orchestra",definition);
-  ledger.save("project","orchestra","wf",config);
+  store.create("project","orchestra",workflowDefinition);
+  ledger.save("project","orchestra","wf",settings);
   ledger.setStatus("project","orchestra","wf",true,"running");
   const launches=[];
   let verifyResult={headSha:sha,clean:true,testsPassed:true,details:"unit fake checked"};
@@ -315,5 +315,29 @@ test("The configured reviewer capacity also limits auto QC Sessions",()=>{
     const busy=[{seat:"qc",workflowId:"wf",runId:"qc-api-1",phase:"running"}];
     assert.equal(planNext(wf,busy,{...config,workspaces:{...config.workspaces,other:"wt-other"}}),
       undefined);
+  }finally{x.close();}
+});
+
+test("Dependent writer carries the exact already-QC-passed upstream commit",async()=>{
+  const def=structuredClone(definition);
+  def.tasks.push({id:"ui",title:"Implement UI integration",kind:"implementation",
+    role:"implementer",dependsOn:[{taskId:"api",gate:"qc_passed"}]});
+  const settings={...config,workspaces:{api:"linked-wt-api",ui:"linked-wt-ui"}};
+  const x=setup(def,settings);
+  try{
+    await x.tick();await x.tick();
+    assert.equal(x.wf().tasks.ui.status,"blocked");
+    x.settled("impl-api-1");await x.tick();await x.tick();
+    const qc=x.settled("qc-api-1");
+    x.ledger.recordReport(qc,{kind:"qc",runId:qc.runId,verdict:"pass",
+      summary:"API verified",at:Date.now()});
+    await x.tick();
+    assert.equal(x.wf().tasks.api.status,"passed");
+    assert.equal(x.wf().tasks.ui.status,"ready");
+    await x.tick();await x.tick();
+    const child=x.launches.find(j=>j.taskId==="ui");
+    assert.ok(child,"DAG admits a dependent implementation only after parent QC");
+    assert.deepEqual(child.requiredAncestors,[sha]);
+    assert.equal(child.workspaceId,"linked-wt-ui");
   }finally{x.close();}
 });
