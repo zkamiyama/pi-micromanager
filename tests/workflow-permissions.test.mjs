@@ -41,12 +41,12 @@ function fixture(permissions){
     close(){permissionsDB.close();ledger.close();workflows.close();
       rmSync(dir,{recursive:true,force:true});}};
 }
-test("Default Workflow is YOLO; merge and deploy still start behind an approval gate",()=>{
+test("Default Workflow is YOLO for PR merge; production deployment still asks",()=>{
   validateDefinition(workflow);
   assert.equal(permissionDecision(undefined,"git.commit"),"allow");
   assert.equal(permissionDecision(undefined,"git.push"),"allow");
   assert.equal(permissionDecision(undefined,"github.pr.create"),"allow");
-  assert.equal(permissionDecision(undefined,"github.pr.merge"),"ask");
+  assert.equal(permissionDecision(undefined,"github.pr.merge"),"allow");
   assert.equal(permissionDecision(undefined,"deploy.production"),"ask");
   assert.equal(permissionDecision({default:"deny",actions:{"git.push":"ask"}},"git.push"),"ask");
   assert.equal(permissionDecision({default:"deny"},"git.commit"),"deny");
