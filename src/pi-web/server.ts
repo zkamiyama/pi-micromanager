@@ -348,7 +348,8 @@ const plugin:PiWebServerPlugin={
             const runId=id(input.runId);
             const binding=agents.getRun(p,o,draftWorkflowId,runId);
             if(!binding||binding.taskId!=="goal"||!binding.requestId.startsWith("auto:goal:")||
-              (binding.phase!=="settled"&&binding.phase!=="sealed"))
+              (binding.phase!=="settled"&&binding.phase!=="sealed")||
+              (binding.latestKind==="agent_settled"&&binding.latestText==="Agent interrupted"))
               throw new Error("A completed, registered Sol proposal is required");
             const report=ledger.report(binding);
             if(!report||report.kind!=="workflow_plan")
