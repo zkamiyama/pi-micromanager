@@ -26,7 +26,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. The planner window represents a real Session only when Sol is actually running.
 
-**Still not implemented/verified:** Automatic Worktree creation/registration, unattended goal → execution without explicit DAG approval/worktree setup, independent provider-authenticated multi-Agent E2E, comprehensive screenshot and artifact evidence, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, approved Git integration/merge, ADR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
+**Still not implemented/verified:** Automatic discovery/registration of newly created Worktrees as PI WEB Workspace IDs, unattended goal → execution without explicit DAG approval/Workspace setup, independent provider-authenticated multi-Agent E2E, comprehensive screenshot and artifact evidence, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, Git merge/push and approved PR publication, ADR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
 
 ## Architecture and ADRs
 
@@ -37,6 +37,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - [ADR-0005 — Task-scoped interventions and Sol planner boundary](docs/adr/0005-task-scoped-interventions.md)
 - [ADR-0006 — Ephemeral execution runs and dynamic live grid](docs/adr/0006-ephemeral-execution-runs.md)
 - [ADR-0007 — Opt-in durable Autopilot and fail-closed Pi execution](docs/adr/0007-opt-in-autopilot.md)
+- [ADR-0008 — Managed Worktree provisioning and verified Git integration](docs/adr/0008-git-worktree-provisioning-and-integration.md)
 
 ## Development
 
@@ -64,7 +65,7 @@ before a real Workflow is created. If desired, copy the proposal into the
 editable JSON importer to revise it before saving; proposal text alone
 cannot launch a modifying Agent.
 
-1. In PI WEB, create/verify **separate linked Git worktrees** in the target project. Record each linked workspace's PI WEB ID. A modifying Task must not use the project's main checkout.
+1. In PI WEB, create/verify **separate linked Git worktrees**, or use **Micromanager → Manage isolated Git Worktree → Preview → Create** to create a task-owned branch/linked Git Worktree after explicit review. Select the new workspace in PI WEB and copy its **actual PI WEB Workspace ID** into Autopilot configuration. A modifying Task must not use the project's main checkout.
 2. Under **Micromanager → Ask Sol to plan a new goal**, enter a precise natural-language goal and exact authenticated Pi planner provider/model. Check the real Pi Session proposal, inspect its DAG and choose **Approve and save exact proposal**. Alternatively import a reviewed JSON DAG through **Import a real Workflow DAG**. In either case, give each Task a concrete `description` and `acceptanceCriteria` lines. Implementation and QC Runs receive **the same** contract. Verify Task IDs, dependency gates and requested changes before starting.
 3. Under **Autopilot → configuration (JSON)**, map every implementation Task ID to an existing linked Worktree workspace ID; configure **all four** exact Pi provider/model profiles and a bounded executable test argv. Save configuration, then explicitly **Start Autopilot**.
 4. Watch actual one-shot Pi Runs in the **Orchestra** tab. The scheduler makes fresh Sessions for implementation/QC/rework, but it never auto-merges. Use **Pause admission** to stop *new* work; current running Pi turns continue unless directly interrupted.
@@ -99,6 +100,33 @@ changes; it never auto-cherry-picks, merges, or silently skips dependencies.
 
 The scheduler runs in the PI WEB server-plugin lifetime (not as a separate operating-system service). It restores active Run identity on restart from persisted companion turn entries where possible. If a settled Pi Session's typed QC/plan report notification is lost, the host reconnects to **that same Session read-only** to recover the durable report; wrong-Run reports and unknown turn states cause a safe pause, not a retry. Uncertain command delivery remains blocked until reconciled. Public-host-capability mock integration tests cover actual Session launch, bounded host tests, QC transitions, typed Sol proposal approval and lost report replay. Host shutdown now drains in-flight scheduler verification and fences new Pi Session sends when its lifetime ends, before closing SQLite. Authenticated real-provider/GUI E2E is still deferred. See [ADR-0007](docs/adr/0007-opt-in-autopilot.md) for recovery and trust boundaries.
 
+## Managed Worktrees and Git integration proof
+
+**Worktree creation (explicit, no automatic deletion):** Select an unstarted
+implementation Task in the **Manage isolated Git Worktree** section. Preview
+the repository's clean base SHA, a task-scoped branch and a location inside
+Micromanager's private data directory. Click **Create reviewed Git Worktree**
+only when you intend to add that Git branch and checkout. If the response is
+uncertain, use **Inspect reserved Worktree**; never issue another blind create.
+Once PI WEB's Git provider discovers the newly linked checkout, select it in
+PI WEB and copy its Workspace ID into the configuration. This registration
+step is manual because public PI WEB `workspaces` v1 has no create/list API.
+
+**QC-to-Git integration (verified, not performed):** QC PASS is intentionally
+not a Git merge. Perform the actual Git integration yourself, following your
+repo's review policy. For the passed Task, open **Task Lens → Verify completed
+Git integration**, enter the *distinct target* PI WEB Git Workspace ID,
+and select **Preview verified Git state**. The host verifies that the target
+is clean, not being written by an Agent, and contains the exact QC-approved
+commit as an ancestor of target HEAD. The short-lived preview displays the
+source/target commits. **Confirm integration and unblock DAG** then repeats
+all checks and marks the Task `integrated` via durable CAS; it never executes
+Git merge/cherry-pick/push. Existing dependent worktrees must also contain
+the upstream commit before automatic downstream execution.
+
+Review [ADR-0008](docs/adr/0008-git-worktree-provisioning-and-integration.md)
+for reservation/reconciliation details and the remaining PI WEB API limitation.
+
 ## Orchestra canvas controls
 
 Open the **Orchestra** PI WEB workspace tab (its stable internal panel ID remains `live-runs`). Run windows appear automatically from `agents.list` and live `agents.events` as one-shot Pi Sessions are launched via the experimental manual workflow below. The canvas is contained in the PI WEB tab; narrow views scroll horizontally, not via a PI WEB host DOM override. Up to 12 active/pending Runs are shown on a page, with previous/next navigation and role/Task/Run filtering. The panel stays within PI WEB's public third-column tab API.
@@ -128,4 +156,4 @@ MIT, see [LICENSE](LICENSE).
 
 Each Luna attempt and every QC Run creates a fresh Pi Session. The same model may be reused, but the old session context is **never** the next run. The dynamic **Live Runs** PI WEB panel shows running/pending sessions; settled runs move to History (no steer). The Workflow Task, not the Agent role, remains the durable object. Evidence must be sealed before a modifying worktree can be released. See [ADR-0006](docs/adr/0006-ephemeral-execution-runs.md).
 
-The manual one-shot Pi creation form is experimental: it requires an admitted Task run, an existing linked worktree for a modifying Luna, a target PI WEB Workspace ID, and a configured provider/model. There is no automatic worktree allocation, background scheduler or real-provider E2E proof yet. The earlier DAG demo and its transition buttons remain simulation-only.
+The manual one-shot Pi creation form is experimental: it requires an admitted Task run, an existing linked worktree for a modifying Luna, a target PI WEB Workspace ID, and a configured provider/model. An opt-in, background, DAG-driven Autopilot scheduler and explicit managed Worktree creation are available, but authenticated real-provider E2E is not yet proven. The earlier DAG demo and its transition buttons remain simulation-only.
