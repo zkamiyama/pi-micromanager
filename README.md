@@ -26,9 +26,11 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **Evidence Journal & confirmed retention (PR #7):** The Journal tab can read a finite, evidence-linked projection of Task status, QC SHA/verdict, one-shot Pi Runs and durable evidence references. The operator may preview and confirm pruning public activity projections over 30 days old **only when** their Runs are sealed and entire Workflows are complete; no native Pi JSONL, QC evidence, command receipt, Workflow state or Git Worktree is removed. Test outputs are retained as bounded exit/size/SHA-256 fingerprints rather than potentially sensitive stdout/stderr.
 
+**Immutable QC screenshots and reviewed ADR drafts (PR #7):** An operator may import an existing PNG/JPEG screenshot from a sealed QC Run's clean, exact Git commit into a private SHA-256-addressed artifact store, then explicitly verify/view it from Journal. When all Tasks are complete/integrated, an evidence-linked ADR proposal can be previewed and staged as an exact new Markdown file in a separate non-main Git Worktree after human confirmation. No screenshot is fabricated, and no ADR is automatically committed, pushed or published.
+
 **Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. The planner window represents a real Session only when Sol is actually running.
 
-**Still not implemented/verified:** Automatic discovery/registration of newly created Worktrees as PI WEB Workspace IDs, unattended goal → execution without explicit DAG approval/Workspace setup, independent provider-authenticated multi-Agent E2E, comprehensive screenshot and artifact evidence, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, Git merge/push and approved PR publication, ADR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
+**Still not implemented/verified:** Automatic discovery/registration of newly created Worktrees as PI WEB Workspace IDs, unattended goal → execution without explicit DAG approval/Workspace setup, independent provider-authenticated multi-Agent E2E, automatic browser screenshot capture and broader artifact types, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, Git merge/push and approved PR publication, ADR Git commit/PR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
 
 ## Architecture and ADRs
 
@@ -41,6 +43,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - [ADR-0007 — Opt-in durable Autopilot and fail-closed Pi execution](docs/adr/0007-opt-in-autopilot.md)
 - [ADR-0008 — Managed Worktree provisioning and verified Git integration](docs/adr/0008-git-worktree-provisioning-and-integration.md)
 - [ADR-0009 — Evidence-linked Journal and conservative activity retention](docs/adr/0009-journal-and-conservative-retention.md)
+- [ADR-0010 — Immutable QC screenshots and reviewed ADR staging](docs/adr/0010-screenshot-artifacts-and-reviewed-adr-staging.md)
 
 ## Development
 
@@ -159,6 +162,39 @@ disposable test repository (Worktree creation, feature commit and verified
 fast-forward integration). This is neither a user's real PI WEB host nor an
 authenticated Pi provider test. For design/security boundaries, see
 [ADR-0009](docs/adr/0009-journal-and-conservative-retention.md).
+
+## QC screenshot artifacts and reviewed ADR draft staging
+
+**Capture an actual screenshot:** After a fresh read-only QC Pi Run is sealed
+with evidence and the Task's Git checkout is still clean at the exact
+QC-reviewed SHA, place or commit a PNG/JPEG file in that linked Worktree under
+`screenshots/<name>.png` (or `.jpg/.jpeg`). In **Micromanager → Journal → Actual
+QC screenshot evidence**, choose the sealed QC Run and relative file path,
+then use **Capture verified screenshot bytes**. The host checks the Run,
+sealed evidence, workspace authority, Git HEAD, file type and path. It stores
+up to 1 MiB of original bytes in a private, SHA-256 content-addressed store,
+with quotas and strict scope isolation.
+
+Images **can contain secrets**: inspect/redact before explicit capture. The
+image is stored on the PI WEB host, not sent to the model. Click
+**Verify / view image** to recheck saved bytes and lazily display images of
+up to 512 KiB; larger images retain metadata but are not sent inline by this
+API. A screenshot does **not** independently certify QC or change a verdict.
+This is not automatic screenshot generation.
+
+**Stage an ADR based on source evidence:** Once all Workflow Tasks are
+integrated or completed, open **Journal → Propose a verified architecture
+decision (ADR)**. Enter a non-main linked Git review Workspace ID and a
+four-digit filename such as `0012-token-rotation.md`, then author Context,
+Considered Options, Decision, and Consequences. The read-only preview embeds
+the exact durable QC Run / Git SHA / evidence references and revalidates any
+captured screenshots. Confirm to write the exact reviewed Markdown to
+`docs/adr/` in the separate review Worktree. A crash between reservation and
+write is reconciled by **Inspect**, never an automatic overwrite. The file is
+left **uncommitted** for independent Git review, Push and PR publication.
+
+See [ADR-0010](docs/adr/0010-screenshot-artifacts-and-reviewed-adr-staging.md)
+for provenance, quotas, trust boundaries and publication limits.
 
 ## Orchestra canvas controls
 
