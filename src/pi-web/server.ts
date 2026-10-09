@@ -621,8 +621,15 @@ const plugin:PiWebServerPlugin={
           close};
       },
     },
-    dispose(){
+    async dispose(){
+      automationReady=false;
       if(automationTimer)clearInterval(automationTimer);
+      // First reject new executor ticks, then drain outstanding I/O before
+      // closing the ledger and Workflow/Run DBs. PI WEB has already cancelled
+      // our lifetime signal, so hosted Pi operations fail closed if interrupted.
+      const drained=autopilot?.stop();
+      if(bootstrap)await bootstrap;
+      if(drained)await drained;
       for(const bridge of live.values())bridge.stop();
       live.clear();viewers.clear();ledger.close();agents.close();store.close();
     },
