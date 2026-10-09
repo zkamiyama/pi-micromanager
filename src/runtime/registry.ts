@@ -7,7 +7,7 @@ import type { RuntimeActivity } from "./protocol.js";
 export type Seat = "planner" | "implementer" | "qc" | "architect";
 export type BindingPhase =
   | "reserved" | "created" | "connected" | "configured" | "running"
-  | "settled" | "sealed" | "failed" | "uncertain";
+  | "settled" | "sealed" | "failed" | "blocked" | "uncertain";
 
 export interface AgentBinding {
   projectId: string;

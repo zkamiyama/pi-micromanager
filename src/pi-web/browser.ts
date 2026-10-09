@@ -1,4 +1,5 @@
 /** PI WEB workspace panel. v0.1 is a control-state simulator, not yet a Pi runtime. */
+import { createLiveRunPanel } from "./fleet.js";
 import type { PiWebPlugin, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { WorkflowAction, WorkflowDefinition, WorkflowInstance, TaskState, Role } from "../core/workflow.js";
 
@@ -45,7 +46,7 @@ function stateFor(context: WorkspacePanelContext): State {
 const plugin: PiWebPlugin = {
   apiVersion: 4,
   name: "pi-micromanager",
-  activate({ html }) {
+  activate({ html, lifetimeSignal }) {
     let disposed = false;
     async function send(context: WorkspacePanelContext, operation: string, input: unknown): Promise<unknown> {
       if (!context.peer?.request) throw new Error("Enable the pi-micromanager server plugin in PI WEB settings");
@@ -250,7 +251,7 @@ const plugin: PiWebPlugin = {
               `}
             </section>`;
           },
-        }],
+        }, createLiveRunPanel(html, lifetimeSignal)],
       },
       dispose() { disposed = true; states.clear(); },
     };
