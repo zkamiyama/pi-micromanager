@@ -92,7 +92,8 @@ function persistCanvas(ctx:WorkspacePanelContext,s:GridState):void {
 export function selectOrchestraTask(ctx:WorkspacePanelContext,workflowId:string,taskId:string,seat:Seat):void{
   const s=stateFor(ctx);
   s.pendingTaskFocus={workflowId,taskId,seat};
-  s.canvasDimmed=false;
+  s.filterRole="all";s.filterQuery="";
+  s.canvasPage=0;s.canvasDimmed=false;
   s.loaded=false; // Next panel render will refresh the registry.
 }
 
@@ -179,6 +180,9 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       const wf=s.workflows.find(w=>w.definition.id===s.workflowId);
       if(!wf?.tasks[s.taskId])s.taskId=Object.keys(wf?.tasks??{})[0]??"";
       const all=[...active,...history];
+      const retainedSessions=new Set(all.flatMap(b=>b.sessionId?[b.sessionId]:[]));
+      for(const id of s.activity.keys())if(!retainedSessions.has(id))s.activity.delete(id);
+      for(const id of s.historyLoaded)if(!retainedSessions.has(id))s.historyLoaded.delete(id);
       if(!explicitFocus&&!all.some(b=>b.sessionId===s.selectedSessionId))
         s.selectedSessionId=active.find(x=>!!x.sessionId)?.sessionId??
           history.find(x=>!!x.sessionId)?.sessionId??"";
@@ -310,8 +314,9 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
 
   function focus(ctx:WorkspacePanelContext,b:LiveBinding){
     const s=stateFor(ctx);
-    s.selectedSessionId=b.sessionId??"";
     if(b.sessionId)replayHistory(ctx,b.sessionId);
+    if(s.selectedSessionId===b.sessionId&&!s.canvasDimmed)return;
+    s.selectedSessionId=b.sessionId??"";
     s.canvasDimmed=false;
     persistCanvas(ctx,s);
     refresh(ctx);
