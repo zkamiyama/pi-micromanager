@@ -70,6 +70,17 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
         if(!before.clean)throw new Error("Dirty Worktree; refusing automated Pi launch");
         if(job.kind!=="implementation"&&before.sha!==job.headSha)
           throw new Error("Review/diagnosis snapshot SHA differs from the implementation commit");
+        if(job.kind==="implementation"){
+          for(const upstreamSha of job.requiredAncestors??[]){
+            if(!/^[0-9a-f]{40,64}$/.test(upstreamSha))
+              throw new Error("Unverified upstream dependency Git SHA");
+            try{await gitRead(w.path,["merge-base","--is-ancestor",upstreamSha,"HEAD"]);}
+            catch{
+              throw new Error("Dependent Worktree is missing QC-passed upstream commit "+
+                upstreamSha.slice(0,12)+"; integrate dependencies before launching this Task");
+            }
+          }
+        }
       }else await workspace(job.projectId,job.workspaceId);
       const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
       const task=current.tasks[job.taskId];
