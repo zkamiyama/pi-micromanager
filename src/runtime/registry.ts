@@ -114,6 +114,15 @@ export class AgentRegistry {
       "WHERE project_id=? AND workspace_id=? AND phase NOT IN ('sealed','failed') "+
       "LIMIT 1").get(projectId,workspaceId));
   }
+  /** Never stage an ADR inside a historical Task's implementation/QC workspace. */
+  wasWorkflowWorkspace(projectId:string,orchestraWorkspaceId:string,
+    workflowId:string,workspaceId:string):boolean{
+    identity(projectId,"projectId");identity(orchestraWorkspaceId,"orchestraWorkspaceId");
+    identity(workflowId,"workflowId");identity(workspaceId,"workspaceId");
+    return Boolean(this.db.prepare("SELECT 1 FROM execution_runs WHERE "+
+      "project_id=? AND orchestra_workspace_id=? AND workflow_id=? AND workspace_id=? "+
+      "LIMIT 1").get(projectId,orchestraWorkspaceId,workflowId,workspaceId));
+  }
   get(projectId:string,orchestraWorkspaceId:string,sessionId:string):AgentBinding {
     identity(sessionId,"sessionId");
     const record=this.db.prepare("SELECT "+fields+
