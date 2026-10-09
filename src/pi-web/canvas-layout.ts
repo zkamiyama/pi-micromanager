@@ -99,3 +99,23 @@ export function buildCanvasGraph(
   }
   return { width: CANVAS_WIDTH, height: root.y + 252, root, nodes, links };
 }
+
+/** Shared by Lit rendering and pointer-drag live SVG updates. */
+export function canvasLinkPath(link: CanvasLink): string {
+  const dx = link.to.x - link.from.x;
+  const dy = link.to.y - link.from.y;
+  if (link.kind === "dependency") {
+    return "M " + link.from.x + " " + link.from.y +
+      " C " + (link.from.x + dx * .45) + " " + link.from.y +
+      ", " + (link.to.x - dx * .45) + " " + link.to.y +
+      ", " + link.to.x + " " + link.to.y;
+  }
+  return "M " + link.from.x + " " + link.from.y +
+    " C " + link.from.x + " " + (link.from.y - 72) +
+    ", " + link.to.x + " " + (link.to.y + 58) +
+    ", " + link.to.x + " " + link.to.y;
+}
+export function canvasArrowTransform(link: CanvasLink): string {
+  const angle = Math.atan2(link.to.y - link.from.y, link.to.x - link.from.x) * 180 / Math.PI;
+  return "translate(" + link.to.x + " " + link.to.y + ") rotate(" + angle + ")";
+}
