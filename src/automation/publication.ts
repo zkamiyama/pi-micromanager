@@ -105,6 +105,15 @@ export class PublicationManager {
       " WHERE id=? AND state='reserved'")
       .run(result,new Date().toISOString(),row.id);
   }
+  private assertAdmitted(record:AutopilotRecord):void{
+    this.options.host.lifetimeSignal.throwIfAborted();
+    const current=this.options.ledger.get(record.projectId,
+      record.orchestraWorkspaceId,record.workflowId);
+    if(!current?.enabled||!current.config.publication||
+      JSON.stringify(current.config.publication)!==
+        JSON.stringify(record.config.publication))
+      throw new Error("Autopilot publication is paused or its destination changed");
+  }
   private async gh(path:string,args:string[]):Promise<string>{
     const result=await this.options.host.execFile({
       file:"gh",args,cwd:path,timeoutMs:60000,signal:this.options.host.lifetimeSignal,
@@ -152,6 +161,7 @@ export class PublicationManager {
   async step(record:AutopilotRecord,workflow:WorkflowInstance):Promise<"acted"|"waiting"|"none">{
     const pub=record.config.publication;
     if(!pub)return "none"; // historical configs do not unexpectedly start network actions
+    this.assertAdmitted(record);
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     for(const task of Object.values(workflow.tasks)){
       if(task.spec.kind!=="implementation"||
@@ -210,6 +220,10 @@ export class PublicationManager {
           throw new Error("Reserved Git push is uncertain; remote does not contain expected QC SHA");
         const receipt=this.reserve(p,o,w,task.spec.id,"git.push",qc.runId,sha,branch,dest);
         if(receipt.state==="reserved"){
+          this.assertAdmitted(record);
+          if(this.options.agents.hasUnsealedWorkspace(p,workspaceId)||
+            await requireCleanGit(this.options.host,target.path)!==sha)
+            throw new Error("Publication Git checkout changed immediately before push");
           const pushed=await git(this.options.host,target.path,
             ["push","--porcelain",pub.remote,"HEAD:refs/heads/"+branch],120000);
           if(pushed.exitCode!==0)
@@ -245,6 +259,11 @@ export class PublicationManager {
       const receipt=this.reserve(p,o,w,task.spec.id,"github.pr.create",
         qc.runId,sha,branch,dest);
       if(previous)throw new Error("Reserved PR creation is uncertain; inspect GitHub before retry");
+      this.assertAdmitted(record);
+      if(this.options.agents.hasUnsealedWorkspace(p,workspaceId)||
+        await requireCleanGit(this.options.host,target.path)!==sha||
+        await this.remoteSha(target.path,pub,branch)!==sha)
+        throw new Error("Publication source/remote changed before Draft PR creation");
       const title=(task.spec.title||task.spec.id).slice(0,180);
       const body="Autonomous Draft PR for Workflow "+w+", Task "+task.spec.id+
         ".\nQC Run "+qc.runId+" PASS at "+sha+".\nEvidence: "+evidence.ref+
