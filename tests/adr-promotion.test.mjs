@@ -180,6 +180,21 @@ test("ADR source and target must be fully stable and have durable QC evidence",a
       /leased/);
   }finally{x.close();}
 });
+test("ADR review branch cannot reuse a previously sealed implementation Worktree",async()=>{
+  const x=fixture();
+  try{
+    const run={projectId:"p",orchestraWorkspaceId:"o",workspaceId:"adr-review",
+      workflowId:"flow",taskId:"feature",runId:"impl-feature-99",
+      seat:"implementer",requestId:"auto:writer-history"};
+    x.agents.reserve(run);
+    const bound=x.agents.assign(run,"historical-writer");
+    x.agents.record(bound,{kind:"agent_settled",text:"Agent settled",
+      at:Date.now(),sequence:1});
+    x.agents.seal("p","o","historical-writer","sha256:historical-only");
+    await assert.rejects(x.promotion.preview("p","o","flow","adr-review",fields),
+      /separate from implementation\/QC Worktrees/);
+  }finally{x.close();}
+});
 test("Reserved ADR writing is recovered only from exact file bytes, never overwritten",async()=>{
   const x=fixture();
   try{
