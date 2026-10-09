@@ -213,6 +213,16 @@ export class AdrPromotion {
       sourceDigest:proof.sourceDigest,sha256:sha(markdown),content:markdown,
       expiresAt:Date.now()+TTL,state:"prepared",
     };
+    // Keep review attempts finite; never delete reserved/staged receipts
+    // that are needed to reconcile an uncertain filesystem write.
+    const scope=automationScope(p,o);
+    this.db.prepare("DELETE FROM adr_drafts WHERE state='prepared' AND expires_at<?")
+      .run(Date.now()-30*24*60*60*1000);
+    const pending=this.db.prepare("SELECT COUNT(*) AS n FROM adr_drafts WHERE scope=?"+
+      " AND workflow_id=? AND state='prepared' AND expires_at>=?")
+      .get(scope,workflowId,Date.now()) as {n:number};
+    if(pending.n>=8)
+      throw new Error("Too many pending ADR previews; let earlier reviews expire");
     this.db.prepare(`INSERT INTO adr_drafts
       (id,scope,workflow_id,target_workspace_id,filename,target_head,
        workflow_revision,source_digest,sha256,content,expires_at,state,
