@@ -23,6 +23,10 @@ const ROWS="id,scope,workflow_id AS workflowId,task_id AS taskId,"+
   "action,run_id AS runId,head_sha AS headSha,target,state,fingerprint,"+
   "created_at AS createdAt,updated_at AS updatedAt";
 const supported=new Set<PermissionAction>(["git.push","github.pr.create"]);
+function commitSubject(taskId:string,runId:string,revision:number,workspaceId:string):string{
+  return createHash("sha256").update(JSON.stringify([
+    "git.commit",taskId,runId,revision,workspaceId])).digest("hex");
+}
 function subject(action:PermissionAction,taskId:string,runId:string,
   sha:string,pub:PublicationConfig):string{
   return createHash("sha256").update(JSON.stringify([
@@ -48,6 +52,38 @@ export class PermissionLedger {
     return this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
       " WHERE scope=? AND workflow_id=? ORDER BY created_at DESC LIMIT 100")
       .all(automationScope(p,o),workflowId) as unknown as ApprovalRequest[];
+  }
+  /** The commit permission is admitted before a fresh implementation attempt,
+   * not after code has already been changed. A newer Workflow revision
+   * invalidates the approval and requires an exact new decision. */
+  ensureCommit(p:string,o:string,workflowId:string,taskId:string,
+    nextAttempt:number,workspaceId:string):PermissionOutcome{
+    const workflow=this.workflows.get(p,o,workflowId),task=workflow.tasks[taskId];
+    if(!task||task.spec.kind!=="implementation"||task.status!=="ready"||
+      nextAttempt!==task.attempts+1||
+      this.settings.get(p,o,workflowId)?.config.workspaces[taskId]!==workspaceId)
+      throw new Error("Git commit approval must reference a ready implementation attempt");
+    const decision=permissionDecision(workflow.definition.permissions,"git.commit");
+    if(decision!=="ask")return {decision};
+    const scope=automationScope(p,o),runId="impl-"+taskId+"-"+nextAttempt;
+    const mark=commitSubject(taskId,runId,workflow.revision,workspaceId);
+    const current=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
+      " WHERE scope=? AND workflow_id=? AND task_id=? AND action='git.commit'"+
+      " AND fingerprint=?").get(scope,workflowId,taskId,mark) as ApprovalRow|undefined;
+    if(current)return {decision:current.state==="approved"?"allow":
+      current.state==="rejected"?"deny":"ask",approval:current};
+    const id=randomUUID(),at=new Date().toISOString();
+    this.db.prepare(`INSERT INTO workflow_approvals(
+      id,scope,workflow_id,task_id,action,run_id,head_sha,target,
+      fingerprint,state,created_at,updated_at)
+      VALUES(?,?,? ,?,'git.commit',?,'pre-commit',?,?,'pending',?,?)
+      ON CONFLICT(scope,workflow_id,task_id,action,fingerprint) DO NOTHING`)
+      .run(id,scope,workflowId,taskId,runId,workspaceId,mark,at,at);
+    const row=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
+      " WHERE scope=? AND workflow_id=? AND task_id=? AND action='git.commit'"+
+      " AND fingerprint=?").get(scope,workflowId,taskId,mark) as unknown as ApprovalRow;
+    return {decision:row.state==="approved"?"allow":
+      row.state==="rejected"?"deny":"ask",approval:row};
   }
   ensure(p:string,o:string,workflowId:string,taskId:string,
     action:PermissionAction,runId:string,headSha:string,
@@ -88,13 +124,22 @@ export class PermissionLedger {
     const row=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
       " WHERE id=? AND scope=?").get(id,automationScope(p,o)) as ApprovalRow|undefined;
     if(!row)throw new Error("Approval does not belong to this Orchestra");
-    const cfg=this.settings.get(p,o,row.workflowId)?.config.publication;
-    if(!cfg)throw new Error("Publication is not currently configured");
+    const config=this.settings.get(p,o,row.workflowId)?.config;
+    if(!config)throw new Error("Workflow is no longer configured");
     const workflow=this.workflows.get(p,o,row.workflowId),task=workflow.tasks[row.taskId];
-    if(!task||!["passed","integrated"].includes(task.status)||
-      task.lastQc?.runId!==row.runId||task.lastQc.headSha!==row.headSha||
-      subject(row.action,row.taskId,row.runId,row.headSha,cfg)!==row.fingerprint)
-      throw new Error("Approval no longer matches the exact Workflow QC commit and publication target");
+    if(row.action==="git.commit"){
+      if(!task||task.spec.kind!=="implementation"||task.status!=="ready"||
+        row.runId!=="impl-"+row.taskId+"-"+(task.attempts+1)||
+        config.workspaces[row.taskId]!==row.target||row.headSha!=="pre-commit"||
+        commitSubject(row.taskId,row.runId,workflow.revision,row.target)!==row.fingerprint)
+        throw new Error("Commit approval no longer matches the ready Task/revision/workspace");
+    }else {
+      const pub=config.publication;
+      if(!pub||!task||!["passed","integrated"].includes(task.status)||
+        task.lastQc?.runId!==row.runId||task.lastQc.headSha!==row.headSha||
+        subject(row.action,row.taskId,row.runId,row.headSha,pub)!==row.fingerprint)
+        throw new Error("Approval no longer matches the exact Workflow QC commit and publication target");
+    }
     if(permissionDecision(workflow.definition.permissions,row.action)!=="ask")
       throw new Error("Workflow no longer requires this authorization");
     if(row.state!=="pending"){
