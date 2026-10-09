@@ -8,6 +8,7 @@ import { CONTROL_CHANNEL, RECEIPT_CHANNEL, ACTIVITY_CHANNEL } from "../dist/runt
 import { REPORT_CHANNEL } from "../dist/automation/report.js";
 
 const SHA = "a".repeat(40);
+const BASE = "b".repeat(40);
 const definition = {
   id:"wf",title:"Build a verified endpoint",maxQcRounds:3,
   maxParallelByRole:{implementer:1,reviewer:1,architect:1,planner:1},
@@ -28,9 +29,12 @@ function fakePluginHost(shared) {
   const calls = [];
   const publication={remoteSha:null,pr:null,pushCount:0,createCount:0};
   const createdWorktrees=new Map();
+  const convergence={head:BASE,merges:0};
   let serial = sessions.size;
   const workspace = id => ({
-    id,projectId:"project",path:id==="orchestra"?"/repo":id==="wt-integrated"?"/repo/integrated":"/repo/api",
+    id,projectId:"project",path:id==="orchestra"?"/repo":
+      id==="wt-integrated"?"/repo/integrated":
+      id==="worktree-consumer"?"/repo/consumer":"/repo/api",
     isMain:id==="orchestra",
     label:id,
     ...(id==="orchestra"?{}:{provider:{metadata:{isGitWorktree:true}}}),
@@ -38,7 +42,7 @@ function fakePluginHost(shared) {
   const workspaces = {
     version:1,
     async resolve({projectId,workspaceId}) {
-      if(projectId!=="project"||!["orchestra","worktree-api","wt-integrated"].includes(workspaceId))
+      if(projectId!=="project"||!["orchestra","worktree-api","wt-integrated","worktree-consumer"].includes(workspaceId))
         throw new Error("Unknown linked workspace");
       return {project:{id:"project",name:"Project",path:"/repo"},
         workspace:workspace(workspaceId)};
@@ -48,7 +52,7 @@ function fakePluginHost(shared) {
     const id="pi-session-"+(++serial);
     const subscribers=new Set();
     const session={
-      id,commands:[],
+      id,commands:[],afterConvergence:convergence.merges>0,
       publish(channel,data) {
         for(const listeners of subscribers)for(const h of listeners.get(channel)??[])h(data);
       },
@@ -112,11 +116,27 @@ function fakePluginHost(shared) {
         if(command==="rev-parse --show-toplevel")
           return result(args[1]+"\n");
         if(command==="rev-parse HEAD")
-          return result(args[1]==="/repo/integrated"?"c".repeat(40)+"\n":SHA+"\n");
+          return result(args[1]==="/repo/consumer"?convergence.head+"\n":
+            args[1]==="/repo/integrated"?"c".repeat(40)+"\n":SHA+"\n");
         if(command==="status --porcelain")
           return result("");
-        if(command.startsWith("merge-base --is-ancestor "))
+        if(command.startsWith("merge-base --is-ancestor ")){
+          if(args[1]==="/repo/consumer"){
+            const [, ,source,target]=command.split(" ");
+            const ancestor=source===target||
+              (source===BASE&&target===SHA)||
+              (source===SHA&&target===convergence.head&&convergence.head===SHA);
+            return {...result(""),exitCode:ancestor?0:1};
+          }
           return result("");
+        }
+        if(command==="symbolic-ref --quiet --short HEAD"&&args[1]==="/repo/consumer")
+          return result("feature/consumer\n");
+        if(command==="merge --ff-only "+SHA&&args[1]==="/repo/consumer"){
+          if(convergence.head!==BASE)throw new Error("Repeated convergence merge");
+          convergence.head=SHA;convergence.merges++;
+          return result("Fast-forward\n");
+        }
         if(command==="symbolic-ref --quiet --short HEAD")
           return result("feature/api\n");
         if(command==="remote get-url origin")
@@ -193,7 +213,7 @@ function fakePluginHost(shared) {
     await resolved.dispose(new AbortController().signal);
     if(!preserve)rmSync(dir,{recursive:true,force:true});
   };
-  return {activate,request,cleanup,sessions,calls,createdWorktrees,publication,shared:{dir,sessions}};
+  return {activate,request,cleanup,sessions,calls,createdWorktrees,publication,convergence,shared:{dir,sessions}};
 }
 async function eventually(callback,timeout=6500){
   const started=Date.now();
@@ -505,5 +525,45 @@ test("PI WEB git.commit deny leaves the Task untouched and admits zero modifying
     assert.equal((await host.request("auto.permissions",{
       workflowId:"commit-denied"})).approvals.length,0,
       "Deny is a Workflow policy decision, not a pending human prompt");
+  }finally{await host.cleanup();}
+});
+
+test("Real PI WEB scheduler fast-forwards dependent Git Worktree before launching its Pi implementer",async()=>{
+  const host=fakePluginHost();
+  try{
+    await host.activate();
+    const dag={...definition,id:"dependency-chain",
+      tasks:[...definition.tasks,
+        {id:"consumer",title:"Consume API",kind:"implementation",role:"implementer",
+          description:"Add consumer code",acceptanceCriteria:["Depends on QC source"],
+          dependsOn:[{taskId:"api",gate:"integrated"}]}],
+    };
+    await host.request("create",dag);
+    await host.request("auto.configure",{workflowId:"dependency-chain",
+      config:{...config,workspaces:{api:"worktree-api",consumer:"worktree-consumer"}}});
+    await host.request("auto.start",{workflowId:"dependency-chain"});
+    const impl=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-api-1")&&
+      s.commands.some(c=>c.type==="message")));
+    impl.finish();
+    const qc=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.runId==="qc-api-1")&&
+      s.commands.some(c=>c.type==="message")));
+    qc.finish({kind:"qc",runId:"qc-api-1",verdict:"pass",
+      summary:"Verified upstream API contract",at:Date.now()});
+    const child=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-consumer-1")&&
+      s.commands.some(c=>c.type==="message")),15000);
+    assert.equal(host.convergence.merges,1);
+    assert.equal(host.convergence.head,SHA);
+    assert.equal(child.afterConvergence,true,
+      "Child Pi Session cannot be created before Git contains its QC source");
+    const current=await host.request("get","dependency-chain");
+    assert.equal(current.tasks.api.status,"integrated");
+    assert.equal(current.tasks.consumer.status,"running");
+    const receipts=(await host.request("auto.permissions",{workflowId:"dependency-chain"})).convergence;
+    assert.equal(receipts.length,1);
+    assert.equal(receipts[0].state,"completed");
+    assert.equal(receipts[0].sourceSha,SHA);
   }finally{await host.cleanup();}
 });
