@@ -30,6 +30,9 @@ interface State {
   autopilotDraft: string;
   autopilotStatus: string;
   autopilotEnabled: boolean;
+  autopilotConfigured: boolean;
+  autopilotConfigFor?:string;
+  workflowDraft:string;
 }
 const roleNames: Role[] = ["planner", "implementer", "reviewer", "architect"];
 const states = new Map<string, State>();
@@ -47,7 +50,13 @@ function stateFor(context: WorkspacePanelContext): State {
           planner:{provider:"",model:""},architect:{provider:"",model:""},
         },test:{file:"npm",args:["test"],timeoutMs:60000},maxAttempts:5,
       },null,2),
-      autopilotStatus:"Not configured",autopilotEnabled:false,
+      autopilotStatus:"Not configured",autopilotEnabled:false,autopilotConfigured:false,
+      workflowDraft:JSON.stringify({
+        id:"custom-feature",title:"Custom development workflow",maxQcRounds:5,
+        maxParallelByRole:{planner:1,implementer:2,reviewer:2,architect:2},
+        tasks:[{id:"feature",title:"Implement the requested feature",
+          kind:"implementation",role:"implementer",dependsOn:[]}],
+      },null,2),
       interventionMode: "workflow",
       interventionDraft: "After the next QC, ask Astra and Claude Opus to independently investigate the root cause and alternatives; let Sol synthesize before Luna resumes." };
     states.set(key, state);
@@ -80,7 +89,12 @@ const plugin: PiWebPlugin = {
             const auto=await send(context,"auto.status",{workflowId:id}) as
               {enabled:boolean;status:string;config:unknown}|null;
             state.autopilotEnabled=auto?.enabled??false;
+            state.autopilotConfigured=!!auto;
             state.autopilotStatus=auto?.status??"Not configured";
+            if(auto&&state.autopilotConfigFor!==id){
+              state.autopilotDraft=JSON.stringify(auto.config,null,2);
+              state.autopilotConfigFor=id;
+            }
           }catch(error){state.autopilotStatus="Autopilot unavailable: "+String(error);}
         }
         if (state.selectedTaskId && !state.selected?.tasks[state.selectedTaskId]) delete state.selectedTaskId;
@@ -101,6 +115,20 @@ const plugin: PiWebPlugin = {
       } catch (error) { state.status = String(error); }
       finally { state.busy = false; if (!disposed) { context.host.requestRender(); void refresh(context, "demo-auth"); } }
     }
+    async function importWorkflow(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.busy)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const created=await send(context,"create",JSON.parse(state.workflowDraft)) as WorkflowInstance;
+        state.selected=created;
+        delete state.selectedTaskId;
+        state.status="Workflow saved with validated DAG; no Pi Runs launched.";
+        state.autopilotConfigured=false;state.autopilotEnabled=false;
+        delete state.autopilotConfigFor;
+      }catch(error){state.status="Workflow import failed: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
     async function change(context: WorkspacePanelContext, action: WorkflowAction) {
       const state = stateFor(context);
       const workflow = state.selected;
@@ -111,7 +139,8 @@ const plugin: PiWebPlugin = {
           commandId: crypto.randomUUID(), action }) as WorkflowInstance;
         state.selected = next;
         state.workflows = state.workflows.map(x => x.definition.id === next.definition.id ? next : x);
-        state.status = `Applied ${action.type} as revision ${next.revision} (simulation only).`;
+        state.status = "Applied "+action.type+" as revision "+next.revision+
+          (state.autopilotConfigured?" (explicit human decision)":" (simulation only)");
       } catch (error) { state.status = String(error); }
       finally { state.busy = false; if (!disposed) context.host.requestRender(); }
     }
@@ -216,6 +245,19 @@ const plugin: PiWebPlugin = {
     const actionsFor = (context: WorkspacePanelContext, t: TaskState, w: WorkflowInstance) => {
       const act = (action: WorkflowAction) => { void change(context, action); };
       const buttons = [];
+      if(stateFor(context).autopilotConfigured){
+        // Do not offer simulation transitions for a real automated Workflow.
+        // The explicit human resume decision is still supported.
+        if(t.status==="held")for(const a of w.amendments.filter(a=>a.targetTaskId===t.spec.id&&
+          a.status==="activated"&&a.synthesisTaskId&&w.tasks[a.synthesisTaskId]?.status==="done")){
+          buttons.push(html`<button @click=${()=>act({type:"resume_after_diagnosis",
+            amendmentId:a.id,decision:"rework"})}>Approve rework</button>`);
+          if(t.lastQc?.verdict==="pass")buttons.push(html`<button
+            @click=${()=>act({type:"resume_after_diagnosis",amendmentId:a.id,
+              decision:"accept_pass"})}>Accept QC pass</button>`);
+        }
+        return buttons;
+      }
       if (t.status === "ready") buttons.push(html`<button @click=${() => act({ type: "start", taskId: t.spec.id })}>Simulate start</button>`);
       if (t.status === "running") buttons.push(t.spec.kind === "implementation"
         ? html`<button @click=${() => act({ type: "implementation_finished", taskId: t.spec.id,
@@ -266,6 +308,16 @@ const plugin: PiWebPlugin = {
                 </select>
               </div>
               <p role="status" aria-live="polite">${state.status}</p>
+              <details class="mm-workflow-import">
+                <summary>Import a real Workflow DAG (JSON)</summary>
+                <p>Author a Task DAG here or paste a definition. Server-side validation rejects
+                  cycles and unsupported dependencies before saving any workflow.</p>
+                <textarea rows="10" spellcheck="false" aria-label="Workflow definition JSON"
+                  .value=${state.workflowDraft} ?disabled=${state.busy}
+                  @input=${(e:Event)=>{state.workflowDraft=(e.target as HTMLTextAreaElement).value;}}></textarea>
+                <button ?disabled=${state.busy} @click=${()=>void importWorkflow(context)}>
+                  Validate and save Workflow</button>
+              </details>
               <details class="mm-autopilot">
                 <summary><strong>Autopilot · Real Orchestrator</strong>
                   <span>${state.autopilotEnabled?"● Running":"○ Paused / offline"}</span></summary>
@@ -343,6 +395,13 @@ const styles = `
   .mm-events p {margin:0;}
   .mm-task-selected { outline: 2px solid var(--pi-accent-border); }
   .mm-intervene { font-size: 11px !important; margin-top: 6px; }
+  .mm-workflow-import{border:1px solid var(--pi-border-muted);border-radius:8px;
+    padding:10px;margin:12px 0;background:var(--pi-surface);}
+  .mm-workflow-import summary{cursor:pointer;font-weight:600;}
+  .mm-workflow-import p{color:var(--pi-muted);font-size:12px;}
+  .mm-workflow-import textarea{width:100%;box-sizing:border-box;resize:vertical;margin:8px 0;
+    background:var(--pi-surface);color:inherit;border:1px solid var(--pi-border-muted);
+    border-radius:6px;padding:8px;font:12px ui-monospace,monospace;}
   .mm-autopilot {border:1px solid var(--pi-border-muted);background:var(--pi-surface);
     border-radius:9px;padding:11px;margin:12px 0;}
   .mm-autopilot summary {cursor:pointer;display:flex;align-items:center;gap:10px;justify-content:space-between;}
