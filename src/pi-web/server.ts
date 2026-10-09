@@ -276,6 +276,12 @@ const plugin:PiWebServerPlugin={
       replaySettledReport,
     }),
     publish:(record,workflow)=>publisher.step(record,workflow),
+    authorizeImplementation:(record,_workflow,taskId,nextAttempt)=>{
+      const workspaceId=record.config.workspaces[taskId];
+      if(!workspaceId)throw new Error("Missing linked implementation Workspace");
+      return permissions.ensureCommit(record.projectId,record.orchestraWorkspaceId,
+        record.workflowId,taskId,nextAttempt,workspaceId).decision;
+    },
   });
   return {
     start({capabilities}){
