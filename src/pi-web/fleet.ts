@@ -42,6 +42,8 @@ interface GridState {
   needsReload:boolean;
   canvasDimmed:boolean;
   canvasPage:number;
+  filterRole:Seat|"all";
+  filterQuery:string;
   plannerSessionId:string;
   pendingTaskFocus?:{workflowId:string;taskId:string;seat:Seat};
   nodePositions:Map<string,CanvasPosition>;
@@ -70,7 +72,7 @@ function stateFor(ctx:WorkspacePanelContext):GridState{
       evidenceRef:"",
       density:{planner:"expanded",implementer:"compact",qc:"expanded",architect:"expanded"},
       activity:new Map(),historyLoaded:new Set(),historyLoading:new Set(),loadStatus:"Not connected.",busy:false,loaded:false,
-      listening:false,connecting:false,needsReload:false,canvasDimmed:preferences.dimmed,canvasPage:0,
+      listening:false,connecting:false,needsReload:false,canvasDimmed:preferences.dimmed,canvasPage:0,filterRole:"all",filterQuery:"",
        plannerSessionId:"",nodePositions:preferences.positions,nodeDensity:preferences.density,
        nodeDrafts:new Map(),nodeModes:new Map(),deliveryStatus:new Map()};
     states.set(k,s);
@@ -425,9 +427,14 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       });
     };
 
-    const newest=[...s.active].sort((a,b)=>
+    const allLive=[...s.active].sort((a,b)=>
       b.createdAt.localeCompare(a.createdAt)||b.runId.localeCompare(a.runId));
+    const query=s.filterQuery.trim().toLowerCase();
+    const newest=allLive.filter(b=>
+      (s.filterRole==="all"||b.seat===s.filterRole)&&(!query||
+      [b.taskId,b.runId,b.workflowId,b.seat].some(value=>value.toLowerCase().includes(query))));
     const pageCount=Math.max(1,Math.ceil(newest.length/12));
+    s.canvasPage=Math.max(0,Math.min(s.canvasPage,pageCount-1));
     const visible=newest.slice(s.canvasPage*12,(s.canvasPage+1)*12);
     const dependencies:CanvasDependency[]=[];
     for(const b of visible){
@@ -441,7 +448,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     }));
     const graph=buildCanvasGraph(canvasRuns,dependencies,s.nodePositions);
     const byKey=new Map(visible.map(b=>[runKey(b.workflowId,b.runId),b]));
-    const planners=newest.filter(b=>b.seat==="planner"&&!!b.sessionId);
+    const planners=allLive.filter(b=>b.seat==="planner"&&!!b.sessionId);
     const planner=planners.find(b=>b.sessionId===s.plannerSessionId)??planners[0];
     const plannerKey=planner?runKey(planner.workflowId,planner.runId):"";
     const plannerAvailable=!!planner&&isCommandReady(planner);
@@ -524,7 +531,21 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         </select></label>`)}</div>
 
       <div class="mm-f-canvas-nav">
-        <span>${newest.length} live/pending Runs · ${pageCount>1?"Page "+(s.canvasPage+1)+"/"+pageCount:"All Runs visible"}</span>
+        <label class="mm-f-filter-label">Role
+          <select aria-label="Filter Agents by role" .value=${s.filterRole}
+            @change=${(e:Event)=>{s.filterRole=(e.target as HTMLSelectElement).value as Seat|"all";
+              s.canvasPage=0;refresh(ctx);}}>
+            <option value="all">All roles</option>
+            ${roles.map(role=>html`<option value=${role}>${role}</option>`)}
+          </select>
+        </label>
+        <label class="mm-f-filter-label">Find
+          <input type="search" maxlength="128" aria-label="Filter Agents by Task or Run"
+            placeholder="Task / Run" .value=${s.filterQuery}
+            @input=${(e:Event)=>{s.filterQuery=(e.target as HTMLInputElement).value;
+              s.canvasPage=0;refresh(ctx);}}/>
+        </label>
+        <span>${newest.length} of ${allLive.length} live/pending Runs · ${pageCount>1?"Page "+(s.canvasPage+1)+"/"+pageCount:"All Runs visible"}</span>
         <span class="mm-f-canvas-legend"><i></i> Orchestra membership <b></b> Task dependency</span>
         <button @click=${()=>{s.nodePositions.clear();s.canvasDimmed=false;persistCanvas(ctx,s);refresh(ctx);}}>Reset layout</button>
         <button ?disabled=${s.canvasPage===0} @click=${()=>{s.canvasPage--;refresh(ctx);}}>← Previous</button>
@@ -550,7 +571,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
           </svg>
           ${graph.nodes.map(node=>renderNode(node))}
           ${!visible.length?html`<p class="mm-f-canvas-empty">
-            No Pi agent Runs are active. New sessions appear as floating chat windows after a Task Run is admitted and launched.
+            ${allLive.length?"No Runs match this filter. Clear role or search filters to see live Agents.":"No Pi agent Runs are active. New sessions appear as floating chat windows after a Task Run is admitted and launched."}
           </p>`:null}
           <section class="mm-f-orchestrator"
             style=${`left:${graph.root.x-340}px;top:${graph.root.y+20}px;`}
@@ -562,7 +583,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
             </div>
             <div class="mm-f-orch-feed" aria-label="Latest live run summaries">
               ${newest.length?newest.slice(0,3).map(b=>html`<p><b>${b.seat} · ${b.taskId}</b>
-                ${b.latestText??b.phase}</p>`):html`<p>No live activity yet. This area observes Runs; it does not fabricate an agent conversation.</p>`}
+                ${b.latestText??b.phase}</p>`):html`<p>${allLive.length?"No matching activity. Reset filters to see other Runs.":"No live activity yet. This area observes Runs; it does not fabricate an agent conversation."}</p>`}
             </div>
             <div class="mm-f-orch-compose">
               ${planners.length>1?html`<select aria-label="Planner Run" .value=${planner?.sessionId??""}
@@ -670,6 +691,9 @@ const css=`
 
   .mm-f-canvas-nav{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px;font-size:11px;color:var(--pi-muted);}
   .mm-f-canvas-nav button{padding:4px 7px;}
+  .mm-f-filter-label{display:flex!important;flex-direction:row!important;align-items:center;gap:5px!important;font-size:11px;}
+  .mm-f-filter-label select,.mm-f-filter-label input{font-size:11px;max-width:128px;min-width:0;}
+  .mm-f-filter-label input{width:105px;}
   .mm-f-canvas-legend{margin-inline:auto;display:flex;gap:6px;align-items:center;}
   .mm-f-canvas-legend i{display:inline-block;width:18px;border-top:2px dashed var(--pi-border-muted);}
   .mm-f-canvas-legend b{display:inline-block;width:18px;border-top:2px solid var(--pi-accent);}
