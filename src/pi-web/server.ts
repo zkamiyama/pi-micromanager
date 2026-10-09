@@ -38,7 +38,7 @@ function plannedRunId(task:TaskState,seat:Seat):string {
     return "impl-"+task.spec.id+"-"+task.attempts;
   if(seat==="qc"&&task.spec.kind==="implementation"&&task.status==="awaiting_qc"&&task.pendingWork)
     return "qc-"+task.spec.id+"-"+task.pendingWork.attempt;
-  if((seat==="architect"||seat==="planner")&&
+  if((seat==="architect"||seat==="planner"||seat==="qc")&&
     (task.spec.kind==="diagnosis"||task.spec.kind==="synthesis")&&task.status==="running"&&task.attempts>0)
     return "task-"+task.spec.id+"-"+task.attempts;
   throw new WorkflowError("task_not_dispatchable","The task has no admitted run for this role");
@@ -180,6 +180,62 @@ const plugin:PiWebServerPlugin={
             if(!Number.isSafeInteger(input.expectedRevision))throw new WorkflowError("invalid_revision","Expected revision required");
             return j(store.act(p,o,id(input.workflowId),input.expectedRevision as number,
               id(input.commandId),object(input.action) as unknown as WorkflowAction));
+          }
+
+          case "auto.status":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            store.get(p,o,workflowId);
+            return j(ledger.get(p,o,workflowId)??null);
+          }
+          case "auto.configure":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            const workflow=store.get(p,o,workflowId);
+            const result=ledger.save(p,o,workflowId,input.config);
+            const missing=Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation"&&
+              !result.config.workspaces[t.spec.id]).map(t=>t.spec.id);
+            if(missing.length)throw new WorkflowError("missing_worktrees",
+              "Configure an existing linked worktree per implementation Task: "+missing.join(", "));
+            return j(result);
+          }
+          case "auto.start":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            const workflow=store.get(p,o,workflowId);
+            const configured=ledger.get(p,o,workflowId);
+            if(!configured)throw new WorkflowError("not_configured","Configure Autopilot first");
+            if(!workspaces)throw new Error("PI WEB workspace authority unavailable");
+            const owners=new Set<string>();
+            for(const task of Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation")){
+              const workerId=configured.config.workspaces[task.spec.id];
+              if(!workerId)throw new Error("Task "+task.spec.id+" needs a linked Worktree");
+              const resolved=await workspaces.resolve({projectId:p,workspaceId:workerId});
+              if(resolved.project.id!==p||resolved.workspace.projectId!==p||
+                resolved.workspace.id!==workerId||resolved.workspace.isMain||
+                resolved.workspace.provider?.metadata?.isGitWorktree!==true)
+                throw new Error("Task "+task.spec.id+" has no valid linked PI WEB worktree");
+              if(owners.has(resolved.workspace.path))
+                throw new Error("Multiple implementation Tasks resolve to the same Worktree path");
+              owners.add(resolved.workspace.path);
+              const reviewId=configured.config.reviewWorkspaces?.[task.spec.id];
+              if(reviewId){
+                const qc=await workspaces.resolve({projectId:p,workspaceId:reviewId});
+                if(qc.project.id!==p||qc.workspace.id!==reviewId||qc.workspace.isMain||
+                  qc.workspace.provider?.metadata?.isGitWorktree!==true)
+                  throw new Error("QC requires an existing linked Worktree");
+              }
+            }
+            const manual=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
+              !b.requestId.startsWith("auto:")&&
+              !["sealed","failed"].includes(b.phase));
+            if(manual)throw new Error("Manually owned Runs are still live or unsealed; reconcile them first");
+            ledger.setStatus(p,o,workflowId,true,"Autopilot running; no merge or Worktree GC is automatic");
+            scheduleAutopilot(p,o,workflowId);
+            return j(ledger.get(p,o,workflowId));
+          }
+          case "auto.pause":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            store.get(p,o,workflowId);
+            ledger.setStatus(p,o,workflowId,false,"Paused by operator. Running Pi Sessions are not aborted.");
+            return j(ledger.get(p,o,workflowId));
           }
           case "agents.list":{
             const input=ctx.input===null?{}:object(ctx.input);
