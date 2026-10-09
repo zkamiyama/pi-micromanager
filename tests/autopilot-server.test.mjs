@@ -833,10 +833,10 @@ test("One command automatically turns a settled Sol plan into an isolated, QC-ga
    assert.deepEqual(saved.definition.permissions,quickProfile().permissions,
      "Sol-suggested permissions cannot override the preauthorized project policy");
    assert.equal(host.createdWorktrees.size,2);
-   assert.equal(host.sessions.size>=2,true);
    const first=await eventually(()=>[...host.sessions.values()].find(s=>
      s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-api-1")&&
      s.commands.some(c=>c.type==="message")),15000);
+   assert.ok(host.sessions.size>=2);
    first.finish();
    const qc=await eventually(()=>[...host.sessions.values()].find(s=>
      s.commands.some(c=>c.type==="configure"&&c.job?.runId==="qc-api-1")&&
@@ -920,6 +920,9 @@ test("One-command restores the same Pi planning Session after daemon restart",as
    assert.ok(planner.commands.some(c=>c.type==="inspect"),
      "Recovery inspects the same Pi Session instead of resending the planner prompt");
    assert.equal(planner.commands.filter(c=>c.type==="message").length,1);
+   await eventually(()=>[...after.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-api-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
    assert.equal(after.sessions.size,2,"Only one new implementation Pi Session was admitted");
  }finally{
    if(after)await after.cleanup();
