@@ -57,6 +57,8 @@ test("Provisioning preview is non-mutating and creates an owned branch only afte
   try{
     const plan=await x.manager.preview("project","orchestra","flow","api","/repo");
     assert.equal(plan.stage,"prepared");
+    assert.equal(x.manager.find("project","orchestra","flow","api").id,plan.id);
+    assert.equal(x.manager.find("other","orchestra","flow","api"),null);
     assert.match(plan.branch,/^mm\/[a-f0-9]{16}\/flow\/api$/);
     assert.match(plan.path,/managed-worktrees/);
     assert.equal(x.registered.size,0);
@@ -66,6 +68,9 @@ test("Provisioning preview is non-mutating and creates an owned branch only afte
     assert.equal(created.baseSha,SHA);
     assert.ok(x.registered.has(plan.path));
     assert.equal((await x.manager.inspect("project","orchestra",plan.id)).stage,"created");
+    x.manager.close();
+    x.manager=new ManagedWorktreeProvisioner(x.options);
+    assert.equal(x.manager.find("project","orchestra","flow","api").stage,"created");
     assert.equal((await x.manager.create("project","orchestra",plan.id)).stage,"created");
     assert.equal(x.invocations.filter(x=>x.args.includes("add")).length,1,
       "Never create a second Git worktree after a successful create");
