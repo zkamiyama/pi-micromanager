@@ -23,6 +23,10 @@ export interface ExecutorPort {
   /** Re-read an already settled Pi Session's durable report without replaying a turn. */
   recoverReport?(binding:AgentBinding):Promise<void>;
   onTransition?(binding:AgentBinding):void;
+  /** Optional backwards-compatible host-operated publication. Legacy Workflows
+   * with no configured target never publish to a remote. */
+  publish?(record:AutopilotRecord,workflow:WorkflowInstance):
+    Promise<"acted"|"waiting"|"none">;
 }
 const roles:Record<TaskState["spec"]["role"],Seat>={
   implementer:"implementer",reviewer:"qc",architect:"architect",planner:"planner",
@@ -291,6 +295,20 @@ export class AutopilotEngine {
           {headSha:current.tasks[task.parentTaskId]!.lastQc!.headSha}:{})});
       return;
     }
+    // New Workflows can publish a QC-passed Git commit and Draft PR
+    // autonomously. Every side effect is handled by the host publication
+    // gate, not a model's unverified textual assertion.
+    if(this.port.publish&&record.config.publication){
+      const state=await this.port.publish(record,current);
+      if(this.stopping)return;
+      if(state==="acted")return;
+      if(state==="waiting"){
+        if(record.status!=="Waiting for exact Git publication permission")
+          this.ledger.setStatus(p,o,workflowId,true,
+            "Waiting for exact Git publication permission");
+        return;
+      }
+    }
     // Max-attempt exhaustion is never treated as QC success.
     const exhausted=Object.values(current.tasks).find(t=>t.spec.kind==="implementation"&&
       t.status==="ready"&&t.attempts>=record.config.maxAttempts);
@@ -307,6 +325,8 @@ export class AutopilotEngine {
       ["ready","running","awaiting_qc","blocked","held"].includes(t.status));
     if(!unfinished){
       this.ledger.setStatus(p,o,workflowId,false,
+        record.config.publication?
+        "Autonomous publication finalized or gated; Git integration/merge remain separate.":
         "All executable Tasks reached a stable state. Git integration remains explicit.");
       return;
     }
