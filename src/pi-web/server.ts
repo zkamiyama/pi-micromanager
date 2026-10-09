@@ -242,18 +242,31 @@ const plugin:PiWebServerPlugin={
       sessions=capabilities.resolve(PI_WEB_HOST_PI_SESSIONS_CAPABILITY);
       sessionEvents=capabilities.resolve(PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY);
       workspaces=capabilities.resolve(PI_WEB_HOST_WORKSPACES_CAPABILITY);
-      bootstrap=restoreEnabledAutopilots().catch(error=>{
-        host.logger.error("Autopilot restore failed",{message:String(error).slice(0,500)});
-      }).then(()=>{
+      bootstrap=restoreEnabledAutopilots().then(()=>{
         if(host.lifetimeSignal.aborted)return;
+        // Validate persisted configuration before enabling a background timer.
+        const enabled=ledger.list().filter(x=>x.enabled);
         automationReady=true;
         automationTimer=setInterval(()=>{
           if(host.lifetimeSignal.aborted)return;
-          for(const cfg of ledger.list().filter(x=>x.enabled))void autopilot!.tick(cfg);
+          try{
+            for(const cfg of ledger.list().filter(x=>x.enabled))
+              void autopilot!.tick(cfg);
+          }catch(error){
+            automationReady=false;
+            if(automationTimer)clearInterval(automationTimer);
+            host.logger.error("Autopilot scheduler suspended after ledger failure",
+              {message:String(error).slice(0,500)});
+          }
         },1500);
         automationTimer.unref();
-        for(const cfg of ledger.list().filter(x=>x.enabled))scheduleAutopilot(
+        for(const cfg of enabled)scheduleAutopilot(
           cfg.projectId,cfg.orchestraWorkspaceId,cfg.workflowId);
+      }).catch(error=>{
+        automationReady=false;
+        if(automationTimer)clearInterval(automationTimer);
+        host.logger.error("Autopilot restore failed; scheduler not started",
+          {message:String(error).slice(0,500)});
       });
     },
     peer:{
