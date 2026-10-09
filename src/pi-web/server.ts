@@ -372,7 +372,7 @@ const plugin:PiWebServerPlugin={
             if(!configured)throw new WorkflowError("not_configured","Configure Autopilot first");
             if(bootstrap)await bootstrap;
             const fresh=ledger.get(p,o,workflowId);
-            if(fresh?.enabled)return j(fresh);
+            if(fresh?.enabled)return fresh;
             if(!workspaces)throw new Error("PI WEB workspace authority unavailable");
             const manual=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
               !b.requestId.startsWith("auto:")&&
