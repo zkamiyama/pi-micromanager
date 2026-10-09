@@ -78,7 +78,7 @@ export class PermissionLedger {
       .run(id,scope,workflowId,taskId,action,runId,headSha,target,fingerprint,at,at);
     const row=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
       " WHERE scope=? AND workflow_id=? AND task_id=? AND action=? AND fingerprint=?")
-      .get(scope,workflowId,taskId,action,fingerprint) as ApprovalRow;
+      .get(scope,workflowId,taskId,action,fingerprint) as unknown as ApprovalRow;
     return {decision:row.state==="approved"?"allow":
       row.state==="rejected"?"deny":"ask",approval:row};
   }
