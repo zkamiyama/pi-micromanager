@@ -125,11 +125,16 @@ export class AgentRegistry {
         if(!sameReservation(previous,input)) throw new Error("Run ID already refers to a different execution");
         this.db.exec("COMMIT");return previous;
       }
-      if(input.seat==="implementer"){
+      if(input.seat==="implementer"||input.seat==="qc"){
+        // QC on a worktree is a snapshot read lease. Neither a writer nor a
+        // reviewer may race an unfinished writer, and a writer cannot invalidate
+        // a QC snapshot until the QC evidence is durably sealed.
+        const conflicting=input.seat==="implementer"?
+          "seat IN ('implementer','qc')":"seat='implementer'";
         const busy=this.db.prepare("SELECT COUNT(*) AS n FROM execution_runs WHERE project_id=? AND workspace_id=?"+
-          " AND seat='implementer' AND phase NOT IN ('sealed','failed')")
+          " AND "+conflicting+" AND phase NOT IN ('sealed','failed')")
           .get(input.projectId,input.workspaceId) as {n:number};
-        if(busy.n) throw new Error("This worktree is still owned by an unsealed implementer run");
+        if(busy.n)throw new Error("Worktree is leased by an unfinished writer or QC Run");
       }
       this.db.prepare("INSERT INTO execution_runs("+
         "project_id,orchestra_workspace_id,workspace_id,workflow_id,task_id,run_id,seat,request_id,phase,created_at,updated_at)"+
