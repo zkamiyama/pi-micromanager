@@ -147,6 +147,12 @@ export class ScreenshotEvidence {
     if(!gitSha(commitBlob)||commitBlob!==diskBlob)
       throw new Error("Screenshot bytes do not match the QC-reviewed Git blob");
     const blob=safeScreenshotBytes(ws.path,relativePath);
+    const afterReadBlob=await gitValue(this.options.host,ws.path,
+      ["hash-object","--",relativePath]);
+    if(afterReadBlob!==commitBlob)
+      throw new Error("Screenshot changed during the Git blob validation");
+    if(this.options.agents.hasUnsealedWorkspace(projectId,binding.workspaceId))
+      throw new Error("QC Worktree became busy during screenshot validation");
     const mime=mimeOf(blob,relativePath);
     const sha256=createHash("sha256").update(blob).digest("hex");
     const scope=automationScope(projectId,orchestraWorkspaceId);
