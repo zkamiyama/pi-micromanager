@@ -182,7 +182,7 @@ export class PublicationManager {
   }
   private async completeFinalPR(record:AutopilotRecord,taskId:string,
     qcRunId:string,sha:string,path:string,branch:string,repo:string,
-    destination:string):Promise<"acted"|"waiting"|"none">{
+    destination:string):Promise<"acted"|"waiting"|"scheduled"|"none">{
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     const pub=record.config.publication!;
     if(!record.config.finalization?.autoMerge)return "none";
@@ -254,7 +254,7 @@ export class PublicationManager {
       const receipt=this.reserve(p,o,w,taskId,"github.pr.merge",
         qcRunId,sha,branch,destination);
       if(receipt.state==="reserved")this.scheduled(receipt,inspected.url);
-      return "waiting";
+      return "scheduled";
     }
     if(merge)
       throw new Error("PR auto-merge is not active after a reserved or scheduled request");
@@ -279,12 +279,12 @@ export class PublicationManager {
     }
     if(after.state==="OPEN"&&after.autoMergeRequest!==null){
       this.scheduled(receipt,after.url);
-      return "waiting";
+      return "scheduled";
     }
     throw new Error("GitHub merge result is uncertain; do not repeat without proof");
   }
   /** At most one external side effect per tick, after all QC/permission gates. */
-  async step(record:AutopilotRecord,workflow:WorkflowInstance):Promise<"acted"|"waiting"|"none">{
+  async step(record:AutopilotRecord,workflow:WorkflowInstance):Promise<"acted"|"waiting"|"scheduled"|"none">{
     const pub=record.config.publication;
     if(!pub)return "none"; // historical configs do not unexpectedly start network actions
     this.assertAdmitted(record);
