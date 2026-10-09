@@ -56,6 +56,7 @@ export function parseRuntimeControl(input: unknown): RuntimeControl | undefined 
       (input.delivery !== "newTurn" && input.delivery !== "steer" && input.delivery !== "followUp")) return;
     return { type: "message", requestId, text: input.text, delivery: input.delivery };
   }
+  return undefined;
 }
 export function parseRuntimeReceipt(input: unknown): RuntimeReceipt | undefined {
   if (!record(input) || !bounded(input.requestId, 128) || !requestIdPattern.test(input.requestId) ||
