@@ -19,6 +19,7 @@ import { IntegrationVerifier } from "../automation/integration.js";
 import { ManagedWorktreeProvisioner } from "../automation/worktree-provisioner.js";
 import { ActivityRetention } from "../automation/retention.js";
 import { buildJournal } from "../automation/journal.js";
+import { ScreenshotEvidence } from "../automation/screenshots.js";
 import { classifyRecoveredRun } from "../automation/recovery.js";
 import type { AutopilotRecord } from "../automation/ledger.js";
 
@@ -57,6 +58,11 @@ const plugin:PiWebServerPlugin={
   const store=new WorkflowStore(join(host.dataDirectory,"workflows.sqlite"));
   const agents=new AgentRegistry(join(host.dataDirectory,"agents.sqlite"));
   const ledger=new AutopilotLedger(join(host.dataDirectory,"autopilot.sqlite"));
+  const screenshots=new ScreenshotEvidence({
+    path:join(host.dataDirectory,"screenshot-evidence.sqlite"),
+    dataDirectory:host.dataDirectory,workflows:store,agents,ledger,host,
+    workspaces:()=>workspaces,
+  });
   const retention=new ActivityRetention({
     path:join(host.dataDirectory,"activity-retention.sqlite"),
     workflows:store,agents,ledger,
@@ -435,10 +441,25 @@ const plugin:PiWebServerPlugin={
             }
             return j(created);
           }
+          case "auto.screenshot.list":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            store.get(p,o,workflowId);
+            return j(screenshots.list(p,o,workflowId));
+          }
+          case "auto.screenshot.capture":{
+            const input=object(ctx.input),workflowId=id(input.workflowId),runId=id(input.runId);
+            const relativePath=nonempty(input.relativePath,180);
+            return j(await screenshots.capture(p,o,workflowId,runId,relativePath));
+          }
+          case "auto.screenshot.preview":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            return j(screenshots.preview(p,o,workflowId,id(input.artifactId)));
+          }
           case "auto.journal":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             const current=store.get(p,o,workflowId);
-            return j(buildJournal(current,agents.list(p,o,"all"),ledger));
+            return j(buildJournal(current,agents.list(p,o,"all"),ledger,
+              screenshots.list(p,o,workflowId)));
           }
           case "auto.retention.preview":{
             const input=ctx.input===null?{}:object(ctx.input);
@@ -710,7 +731,7 @@ const plugin:PiWebServerPlugin={
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       for(const bridge of live.values())bridge.stop();
-      live.clear();viewers.clear();retention.close();provisioner.close();integration.close();ledger.close();agents.close();store.close();
+      live.clear();viewers.clear();screenshots.close();retention.close();provisioner.close();integration.close();ledger.close();agents.close();store.close();
     },
   };
  },
