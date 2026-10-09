@@ -9,6 +9,10 @@ import {
   buildCanvasGraph, runKey, canvasLinkPath, canvasArrowTransform, clampCanvasPosition,
   type CanvasPosition, type CanvasDependency, type CanvasRun,
 } from "./canvas-layout.js";
+import {
+  canvasStorageKey, parseCanvasPreferences, serializeCanvasPreferences,
+  type NodeDensity,
+} from "./canvas-preferences.js";
 
 type Html = PluginActivationContext["html"];
 type LiveBinding = AgentBinding & { connected?: boolean };
@@ -38,6 +42,7 @@ interface GridState {
   canvasPage:number;
   plannerSessionId:string;
   nodePositions:Map<string,CanvasPosition>;
+  nodeDensity:Map<string,NodeDensity>;
   nodeDrafts:Map<string,string>;
   nodeModes:Map<string,Mode>;
   deliveryStatus:Map<string,string>;
@@ -54,16 +59,26 @@ function stateFor(ctx:WorkspacePanelContext):GridState{
   const k=scope(ctx);
   let s=states.get(k);
   if(!s){
+    let stored:string|null=null;
+    try{if(typeof localStorage!=="undefined")stored=localStorage.getItem(canvasStorageKey(k));}catch{}
+    const preferences=parseCanvasPreferences(stored);
     s={active:[],history:[],workflows:[],selectedSessionId:"",workflowId:"",taskId:"",
       targetWorkspaceId:ctx.workspace.id,provider:"openai-codex",model:"",effort:"",
       evidenceRef:"",
       density:{planner:"expanded",implementer:"compact",qc:"expanded",architect:"expanded"},
       activity:new Map(),loadStatus:"Not connected.",busy:false,loaded:false,
-      listening:false,connecting:false,needsReload:false,canvasDimmed:false,canvasPage:0,
-       plannerSessionId:"",nodePositions:new Map(),nodeDrafts:new Map(),nodeModes:new Map(),deliveryStatus:new Map()};
+      listening:false,connecting:false,needsReload:false,canvasDimmed:preferences.dimmed,canvasPage:0,
+       plannerSessionId:"",nodePositions:preferences.positions,nodeDensity:preferences.density,
+       nodeDrafts:new Map(),nodeModes:new Map(),deliveryStatus:new Map()};
     states.set(k,s);
   }
   return s;
+}
+function persistCanvas(ctx:WorkspacePanelContext,s:GridState):void {
+  try {
+    if(typeof localStorage!=="undefined")localStorage.setItem(canvasStorageKey(scope(ctx)),
+      serializeCanvasPreferences({dimmed:s.canvasDimmed,positions:s.nodePositions,density:s.nodeDensity}));
+  }catch{ /* Browser may deny storage; the canvas still works in memory. */ }
 }
 const phaseEnded=(phase:string)=>["settled","sealed","failed"].includes(phase);
 const roles:Seat[]=["planner","implementer","qc","architect"];
@@ -104,6 +119,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
        s.canvasPage=Math.min(s.canvasPage,Math.max(0,Math.ceil(active.length/12)-1));
        const activeKeys=new Set(active.map(b=>runKey(b.workflowId,b.runId)));
        for(const key of s.nodePositions.keys())if(!activeKeys.has(key))s.nodePositions.delete(key);
+       for(const key of s.nodeDensity.keys())if(!activeKeys.has(key))s.nodeDensity.delete(key);
        for(const key of s.nodeDrafts.keys())if(!activeKeys.has(key))s.nodeDrafts.delete(key);
        for(const key of s.nodeModes.keys())if(!activeKeys.has(key))s.nodeModes.delete(key);
        for(const key of s.deliveryStatus.keys())if(!activeKeys.has(key))s.deliveryStatus.delete(key);
@@ -184,7 +200,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
   }
   lifetime.addEventListener("abort",()=>{
     for(const s of states.values()){s.controller?.abort();s.channel?.close();s.activity.clear();
-      s.nodePositions.clear();s.nodeDrafts.clear();s.nodeModes.clear();s.deliveryStatus.clear();}
+      s.nodePositions.clear();s.nodeDensity.clear();s.nodeDrafts.clear();s.nodeModes.clear();s.deliveryStatus.clear();}
     states.clear();
   },{once:true});
 
@@ -197,6 +213,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     const s=stateFor(ctx);
     s.selectedSessionId=b.sessionId??"";
     s.canvasDimmed=false;
+    persistCanvas(ctx,s);
     refresh(ctx);
   }
   async function sendNode(ctx:WorkspacePanelContext,b:LiveBinding){
@@ -274,6 +291,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     const target=event.currentTarget as HTMLElement;
     if(target.hasPointerCapture(event.pointerId))target.releasePointerCapture(event.pointerId);
     delete s.drag;
+    persistCanvas(ctx,s);
     refresh(ctx);
   }
   function nudge(ctx:WorkspacePanelContext,key:string,pos:CanvasPosition,rootY:number,event:KeyboardEvent){
@@ -287,6 +305,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     const s=stateFor(ctx);
     s.nodePositions.set(key,clampCanvasPosition({x:pos.x+move.x,y:pos.y+move.y},rootY));
     s.canvasDimmed=false;
+    persistCanvas(ctx,s);
     refresh(ctx);
   }
 
@@ -355,11 +374,11 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       const b=byKey.get(node.key);
       if(!b)return null;
       const key=node.key,latest=(s.activity.get(b.sessionId??"")??[]).slice(-3);
-      const ready=isCommandReady(b),expanded=s.density[b.seat]==="expanded";
+      const ready=isCommandReady(b),expanded=(s.nodeDensity.get(key)??s.density[b.seat])==="expanded";
       return html`<article class="mm-f-node ${s.selectedSessionId&&b.sessionId===s.selectedSessionId&&!s.canvasDimmed?"mm-f-selected":""}"
           style=${`left:${node.x}px;top:${node.y}px;`}
           aria-label=${"Pi Run "+b.runId} @click=${()=>focus(ctx,b)}>
-        <div class="mm-f-node-head" role="button" tabindex="0"
+        <div class="mm-f-node-head" role="group" tabindex="0"
           title="Drag to move; arrow keys move this Agent (Shift for larger steps)."
           aria-label=${"Focus or move "+b.seat+" "+b.runId}
           @pointerdown=${(e:PointerEvent)=>startDrag(ctx,b,{x:node.x,y:node.y},canvasRuns,dependencies,graph.root.y,e)}
@@ -373,6 +392,18 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
           <span class="mm-f-node-dot ${b.phase==="running"?"mm-f-running":b.phase==="uncertain"||b.phase==="blocked"?"mm-f-needs-attention":""}"></span>
           <strong>${b.seat.toUpperCase()}</strong>
           <span class="mm-f-node-phase">${b.phase}</span>
+          <button class="mm-f-density-toggle" type="button" aria-label=${(expanded?"Collapse ":"Expand ")+b.runId}
+            title=${expanded?"Compact activity":"Expand activity"}
+            @pointerdown=${(e:PointerEvent)=>e.stopPropagation()}
+            @keydown=${(e:KeyboardEvent)=>e.stopPropagation()}
+            @click=${(e:Event)=>{
+              e.stopPropagation();
+              s.nodeDensity.set(key,expanded?"compact":"expanded");
+              s.selectedSessionId=b.sessionId??"";
+              s.canvasDimmed=false;
+              persistCanvas(ctx,s);
+              refresh(ctx);
+            }}>${expanded?"−":"+"}</button>
           <span class="mm-f-drag-handle" aria-hidden="true">⠿</span>
         </div>
         <div class="mm-f-node-meta">
@@ -419,7 +450,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       <div class="mm-f-canvas-nav">
         <span>${newest.length} live/pending Runs · ${pageCount>1?"Page "+(s.canvasPage+1)+"/"+pageCount:"All Runs visible"}</span>
         <span class="mm-f-canvas-legend"><i></i> Orchestra membership <b></b> Task dependency</span>
-        <button @click=${()=>{s.nodePositions.clear();s.canvasDimmed=false;refresh(ctx);}}>Reset layout</button>
+        <button @click=${()=>{s.nodePositions.clear();s.canvasDimmed=false;persistCanvas(ctx,s);refresh(ctx);}}>Reset layout</button>
         <button ?disabled=${s.canvasPage===0} @click=${()=>{s.canvasPage--;refresh(ctx);}}>← Previous</button>
         <button ?disabled=${s.canvasPage>=pageCount-1} @click=${()=>{s.canvasPage++;refresh(ctx);}}>Next →</button>
       </div>
@@ -428,7 +459,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         <div class="mm-f-canvas ${s.canvasDimmed?"mm-f-dimmed":""}"
           style=${`width:${graph.width}px;height:${graph.height}px;`}>
           <button class="mm-f-blanket" aria-label="Clear focus and fade agent nodes"
-            @click=${()=>{s.canvasDimmed=true;refresh(ctx);}}></button>
+            @click=${()=>{s.canvasDimmed=true;persistCanvas(ctx,s);refresh(ctx);}}></button>
           <svg class="mm-f-connections" width=${graph.width} height=${graph.root.y+10}
             viewBox=${`0 0 ${graph.width} ${graph.root.y+10}`} aria-hidden="true">
             ${graph.links.map((link,index)=>html`<path data-mm-link=${index} d=${canvasLinkPath(link)}
@@ -589,6 +620,8 @@ const css=`
   .mm-f-node-head:active{cursor:grabbing;}
   .mm-f-node-head:focus-visible{outline:2px solid var(--pi-accent);outline-offset:-2px;}
   .mm-f-node-head strong{font-size:12px;letter-spacing:.02em;}
+  .mm-f-density-toggle{padding:1px 5px!important;font-size:13px!important;min-width:22px!important;
+    border:1px solid var(--pi-border-muted)!important;border-radius:4px!important;}
   .mm-f-node-dot{width:8px;height:8px;border-radius:50%;background:var(--pi-muted);flex-shrink:0;}
   .mm-f-node-dot.mm-f-running{background:var(--pi-success,var(--pi-accent));}
   .mm-f-node-dot.mm-f-needs-attention{background:var(--pi-warning,var(--pi-accent));}
