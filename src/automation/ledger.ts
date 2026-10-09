@@ -7,7 +7,17 @@ import type { Seat, AgentBinding } from "../runtime/registry.js";
 import { parseRunReport, type RunReport } from "./report.js";
 
 export interface ModelProfile { provider:string; model:string; effort?:string }
+export interface PublicationConfig {
+  /** Named Git remote only. Authentication stays outside this configuration. */
+  remote:string;
+  /** Explicit target base branch; no guessing production defaults. */
+  baseBranch:string;
+  draft:true;
+}
 export interface AutopilotConfig {
+  /** Configured publication target enables YOLO push + Draft PR creation.
+   * Legacy saved configurations without this field never acquire new network effects. */
+  publication?:PublicationConfig;
   /** Existing PI WEB linked, isolated worktree per implementation Task. */
   workspaces:Record<string,string>;
   /** An optional independent prelinked read-only QC snapshot workspace, per Task. */
@@ -67,8 +77,24 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   const maxAttempts=raw.maxAttempts??5;
   if(!Number.isSafeInteger(maxAttempts)||typeof maxAttempts!=="number"||maxAttempts<1||maxAttempts>10)
     throw new Error("Implementation attempt budget must be 1..10");
+  let publication:PublicationConfig|undefined;
+  if(raw.publication!==undefined){
+    const p=object(raw.publication);
+    if(Object.keys(p).some(k=>!["remote","baseBranch","draft"].includes(k)))
+      throw new Error("Unknown publication field");
+    const remote=str(p.remote,60),baseBranch=str(p.baseBranch,120);
+    if(!/^[a-zA-Z][a-zA-Z0-9-]{0,59}$/.test(remote)||
+      !/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,119}$/.test(baseBranch)||
+      baseBranch.includes("..")||baseBranch.includes("//")||
+      baseBranch.endsWith(".")||baseBranch.endsWith("/")||
+      baseBranch.includes("@{")||baseBranch.endsWith(".lock"))
+      throw new Error("Invalid Git publication remote/base branch");
+    if(p.draft!==true)throw new Error("Initial automatic PR publication must be Draft");
+    publication={remote,baseBranch,draft:true};
+  }
   return {workspaces, ...(raw.reviewWorkspaces===undefined?{}:{
     reviewWorkspaces:workspaceMap(raw.reviewWorkspaces)}),
+    ...(publication?{publication}:{}),
     models,test:{file,args:t.args as string[],timeoutMs},maxAttempts};
 }
 export function automationScope(projectId:string,workspaceId:string):string {
