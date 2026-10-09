@@ -17,7 +17,7 @@ const claimEntry = "pi-micromanager:claim";
 const jobEntry = "pi-micromanager:job:v1";
 const reportEntry = "pi-micromanager:report:v1";
 const turnStateEntry = "pi-micromanager:turn-state:v1";
-const safeReadTools=new Set(["read","grep","find","ls","mm_qc_report","mm_task_report","mm_plan_intervention"]);
+const safeReadTools=new Set(["read","grep","find","ls","mm_qc_report","mm_task_report","mm_plan_intervention","mm_workflow_proposal"]);
 function digest(control: RuntimeControl): string {
   return createHash("sha256").update(JSON.stringify(control)).digest("hex");
 }
@@ -197,6 +197,51 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
       pi.events.emit(REPORT_CHANNEL,report);
       return {content:[{type:"text" as const,text:"Plan submitted for deterministic validation."}],
         details:report};
+    },
+  });
+
+  pi.registerTool({
+    name:"mm_workflow_proposal",label:"Propose validated Task DAG",
+    description:"Submit a bounded implementation-only Task DAG for the user's stated goal. "+
+      "Include concrete acceptance criteria per Task; do not execute the proposal. "+
+      "A human must approve it and provide linked worktrees and exact models before any coding.",
+    parameters:Type.Object({
+      id:Type.String({minLength:1,maxLength:64}),
+      title:Type.String({minLength:1,maxLength:200}),
+      summary:Type.String({minLength:1,maxLength:2000}),
+      maxQcRounds:Type.Integer({minimum:1,maximum:10}),
+      tasks:Type.Array(Type.Object({
+        id:Type.String({minLength:1,maxLength:64}),
+        title:Type.String({minLength:1,maxLength:200}),
+        description:Type.String({minLength:1,maxLength:4000}),
+        acceptanceCriteria:Type.Array(Type.String({minLength:1,maxLength:500}),
+          {minItems:1,maxItems:20}),
+        dependsOn:Type.Array(Type.Object({
+          taskId:Type.String({minLength:1,maxLength:64}),
+          gate:Type.Union([Type.Literal("qc_passed"),Type.Literal("integrated")]),
+        }),{maxItems:16}),
+      }),{minItems:1,maxItems:16}),
+    }),
+    async execute(_toolId,params){
+      if(!job||job.kind!=="workflow_plan")
+        throw new Error("Not a fresh, explicitly requested Sol goal-proposal Run");
+      if(recorded)throw new Error("This goal has already received a proposal");
+      const definition={
+        id:params.id,title:params.title,maxQcRounds:params.maxQcRounds,
+        maxParallelByRole:{planner:1,implementer:2,reviewer:2,architect:2},
+        tasks:params.tasks.map(task=>({...task,kind:"implementation" as const,
+          role:"implementer" as const})),
+      };
+      const report=parseRunReport({kind:"workflow_plan",runId:job.runId,
+        summary:params.summary,definition,at:Date.now()});
+      if(!report||report.kind!=="workflow_plan")
+        throw new Error("Invalid proposed DAG: fix Task IDs, cycles, dependencies and criteria");
+      pi.appendEntry(reportEntry,report);
+      recorded=report;
+      pi.events.emit(REPORT_CHANNEL,report);
+      return {content:[{type:"text" as const,
+        text:"Validated DAG proposal saved. A human must review and accept it before implementation."}],
+        details:{runId:report.runId,taskCount:report.definition.tasks.length}};
     },
   });
   pi.on("tool_call",event=>{
