@@ -64,12 +64,12 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
     async launch(job:LaunchJob){
       const sessions=options.getSessions();
       if(!sessions)throw new Error("Pi sessions capability unavailable");
-      if(job.kind==="implementation"||job.kind==="qc"){
+      if(job.kind==="implementation"||job.kind==="qc"||job.kind==="diagnosis"){
         const w=await linkedWorktree(job.projectId,job.workspaceId);
         const before=await snapshot(w.path);
         if(!before.clean)throw new Error("Dirty Worktree; refusing automated Pi launch");
-        if(job.kind==="qc"&&before.sha!==job.headSha)
-          throw new Error("QC snapshot SHA differs from the implementation commit");
+        if(job.kind!=="implementation"&&before.sha!==job.headSha)
+          throw new Error("Review/diagnosis snapshot SHA differs from the implementation commit");
       }else await workspace(job.projectId,job.workspaceId);
       const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
       const task=current.tasks[job.taskId];
@@ -124,6 +124,12 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       binding=agents.update(binding,"running");
       notify(binding);
       return binding;
+    },
+    async checkSnapshot(binding,expectedSha){
+      const w=await linkedWorktree(binding.projectId,binding.workspaceId);
+      const state=await snapshot(w.path);
+      if(!state.clean||state.sha!==expectedSha)
+        throw new Error("Read-only diagnosis modified or lost its frozen QC snapshot");
     },
     async verify(binding,config,expectedSha){
       const w=await linkedWorktree(binding.projectId,binding.workspaceId);
