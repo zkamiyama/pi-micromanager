@@ -341,3 +341,22 @@ test("Dependent writer carries the exact already-QC-passed upstream commit",asyn
     assert.equal(child.workspaceId,"linked-wt-ui");
   }finally{x.close();}
 });
+
+test("Implementation and QC prompts include the same explicit acceptance contract",()=>{
+  const x=setup();
+  try{
+    const workflow=x.wf();
+    const task=structuredClone(workflow.tasks.api);
+    task.spec.description="Expose the endpoint without breaking old clients";
+    task.spec.acceptanceCriteria=["HTTP 200 for valid requests","Reject invalid tokens"];
+    task.pendingWork={headSha:sha,attempt:1,criteriaRevision:0};
+    const impl=buildJobPrompt(workflow,task,"implementation");
+    const qc=buildJobPrompt(workflow,task,"qc");
+    for(const text of [impl,qc]){
+      assert.match(text,/HTTP 200 for valid requests/);
+      assert.match(text,/Reject invalid tokens/);
+      assert.match(text,/without breaking old clients/);
+    }
+    assert.match(qc,new RegExp(sha));
+  }finally{x.close();}
+});
