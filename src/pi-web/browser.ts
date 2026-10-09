@@ -285,7 +285,8 @@ const plugin: PiWebPlugin = {
         }else if(command==="latest")input={workflowId};
         else input={draftId:state.adrDraft?.id};
         const draft=await send(context,"auto.adr."+command,input) as AdrDraft|null;
-        state.adrDraft=draft??undefined;
+        if(draft)state.adrDraft=draft;
+        else delete state.adrDraft;
         state.adrStatus=!draft?"No saved ADR proposal yet.":
           draft.state==="staged"?
           "Exact ADR draft bytes staged in the review Worktree. Git commit, Push and PR "+
