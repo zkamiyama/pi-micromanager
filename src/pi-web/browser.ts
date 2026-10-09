@@ -946,6 +946,11 @@ const plugin: PiWebPlugin = {
                       job.phase==="finished"?"Completed":
                       job.phase==="cancelled"?"Cancelled":"Needs attention"}</strong>
                     <p>${job.message}</p>
+                    <p class="mm-quick-ref">Goal: ${job.goal.slice(0,180)}</p>
+                    <p class="mm-quick-ref">Saved target:
+                      ${job.profile.config.publication?.remote}/${job.profile.config.publication?.baseBranch}
+                      · merge ${job.profile.permissions.actions?.["github.pr.merge"]??
+                        job.profile.permissions.default??"allow"}</p>
                     <p class="mm-quick-ref">Workflow <code>${job.workflowId}</code>
                       · Request <code>${job.requestId.slice(0,8)}</code></p>
                     <div class="mm-quick-steps" aria-label="Pipeline">
