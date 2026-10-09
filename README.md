@@ -20,11 +20,13 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - **PI WEB Browser API v4 / Server API v3 plugin** with a **simulation-only** four-view panel: Cockpit, DAG, Kanban, Journal. The demo never launches an agent; all visible actions are explicitly labeled simulation. A Task Lens is accessible from Cockpit, DAG and Kanban. It persists a selected-Task intervention and shows a simulated Sol plan; native direct-agent steer is deliberately disabled.
 - Native `node:test` coverage for state-machine safety and persistence.
 
-**Runtime adapter now implemented experimentally (not E2E-verified):** public PI WEB session creation in an existing resolved workspace, Pi companion model/effort handshake, direct steer/abort and activity projection, per-Run registry, dynamic Live Runs/History panel. These are manual operations and do not imply unattended task dispatch.
+**Runtime adapter implemented experimentally (not authenticated E2E-verified):** Public PI WEB session creation in an existing resolved workspace, Pi companion model/effort handshake, direct steer/abort, bounded activity streams, immutable per-Run registry and Orchestra Live Runs/History.
+
+**New opt-in Autopilot (PR #7):** A real server-side scheduler now runs **validated, saved** DAGs in fresh Pi Sessions. It admits ready implementation Tasks, checks Git commits and real test exit codes, starts independent read-only QC, honors QC retry budgets and human holds, dispatches Sol's typed intervention plan and parallel frozen-snapshot diagnosis/synthesis, and persists bounded evidence receipts. An unknown/aborted Run **pauses safely**; server restart reconciles existing Sessions from durable Pi turn markers before resuming. Automatic Git merge/push is prohibited.
 
 **Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. This does not add automatic Sol dispatch.
 
-**NOT YET implemented:** automatic Workflow-to-Pi dispatch, automatic worktree provisioning, full transcript history replay, verified QC output/evidence and automatic sealing, safe native Pi Session/Worktree cleanup, real Sol planner dispatch, image evidence, ADR publication, Android-specific UX or TTS. The original DAG demonstration remains a simulator.
+**Still not implemented/verified:** Automatic Worktree creation/registration, initial free-form goal → DAG generation, independent provider-authenticated multi-Agent E2E, comprehensive screenshot and artifact evidence, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, approved Git integration/merge, ADR publication, Android-specific UI or TTS. Only **Task-scoped** Sol intervention planning is wired; an original DAG has to be imported/created first. Existing demo transition buttons remain a simulator.
 
 ## Architecture and ADRs
 
@@ -34,6 +36,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - [ADR-0004 — Cockpit, provider adapters, implementation order](docs/adr/0004-cockpit-provider-adapters-and-delivery-order.md)
 - [ADR-0005 — Task-scoped interventions and Sol planner boundary](docs/adr/0005-task-scoped-interventions.md)
 - [ADR-0006 — Ephemeral execution runs and dynamic live grid](docs/adr/0006-ephemeral-execution-runs.md)
+- [ADR-0007 — Opt-in durable Autopilot and fail-closed Pi execution](docs/adr/0007-opt-in-autopilot.md)
 
 ## Development
 
@@ -44,11 +47,42 @@ npm install
 npm run check
 ```
 
-For integration testing, install the built package locally through **PI WEB → Settings → Pi packages**, enable `pi-micromanager` under **PI WEB plugins**, then restart the relevant PI WEB Session Daemon **only when no important agents are running** and reload the browser. Open a workspace and select the **Micromanager** tab, then **Create/load demo DAG**. All buttons inside the demo simulate transitions: they do *not* edit source code or start Pi agents.
+For integration testing, install the built package locally through **PI WEB → Settings → Pi packages**, enable `pi-micromanager` under **PI WEB plugins**, then restart the relevant PI WEB Session Daemon **only when no important agents are running** and reload the browser. Open a workspace and select the **Micromanager** tab. **Create/load demo DAG** and its simulation transition buttons do not edit code or launch Pi Sessions. The separate **Import a real Workflow DAG** and **Autopilot** controls are not a simulation: starting Autopilot can execute and modify code inside the configured linked Worktrees. Enable only for a repository and provider you intend to use.
 
 The package's PI WEB plugin declaration is in `package.json`; `src/pi-web/browser.ts` implements Browser API v4 and `src/pi-web/server.ts` owns one SQLite database under PI WEB's plugin-provided `dataDirectory`. The plain orchestration engine in `src/core/` has **no Pi imports** so future runtime adapters can be swapped.
 
 The example DAG is at [`examples/auth.workflow.json`](examples/auth.workflow.json). It is **our schema**, not a built-in PI WEB configuration format.
+
+## Opt-in Autopilot (real Pi execution)
+
+1. In PI WEB, create/verify **separate linked Git worktrees** in the target project. Record each linked workspace's PI WEB ID. A modifying Task must not use the project's main checkout.
+2. Under **Micromanager → Import a real Workflow DAG (JSON)**, save your versioned Task DAG (or use the example `examples/auth.workflow.json`). Verify Task IDs, dependency gates and requested changes before starting.
+3. Under **Autopilot → configuration (JSON)**, map every implementation Task ID to an existing linked Worktree workspace ID; configure **all four** exact Pi provider/model profiles and a bounded executable test argv. Save configuration, then explicitly **Start Autopilot**.
+4. Watch actual one-shot Pi Runs in the **Orchestra** tab. The scheduler makes fresh Sessions for implementation/QC/rework, but it never auto-merges. Use **Pause admission** to stop *new* work; current running Pi turns continue unless directly interrupted.
+5. For a human QC intervention, use **Task Lens** to register the after-next-QC barrier. Sol produces a typed plan, the investigations and synthesis run read-only, and a **human explicit resume** remains required.
+
+Example configuration (replace IDs and all provider/model values with your real installed PI WEB/Pi settings):
+
+```json
+{
+  "workspaces": {
+    "api": "existing-linked-worktree-workspace-id-api",
+    "ui": "existing-linked-worktree-workspace-id-ui"
+  },
+  "models": {
+    "implementer": { "provider": "your-provider", "model": "your-implementer-model" },
+    "qc": { "provider": "your-provider", "model": "your-qc-model" },
+    "planner": { "provider": "your-provider", "model": "your-planner-model" },
+    "architect": { "provider": "your-provider", "model": "your-architect-model" }
+  },
+  "test": { "file": "npm", "args": ["test"], "timeoutMs": 60000 },
+  "maxAttempts": 5
+}
+```
+
+Models may optionally specify a supported `effort`. Use actual **Task IDs** from the imported DAG, not the placeholders above. A QC reviewer defaults to the implementation Worktree as a read-only snapshot unless `reviewWorkspaces` provides a separately linked workspace whose HEAD already matches the implementation SHA. Independent diagnoses run against that same frozen snapshot. Worktrees must remain clean; a dirty checkout or unsupported exact model causes a safe stop.
+
+The scheduler runs in the PI WEB server-plugin lifetime (not as a separate operating-system service). It restores active Run identity on restart from persisted companion turn entries where possible; uncertain delivery remains blocked until reconciled. Real-provider/auth/GUI integration testing is deferred. See [ADR-0007](docs/adr/0007-opt-in-autopilot.md) for recovery and trust boundaries.
 
 ## Orchestra canvas controls
 
