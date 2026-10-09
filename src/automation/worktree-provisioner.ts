@@ -145,6 +145,11 @@ export class ManagedWorktreeProvisioner {
     if(list.exitCode!==0)throw new Error("Could not inspect Git Worktree registry");
     const candidate=parseWorktreeList(list.stdout).find(w=>resolve(w.path)===resolve(plan.path));
     if(!candidate)return false;
+    if(!existsSync(plan.path))return false;
+    const info=lstatSync(plan.path);
+    if(info.isSymbolicLink()||!info.isDirectory()||
+      resolve(realpathSync(plan.path))!==resolve(plan.path))
+      throw new Error("Managed Worktree checkout path is not a real owned directory");
     if(candidate.branch!=="refs/heads/"+plan.branch||candidate.head!==plan.baseSha)
       throw new Error("Managed Worktree was altered from the reserved commit/branch");
     const actual=await requireCleanGit(this.options.host,plan.path);
