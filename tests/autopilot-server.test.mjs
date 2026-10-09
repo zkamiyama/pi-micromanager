@@ -123,9 +123,10 @@ function fakePluginHost(shared) {
         if(command.startsWith("merge-base --is-ancestor ")){
           if(args[1]==="/repo/consumer"){
             const [, ,source,target]=command.split(" ");
-            const ancestor=source===target||
-              (source===BASE&&target===SHA)||
-              (source===SHA&&target===convergence.head&&convergence.head===SHA);
+            const checked=target==="HEAD"?convergence.head:target;
+            const ancestor=source===checked||
+              (source===BASE&&checked===SHA)||
+              (source===SHA&&checked===convergence.head&&convergence.head===SHA);
             return {...result(""),exitCode:ancestor?0:1};
           }
           return result("");
