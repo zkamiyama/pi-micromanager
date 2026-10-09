@@ -33,6 +33,9 @@ interface State {
   autopilotConfigured: boolean;
   autopilotConfigFor?:string;
   workflowDraft:string;
+  goalText:string;goalProvider:string;goalModel:string;goalEffort:string;
+  goalStatus:string;goalProposalText:string;
+  goalRef?:{draftWorkflowId:string;runId:string};
 }
 const roleNames: Role[] = ["planner", "implementer", "reviewer", "architect"];
 const states = new Map<string, State>();
@@ -41,6 +44,16 @@ function stateFor(context: WorkspacePanelContext): State {
   const key = keyFor(context);
   let state = states.get(key);
   if (!state) {
+    let goalRef:State["goalRef"];
+    try{
+      const raw=typeof localStorage==="undefined"?null:
+        localStorage.getItem("pi-micromanager:goal-ref:"+key);
+      const value:unknown=raw?JSON.parse(raw):null;
+      if(value&&typeof value==="object"&&!Array.isArray(value)&&
+        "draftWorkflowId" in value&&typeof value.draftWorkflowId==="string"&&
+        "runId" in value&&typeof value.runId==="string")
+        goalRef={draftWorkflowId:value.draftWorkflowId,runId:value.runId};
+    }catch{/* Browser storage may be blocked. */}
     state = { workflows: [], status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
       detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
       autopilotDraft:JSON.stringify({
@@ -51,6 +64,10 @@ function stateFor(context: WorkspacePanelContext): State {
         },test:{file:"npm",args:["test"],timeoutMs:60000},maxAttempts:5,
       },null,2),
       autopilotStatus:"Not configured",autopilotEnabled:false,autopilotConfigured:false,
+      goalText:"",goalProvider:"",goalModel:"",goalEffort:"",
+      goalStatus:goalRef?"A prior goal proposal can be checked":"No proposal in progress",
+      goalProposalText:"",
+      ...(goalRef?{goalRef}:{}),
       workflowDraft:JSON.stringify({
         id:"custom-feature",title:"Custom development workflow",maxQcRounds:5,
         maxParallelByRole:{planner:1,implementer:2,reviewer:2,architect:2},
@@ -116,6 +133,66 @@ const plugin: PiWebPlugin = {
         delete state.selectedTaskId;
       } catch (error) { state.status = String(error); }
       finally { state.busy = false; if (!disposed) { context.host.requestRender(); void refresh(context, "demo-auth"); } }
+    }
+
+    function saveGoalRef(context:WorkspacePanelContext,ref:State["goalRef"]):void{
+      try{
+        if(typeof localStorage==="undefined")return;
+        const key="pi-micromanager:goal-ref:"+keyFor(context);
+        if(ref)localStorage.setItem(key,JSON.stringify(ref));
+        else localStorage.removeItem(key);
+      }catch{/* Reference persistence is optional, not an execution authority. */}
+    }
+    async function proposeGoal(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.busy||!state.goalText.trim()||!state.goalProvider.trim()||
+        !state.goalModel.trim())return;
+      state.busy=true;state.goalStatus="Starting a fresh read-only Sol proposal…";
+      context.host.requestRender();
+      try{
+        const result=await send(context,"auto.propose",{
+          goal:state.goalText,provider:state.goalProvider,model:state.goalModel,
+          ...(state.goalEffort.trim()?{effort:state.goalEffort.trim()}:{}),
+        }) as {draftWorkflowId:string;runId:string;status:string};
+        const ref={draftWorkflowId:result.draftWorkflowId,runId:result.runId};
+        state.goalRef=ref;saveGoalRef(context,ref);
+        state.goalProposalText="";state.goalStatus=result.status;
+      }catch(error){state.goalStatus="Goal planning failed: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function checkGoal(context:WorkspacePanelContext){
+      const state=stateFor(context),ref=state.goalRef;
+      if(state.busy||!ref)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const result=await send(context,"auto.proposal",ref) as
+          {phase:string;proposal:WorkflowDefinition|null;summary:string|null};
+        if(result.proposal){
+          state.goalProposalText=JSON.stringify(result.proposal,null,2);
+          state.goalStatus="Sol proposal ready for your review: "+
+            (result.summary??"Validated Task DAG");
+        }else state.goalStatus="Proposal phase: "+result.phase+
+          ". Wait for the real Pi Session to finish, then check again.";
+      }catch(error){state.goalStatus="Cannot read proposal: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function acceptGoal(context:WorkspacePanelContext){
+      const state=stateFor(context),ref=state.goalRef;
+      if(state.busy||!ref||!state.goalProposalText)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const created=await send(context,"auto.acceptProposal",ref) as WorkflowInstance;
+        state.selected=created;
+        delete state.selectedTaskId;
+        state.workflowDraft=JSON.stringify(created.definition,null,2);
+        state.autopilotEnabled=false;state.autopilotConfigured=false;
+        delete state.autopilotConfigFor;
+        state.goalStatus="Approved "+created.definition.id+
+          ". Configure exact models, tests and linked worktrees before starting Autopilot.";
+        delete state.goalRef;saveGoalRef(context,undefined);
+        state.workflows=state.workflows.filter(x=>x.definition.id!==created.definition.id).concat(created);
+      }catch(error){state.goalStatus="Proposal acceptance failed: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
     }
     async function importWorkflow(context:WorkspacePanelContext){
       const state=stateFor(context);
@@ -318,6 +395,51 @@ const plugin: PiWebPlugin = {
                 </select>
               </div>
               <p role="status" aria-live="polite">${state.status}</p>
+
+              <details class="mm-goal-proposal">
+                <summary><strong>Ask Sol to plan a new goal</strong> · read-only proposal</summary>
+                <p>Sol creates a structured Task DAG through a real Pi Session. Nothing is
+                  executed until you review/accept the proposal and separately start Autopilot.</p>
+                <label for="mm-goal-text">Development goal</label>
+                <textarea id="mm-goal-text" rows="4" maxlength="4000"
+                  placeholder="Describe the feature, constraints and expected result…"
+                  .value=${state.goalText} ?disabled=${state.busy}
+                  @input=${(e:Event)=>{state.goalText=(e.target as HTMLTextAreaElement).value;
+                    context.host.requestRender();}}></textarea>
+                <div class="mm-goal-credentials">
+                  <label>Pi provider <input maxlength="120" placeholder="Configured provider ID"
+                    .value=${state.goalProvider} ?disabled=${state.busy}
+                    @input=${(e:Event)=>{state.goalProvider=(e.target as HTMLInputElement).value;
+                      context.host.requestRender();}} /></label>
+                  <label>Model ID <input maxlength="160" placeholder="Exact model ID"
+                    .value=${state.goalModel} ?disabled=${state.busy}
+                    @input=${(e:Event)=>{state.goalModel=(e.target as HTMLInputElement).value;
+                      context.host.requestRender();}} /></label>
+                  <label>Effort (optional) <input maxlength="32" placeholder="Supported effort"
+                    .value=${state.goalEffort} ?disabled=${state.busy}
+                    @input=${(e:Event)=>{state.goalEffort=(e.target as HTMLInputElement).value;}} /></label>
+                </div>
+                <div class="mm-actions">
+                  <button ?disabled=${state.busy||!state.goalText.trim()||
+                    !state.goalProvider.trim()||!state.goalModel.trim()}
+                    @click=${()=>void proposeGoal(context)}>Ask Sol (read-only)</button>
+                  <button ?disabled=${state.busy||!state.goalRef}
+                    @click=${()=>void checkGoal(context)}>Check proposal</button>
+                </div>
+                <p role="status" aria-live="polite">${state.goalStatus}</p>
+                ${state.goalProposalText?html`
+                  <label for="mm-goal-preview">Sol's proposed DAG (review before approval)</label>
+                  <textarea id="mm-goal-preview" rows="12" readonly spellcheck="false"
+                    .value=${state.goalProposalText}></textarea>
+                  <div class="mm-actions">
+                    <button ?disabled=${state.busy} @click=${()=>void acceptGoal(context)}>
+                      Approve and save exact proposal</button>
+                    <button ?disabled=${state.busy} @click=${()=>{
+                      state.workflowDraft=state.goalProposalText;
+                      context.host.requestRender();
+                    }}>Copy into editable Workflow import</button>
+                  </div>`:null}
+              </details>
               <details class="mm-workflow-import">
                 <summary>Import a real Workflow DAG (JSON)</summary>
                 <p>Author a Task DAG here or paste a definition. Server-side validation rejects
@@ -405,6 +527,19 @@ const styles = `
   .mm-events p {margin:0;}
   .mm-task-selected { outline: 2px solid var(--pi-accent-border); }
   .mm-intervene { font-size: 11px !important; margin-top: 6px; }
+
+  .mm-goal-proposal{border:1px solid var(--pi-border-muted);border-radius:8px;
+    padding:10px;margin:12px 0;background:var(--pi-surface);}
+  .mm-goal-proposal summary{cursor:pointer;}
+  .mm-goal-proposal p{font-size:12px;color:var(--pi-muted);}
+  .mm-goal-proposal label{display:block;font-size:12px;margin:8px 0 5px;}
+  .mm-goal-proposal textarea{width:100%;box-sizing:border-box;resize:vertical;
+    color:inherit;background:var(--pi-surface);border:1px solid var(--pi-border-muted);
+    border-radius:6px;padding:8px;font:12px ui-monospace,monospace;}
+  .mm-goal-proposal textarea[readonly]{opacity:.88;}
+  .mm-goal-credentials{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;}
+  .mm-goal-credentials input{width:100%;box-sizing:border-box;background:var(--pi-surface);
+    color:inherit;border:1px solid var(--pi-border-muted);border-radius:6px;padding:6px;}
   .mm-workflow-import{border:1px solid var(--pi-border-muted);border-radius:8px;
     padding:10px;margin:12px 0;background:var(--pi-surface);}
   .mm-workflow-import summary{cursor:pointer;font-weight:600;}
