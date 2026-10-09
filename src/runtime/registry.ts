@@ -170,7 +170,12 @@ export class AgentRegistry {
   /** Pi agent_settled ends one execution; later stages always spawn a new session. */
   record(binding:AgentBinding,event:RuntimeActivity):void {
     if(!binding.sessionId)return;
-    this.db.prepare("UPDATE execution_runs SET latest_kind=?,latest_text=?,"+
+    // Settlement/abort proof must be sticky. Late asynchronous tool/text
+    // notifications must not overwrite the final "Agent interrupted" marker:
+    // doing so could allow Autopilot to finalize an aborted QC or plan.
+    this.db.prepare("UPDATE execution_runs SET "+
+      "latest_kind=CASE WHEN phase IN ('settled','sealed','failed') THEN latest_kind ELSE ? END,"+
+      "latest_text=CASE WHEN phase IN ('settled','sealed','failed') THEN latest_text ELSE ? END,"+
       "phase=CASE WHEN phase IN ('settled','sealed','failed') THEN phase"+
       " WHEN ?='agent_settled' THEN 'settled'"+
       " WHEN ?='agent_started' THEN 'running' ELSE phase END, updated_at=?"+
