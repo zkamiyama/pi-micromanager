@@ -97,6 +97,9 @@ test("Config allows independent final Worktree and rejects missing publication o
     finalization:{workspaceId:"wt-api",autoMerge:true}}),
     /distinct/);
   assert.throws(()=>parseAutopilotConfig({...config,
+    reviewWorkspaces:{api:"wt-final"}}),
+    /distinct/);
+  assert.throws(()=>parseAutopilotConfig({...config,
     finalization:{workspaceId:"wt-final",autoMerge:"yes"}}),
     /boolean/);
 });
