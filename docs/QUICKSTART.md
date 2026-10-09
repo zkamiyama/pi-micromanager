@@ -35,7 +35,11 @@ controls Micromanager host operations, not arbitrary untrusted agent subprocesse
 
 ## 2. Build and install Micromanager
 
-On the *target PI WEB machine* (not just the browser machine):
+On the *target PI WEB machine* (not just the browser machine). The
+following shell blocks use a POSIX shell (Linux/macOS/WSL/Git Bash). If
+PI WEB runs natively on Windows, use PowerShell equivalents on that
+**same** machine and restart PI WEB's session daemon/service according
+to that host's installation method:
 
 ```sh
 gh repo clone zkamiyama/pi-micromanager
@@ -52,7 +56,8 @@ Then enable **pi-micromanager** under **Settings → PI WEB plugins**.
 
 Restart the **target machine's PI WEB Session Daemon** from outside any
 session that it hosts; this can interrupt running agents. For the native
-systemd user installation:
+Linux systemd user installation (other hosts must use their own process
+manager or PI WEB service controls):
 
 ```sh
 systemctl --user restart pi-web-sessiond
@@ -81,6 +86,14 @@ git commit -m "chore: initialize disposable Micromanager trial"
 npm test
 gh repo create YOUR_GITHUB_LOGIN/pi-mm-trial --private --source=. --remote=origin --push
 ```
+
+For native Windows PowerShell, use `New-Item -ItemType Directory -Force
+"$HOME\\pi-mm-trial"`, then
+`Get-ChildItem examples/trial-repo -Force | Copy-Item -Destination
+"$HOME\\pi-mm-trial" -Recurse -Force` from the Micromanager checkout;
+run the same Git, npm and gh commands from `$HOME\\pi-mm-trial`.
+Preserve the hidden `.github` directory and use the checkout accessible
+to your PI WEB daemon.
 
 Replace `YOUR_GITHUB_LOGIN` with your account name and choose a **fresh
 repository name**. `gh repo create` requires authorization to create a
@@ -115,7 +128,9 @@ register Task Worktrees manually.
    Pi on the PI WEB machine**. All four roles are required.
 3. Inspect `publication.remote="origin"`, `baseBranch="main"`,
    `finalization.autoMerge=true`, `managedWorktrees=true`,
-   `workspaces={}`, and `test.file="npm"`. Save configuration.
+   `workspaces={}`, and `test.file="node"` with `args=["--test"]`.
+   Using the Node executable directly avoids OS-specific npm shell wrappers.
+   Save configuration.
 4. Click **Start Autopilot** exactly once. That explicit action
    provisions one implementation and one distinct final Worktree
    beneath Micromanager's owned data directory, resolves their IDs

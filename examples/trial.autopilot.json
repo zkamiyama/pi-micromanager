@@ -17,8 +17,8 @@
     "architect": {"provider": "REPLACE_WITH_PI_PROVIDER", "model": "REPLACE_WITH_PI_MODEL"}
   },
   "test": {
-    "file": "npm",
-    "args": ["test"],
+    "file": "node",
+    "args": ["--test"],
     "timeoutMs": 60000
   },
   "maxAttempts": 3

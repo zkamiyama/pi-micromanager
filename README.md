@@ -4,6 +4,9 @@
 
 > See everything. Hear everything. Steer anything. Welcome to Cognitive Overload!
 
+**Try it now:** [Quickstart — disposable Pi / PI WEB → GitHub merge trial](docs/QUICKSTART.md).
+The trial is explicitly opt-in and does not touch production repositories.
+
 `pi-micromanager` is an experimental, intentionally small control plane built on [Pi](https://github.com/earendil-works/pi) and [PI WEB](https://github.com/jmfederico/pi-web). It aims to preserve Multi-Agent-Shogun's **flat, simultaneous observation and direct human intervention** without requiring every agent to read long organizational `AGENTS.md` role prompts.
 
 The orchestration layer is code, not another personality prompt: a validated Task DAG, explicit QC gates, bounded retries, versioned human amendments, and durable workflow state.
@@ -77,7 +80,7 @@ cannot launch a modifying Agent.
 
 1. In PI WEB, select a registered **Git project** with a clean exact checkout. PI WEB discovers `git worktree` checkouts automatically; newly created linked Worktrees do **not** need GUI registration. Existing manual Worktree IDs can still be used.
 2. Under **Micromanager → Ask Sol to plan a new goal**, enter a precise natural-language goal and exact authenticated Pi planner provider/model. Check the real Pi Session proposal, inspect its DAG and choose **Approve and save exact proposal**. Alternatively import a reviewed JSON DAG through **Import a real Workflow DAG**. In either case, give each Task a concrete `description` and `acceptanceCriteria` lines. Implementation and QC Runs receive **the same** contract. Verify Task IDs, dependency gates and requested changes before starting.
-3. Under **Autopilot → configuration (JSON)**, choose **Auto-provision DAG Worktrees + final integration (opt in)** or provide existing linked Worktree IDs. Set **all four** exact Pi provider/model profiles and a bounded executable test argv. For YOLO publication, verify `publication.remote`, `publication.baseBranch`, and host Git/`gh` authentication. Save configuration, then explicitly **Start Autopilot**. Only at Start does managed mode create missing Task Worktrees and the separate final Worktree, verify their actual PI WEB identities and persist the resolved IDs **before** launching any Pi Session. Legacy configs without `publication` never push.
+3. Under **Autopilot → configuration (JSON)**, choose **Auto-provision DAG Worktrees + final GitHub auto-merge (opt in)** or provide existing linked Worktree IDs. Set **all four** exact Pi provider/model profiles and a bounded executable test argv. For YOLO publication, verify `publication.remote`, `publication.baseBranch`, and host Git/`gh` authentication. Save configuration, then explicitly **Start Autopilot**. Only at Start does managed mode create missing Task Worktrees and the separate final Worktree, verify their actual PI WEB identities and persist the resolved IDs **before** launching any Pi Session. Legacy configs without `publication` never push.
 4. Watch actual one-shot Pi Runs in the **Orchestra** tab. The scheduler makes fresh Sessions for implementation/QC/rework and can publish QC-passed Draft PRs. It fast-forwards clean unstarted dependent Worktrees. With explicit finalization config, it then creates a dedicated final integration Pi Run and final QC, and can safely request GitHub PR auto-merge without bypassing branch protection. Use **Pause admission** to stop *new* work; current running Pi turns continue unless directly interrupted.
 5. For a human QC intervention, use **Task Lens** to register the after-next-QC barrier. Sol produces a typed plan, the investigations and synthesis run read-only, and a **human explicit resume** remains required.
 
