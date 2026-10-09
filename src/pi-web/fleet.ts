@@ -6,8 +6,8 @@ import type {
 import type { AgentBinding, Seat } from "../runtime/registry.js";
 import type { WorkflowInstance } from "../core/workflow.js";
 import {
-  buildCanvasGraph, runKey, NODE_WIDTH, NODE_HEIGHT,
-  type CanvasPosition, type CanvasDependency,
+  buildCanvasGraph, runKey, canvasLinkPath, canvasArrowTransform, clampCanvasPosition,
+  type CanvasPosition, type CanvasDependency, type CanvasRun,
 } from "./canvas-layout.js";
 
 type Html = PluginActivationContext["html"];
@@ -41,7 +41,11 @@ interface GridState {
   nodeDrafts:Map<string,string>;
   nodeModes:Map<string,Mode>;
   deliveryStatus:Map<string,string>;
-  drag?:{key:string;pointerId:number;startX:number;startY:number;origin:CanvasPosition};
+  drag?:{
+    key:string; pointerId:number;startX:number;startY:number;origin:CanvasPosition;
+    runs:CanvasRun[];dependencies:CanvasDependency[];node:HTMLElement;canvas:HTMLElement;
+    rootY:number;
+  };
 }
 const states=new Map<string,GridState>();
 const scope=(ctx:WorkspacePanelContext)=>
@@ -220,31 +224,59 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       s.deliveryStatus.set(key,s.loadStatus);}
     finally{s.busy=false;refresh(ctx);void load(ctx);}
   }
-  function startDrag(ctx:WorkspacePanelContext,key:string,origin:CanvasPosition,event:PointerEvent){
-    if(event.button!==0)return;
-    const s=stateFor(ctx);
-    s.drag={key,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,origin};
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  function startDrag(ctx:WorkspacePanelContext,b:LiveBinding,origin:CanvasPosition,
+    runs:CanvasRun[],dependencies:CanvasDependency[],rootY:number,event:PointerEvent){
+    if(event.button!==0||lifetime.aborted)return;
+    const header=event.currentTarget as HTMLElement;
+    const node=header.closest<HTMLElement>(".mm-f-node");
+    const canvas=header.closest<HTMLElement>(".mm-f-canvas");
+    if(!node||!canvas)return;
+    const s=stateFor(ctx),key=runKey(b.workflowId,b.runId);
+    s.drag={key,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,
+      origin,runs,dependencies,node,canvas,rootY};
+    // Do not request a host render here. A re-render while captured can cancel
+    // the pointer stream, especially when PI WEB re-mounts a workspace panel.
+    s.selectedSessionId=b.sessionId??"";
+    s.canvasDimmed=false;
+    canvas.classList.remove("mm-f-dimmed");
+    canvas.querySelectorAll(".mm-f-selected").forEach(el=>el.classList.remove("mm-f-selected"));
+    node.classList.add("mm-f-selected");
+    header.setPointerCapture(event.pointerId);
     event.preventDefault();
-    s.canvasDimmed=false;refresh(ctx);
   }
   function moveDrag(ctx:WorkspacePanelContext,event:PointerEvent){
     const s=stateFor(ctx),drag=s.drag;
     if(!drag||drag.pointerId!==event.pointerId)return;
-    s.nodePositions.set(drag.key,{
+    const position=clampCanvasPosition({
       x:drag.origin.x+event.clientX-drag.startX,
       y:drag.origin.y+event.clientY-drag.startY,
+    },drag.rootY);
+    s.nodePositions.set(drag.key,position);
+    // Only mutate our own canvas DOM during the gesture, avoiding a full
+    // Lit/PI WEB render on every pointer move; all coordinates are also in state.
+    drag.node.style.left=position.x+"px";
+    drag.node.style.top=position.y+"px";
+    const updated=buildCanvasGraph(drag.runs,drag.dependencies,s.nodePositions);
+    drag.canvas.querySelectorAll<SVGPathElement>("path[data-mm-link]").forEach(path=>{
+      const index=Number(path.getAttribute("data-mm-link"));
+      const link=updated.links[index];
+      if(link)path.setAttribute("d",canvasLinkPath(link));
     });
-    refresh(ctx);
+    drag.canvas.querySelectorAll<SVGPolygonElement>("polygon[data-mm-arrow]").forEach(arrow=>{
+      const index=Number(arrow.getAttribute("data-mm-arrow"));
+      const link=updated.links[index];
+      if(link?.kind==="dependency")arrow.setAttribute("transform",canvasArrowTransform(link));
+    });
   }
   function endDrag(ctx:WorkspacePanelContext,event:PointerEvent){
-    const s=stateFor(ctx);
-    if(s.drag?.pointerId!==event.pointerId)return;
+    const s=stateFor(ctx),drag=s.drag;
+    if(!drag||drag.pointerId!==event.pointerId)return;
     const target=event.currentTarget as HTMLElement;
     if(target.hasPointerCapture(event.pointerId))target.releasePointerCapture(event.pointerId);
-    delete s.drag;refresh(ctx);
+    delete s.drag;
+    refresh(ctx);
   }
-  function nudge(ctx:WorkspacePanelContext,key:string,pos:CanvasPosition,event:KeyboardEvent){
+  function nudge(ctx:WorkspacePanelContext,key:string,pos:CanvasPosition,rootY:number,event:KeyboardEvent){
     const amount=event.shiftKey?32:12;
     const delta:Record<string,CanvasPosition>={
       ArrowLeft:{x:-amount,y:0},ArrowRight:{x:amount,y:0},
@@ -253,8 +285,9 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     const move=delta[event.key];if(!move)return;
     event.preventDefault();
     const s=stateFor(ctx);
-    s.nodePositions.set(key,{x:pos.x+move.x,y:pos.y+move.y});
-    s.canvasDimmed=false;refresh(ctx);
+    s.nodePositions.set(key,clampCanvasPosition({x:pos.x+move.x,y:pos.y+move.y},rootY));
+    s.canvasDimmed=false;
+    refresh(ctx);
   }
 
   function render(ctx:WorkspacePanelContext){
@@ -308,23 +341,16 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         workflowId:b.workflowId,fromTaskId:dependency.taskId,toTaskId:b.taskId,
       });
     }
-    const graph=buildCanvasGraph(visible.map(b=>({
+    const canvasRuns:CanvasRun[]=visible.map(b=>({
       key:runKey(b.workflowId,b.runId),workflowId:b.workflowId,taskId:b.taskId,
-    })),dependencies,s.nodePositions);
+    }));
+    const graph=buildCanvasGraph(canvasRuns,dependencies,s.nodePositions);
     const byKey=new Map(visible.map(b=>[runKey(b.workflowId,b.runId),b]));
     const planners=newest.filter(b=>b.seat==="planner"&&!!b.sessionId);
     const planner=planners.find(b=>b.sessionId===s.plannerSessionId)??planners[0];
     const plannerKey=planner?runKey(planner.workflowId,planner.runId):"";
     const plannerAvailable=!!planner&&isCommandReady(planner);
-    const wirePath=(link:(typeof graph.links)[number]):string=>{
-      const dx=link.to.x-link.from.x,dy=link.to.y-link.from.y;
-      if(link.kind==="dependency")return "M "+link.from.x+" "+link.from.y+
-        " C "+(link.from.x+dx*.45)+" "+link.from.y+
-        ", "+(link.to.x-dx*.45)+" "+link.to.y+", "+link.to.x+" "+link.to.y;
-      return "M "+link.from.x+" "+link.from.y+
-        " C "+link.from.x+" "+(link.from.y-72)+
-        ", "+link.to.x+" "+(link.to.y+58)+", "+link.to.x+" "+link.to.y;
-    };
+
     const renderNode=(node:(typeof graph.nodes)[number])=>{
       const b=byKey.get(node.key);
       if(!b)return null;
@@ -336,13 +362,13 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         <div class="mm-f-node-head" role="button" tabindex="0"
           title="Drag to move; arrow keys move this Agent (Shift for larger steps)."
           aria-label=${"Focus or move "+b.seat+" "+b.runId}
-          @pointerdown=${(e:PointerEvent)=>{focus(ctx,b);startDrag(ctx,key,{x:node.x,y:node.y},e);}}
+          @pointerdown=${(e:PointerEvent)=>startDrag(ctx,b,{x:node.x,y:node.y},canvasRuns,dependencies,graph.root.y,e)}
           @pointermove=${(e:PointerEvent)=>moveDrag(ctx,e)}
           @pointerup=${(e:PointerEvent)=>endDrag(ctx,e)}
           @pointercancel=${(e:PointerEvent)=>endDrag(ctx,e)}
           @keydown=${(e:KeyboardEvent)=>{
             if(e.key==="Enter"||e.key===" "){e.preventDefault();focus(ctx,b);}
-            else nudge(ctx,key,{x:node.x,y:node.y},e);
+            else nudge(ctx,key,{x:node.x,y:node.y},graph.root.y,e);
           }}>
           <span class="mm-f-node-dot ${b.phase==="running"?"mm-f-running":b.phase==="uncertain"||b.phase==="blocked"?"mm-f-needs-attention":""}"></span>
           <strong>${b.seat.toUpperCase()}</strong>
@@ -405,14 +431,13 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
             @click=${()=>{s.canvasDimmed=true;refresh(ctx);}}></button>
           <svg class="mm-f-connections" width=${graph.width} height=${graph.root.y+10}
             viewBox=${`0 0 ${graph.width} ${graph.root.y+10}`} aria-hidden="true">
-            ${graph.links.map(link=>html`<path d=${wirePath(link)}
+            ${graph.links.map((link,index)=>html`<path data-mm-link=${index} d=${canvasLinkPath(link)}
               fill="none" stroke=${link.kind==="dependency"?"var(--pi-accent)":"var(--pi-border-muted)"}
               stroke-width=${link.kind==="dependency"?2:1.5}
               stroke-dasharray=${link.kind==="orchestra"?"6 6":""}
               stroke-linecap="round" />
-              ${link.kind==="dependency"?html`<polygon points="-8,-4 0,0 -8,4"
-                transform=${"translate("+link.to.x+" "+link.to.y+") rotate("+
-                  (Math.atan2(link.to.y-link.from.y,link.to.x-link.from.x)*180/Math.PI)+")"}
+              ${link.kind==="dependency"?html`<polygon data-mm-arrow=${index} points="-8,-4 0,0 -8,4"
+                transform=${canvasArrowTransform(link)}
                 fill="var(--pi-accent)" />`:null}`)}
             <circle cx=${graph.root.x} cy=${graph.root.y} r="5" fill="var(--pi-accent)" />
           </svg>
