@@ -67,7 +67,9 @@ export class PermissionLedger {
     const workflow=this.workflows.get(p,o,workflowId),task=workflow.tasks[taskId];
     if(!task||task.spec.kind!=="implementation"||task.status!=="ready"||
       nextAttempt!==task.attempts+1||
-      this.settings.get(p,o,workflowId)?.config.workspaces[taskId]!==workspaceId)
+      (task.spec.systemPurpose==="final-integration"?
+        this.settings.get(p,o,workflowId)?.config.finalization?.workspaceId:
+        this.settings.get(p,o,workflowId)?.config.workspaces[taskId])!==workspaceId)
       throw new Error("Git commit approval must reference a ready implementation attempt");
     const decision=permissionDecision(workflow.definition.permissions,"git.commit");
     if(decision!=="ask")return {decision};
@@ -181,7 +183,9 @@ export class PermissionLedger {
     if(row.action==="git.commit"){
       if(!task||task.spec.kind!=="implementation"||task.status!=="ready"||
         row.runId!=="impl-"+row.taskId+"-"+(task.attempts+1)||
-        config.workspaces[row.taskId]!==row.target||row.headSha!=="pre-commit"||
+        (task.spec.systemPurpose==="final-integration"?
+          config.finalization?.workspaceId:
+          config.workspaces[row.taskId])!==row.target||row.headSha!=="pre-commit"||
         commitSubject(row.taskId,row.runId,workflow.revision,row.target)!==row.fingerprint)
         throw new Error("Commit approval no longer matches the ready Task/revision/workspace");
     }else if(row.action==="git.integrate"){
