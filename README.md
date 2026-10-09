@@ -4,7 +4,8 @@
 
 > See everything. Hear everything. Steer anything. Welcome to Cognitive Overload!
 
-**Try it now:** [Quickstart — disposable Pi / PI WEB → GitHub merge trial](docs/QUICKSTART.md).
+**Try it now:** [One-command natural-language launch](docs/ONE_COMMAND.md) or
+[Quickstart — disposable Pi / PI WEB → GitHub merge trial](docs/QUICKSTART.md).
 The trial is explicitly opt-in and does not touch production repositories.
 
 `pi-micromanager` is an experimental, intentionally small control plane built on [Pi](https://github.com/earendil-works/pi) and [PI WEB](https://github.com/jmfederico/pi-web). It aims to preserve Multi-Agent-Shogun's **flat, simultaneous observation and direct human intervention** without requiring every agent to read long organizational `AGENTS.md` role prompts.
@@ -27,13 +28,24 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **New opt-in Autopilot (PR #7):** A real Sol goal-proposal Session can first turn a natural-language objective into a strictly validated DAG for **explicit human approval**. After approval and Worktree/model configuration, the server-side scheduler runs **validated, saved** DAGs in fresh Pi Sessions. It admits ready implementation Tasks, checks Git commits and real test exit codes, starts independent read-only QC, honors QC retry budgets and human holds, dispatches Sol's typed intervention plan and parallel frozen-snapshot diagnosis/synthesis, and persists bounded evidence receipts. An unknown/aborted Run **pauses safely**; server restart reconciles existing Sessions from durable Pi turn markers before resuming. Safe dependent fast-forwards are automated; an explicitly configured final Pi integration Run can resolve divergent leaf branches, pass independent final QC and request GitHub auto-merge subject to the Workflow policy. New Workflows with an explicit `publication` destination can autonomously push QC-sealed commits and create Draft PRs under the Workflow permission policy.
 
+**One-command natural-language launch:** After a one-time, explicit project setup (Pi
+models, host tests, publication target and permission policy), enter a development
+goal and choose **Plan & run**. Sol creates a typed, schema-validated DAG in a
+read-only Pi Session; the host assigns unique Workflow IDs and applies the
+**snapshotted operator policy, never the model's policy**, then automatically
+creates Worktrees and starts implementation/QC/final integration. Durable request
+receipts and status polling support browser reload and daemon recovery.
+The older preview-before-approval Sol workflow remains available. See
+[ADR-0015](docs/adr/0015-one-command-goal-launch.md) and the
+[one-command guide](docs/ONE_COMMAND.md). Authenticated real-host E2E is still pending.
+
 **Evidence Journal & confirmed retention (PR #7):** The Journal tab can read a finite, evidence-linked projection of Task status, QC SHA/verdict, one-shot Pi Runs and durable evidence references. The operator may preview and confirm pruning public activity projections over 30 days old **only when** their Runs are sealed and entire Workflows are complete; no native Pi JSONL, QC evidence, command receipt, Workflow state or Git Worktree is removed. Test outputs are retained as bounded exit/size/SHA-256 fingerprints rather than potentially sensitive stdout/stderr.
 
 **Immutable QC screenshots and reviewed ADR drafts (PR #7):** An operator may import an existing PNG/JPEG screenshot from a sealed QC Run's clean, exact Git commit into a private SHA-256-addressed artifact store, then explicitly verify/view it from Journal. When all Tasks are complete/integrated, an evidence-linked ADR proposal can be previewed and staged as an exact new Markdown file in a separate non-main Git Worktree after human confirmation. No screenshot is fabricated, and no ADR is automatically committed, pushed or published.
 
 **Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. The planner window represents a real Session only when Sol is actually running.
 
-**Still not implemented/verified:** A stable public server-plugin Workspace list/ID API (managed IDs are host-verified against the PI WEB v1.202610.1 Git provider), unattended goal → execution without explicit DAG approval/model/test setup, independent provider-authenticated multi-Agent E2E, automatic browser screenshot capture and broader artifact types, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, general unattended dependency conflict reconciliation and policy-bypassing protected-branch operations, ADR Git commit/PR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
+**Still not implemented/verified:** A stable public server-plugin Workspace list/ID API (managed IDs are host-verified against the PI WEB v1.202610.1 Git provider), unattended execution without a previously reviewed project profile and explicit per-goal authorization, independent provider-authenticated multi-Agent E2E, automatic browser screenshot capture and broader artifact types, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, general unattended dependency conflict reconciliation and policy-bypassing protected-branch operations, ADR Git commit/PR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
 
 ## Architecture and ADRs
 
@@ -51,6 +63,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - [ADR-0012 — Safe automatic dependent Worktree Git convergence](docs/adr/0012-safe-automatic-git-convergence.md)
 - [ADR-0013 — Final Pi integration, independent QC and GitHub auto-merge](docs/adr/0013-final-integration-and-github-automerge.md)
 - [ADR-0014 — Automatic managed Git Worktrees and PI WEB identity discovery](docs/adr/0014-automatic-worktree-discovery.md)
+- [ADR-0015 — Durable one-command natural-language DAG launch](docs/adr/0015-one-command-goal-launch.md)
 
 ## Development
 
@@ -60,6 +73,13 @@ Requires Node.js 22.19+ (PI WEB version constraint). Runtime plugin compatibilit
 npm install
 npm run check
 ```
+
+For the shortest everyday workflow after initial setup, open **Micromanager →
+Tell Sol what to build**, write a goal and click **Plan & run**. The default
+saved profile requires human approval for the GitHub PR merge
+(`github.pr.merge: ask`); change that to `allow` deliberately if you want
+fully unattended merge after QC and CI. This is real code execution,
+not the simulation/demo. See [ONE_COMMAND.md](docs/ONE_COMMAND.md).
 
 For integration testing, install the built package locally through **PI WEB → Settings → Pi packages**, enable `pi-micromanager` under **PI WEB plugins**, then restart the relevant PI WEB Session Daemon **only when no important agents are running** and reload the browser. Open a workspace and select the **Micromanager** tab. **Create/load demo DAG** and its simulation transition buttons do not edit code or launch Pi Sessions. The separate **Import a real Workflow DAG** and **Autopilot** controls are not a simulation: starting Autopilot can execute and modify code inside the configured linked Worktrees. Enable only for a repository and provider you intend to use.
 

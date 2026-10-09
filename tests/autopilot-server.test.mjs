@@ -788,3 +788,184 @@ test("Auto-provisioned final Worktree completes QC-gated GitHub MERGED flow",asy
    assert.equal(host.sessions.size,4);
  }finally{await host.cleanup();}
 });
+
+const quickProfile=(merge="allow")=>({
+  config:{
+    ...config,managedWorktrees:true,workspaces:{},
+    finalization:{workspaceId:"auto",autoMerge:true},
+    publication:{remote:"origin",baseBranch:"main",draft:true},
+  },
+  permissions:{default:"allow",
+    actions:{"github.pr.merge":merge,"deploy.production":"deny"}},
+});
+const quickRequestId="a22bb553-9309-492f-8cc2-22fd00444cb0";
+
+test("One command automatically turns a settled Sol plan into an isolated, QC-gated merged DAG",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   const setup=await host.request("auto.quick.configure",quickProfile());
+   assert.equal(setup.profile.config.managedWorktrees,true);
+   assert.equal(host.sessions.size,0,"Configuration does not create any Pi Session");
+   assert.equal(host.createdWorktrees.size,0);
+   const goal=await host.request("auto.quick.start",{
+     requestId:quickRequestId,goal:"Add a verified endpoint to the repository and merge it",
+   });
+   assert.match(goal.workflowId,/^quick-[0-9a-f]{16}$/);
+   assert.equal((await host.request("auto.quick.start",{
+     requestId:quickRequestId,goal:"Add a verified endpoint to the repository and merge it",
+   })).workflowId,goal.workflowId);
+   const planner=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId===goal.runId)&&
+     s.commands.some(c=>c.type==="message")),15000);
+   const prompt=planner.commands.find(c=>c.type==="message").text;
+   assert.match(prompt,/preauthorized automatic execution/);
+   const malicious={...definition,id:"model-chosen-id",
+     permissions:{default:"deny",actions:{"github.pr.merge":"deny"}}};
+   planner.finish({kind:"workflow_plan",runId:goal.runId,summary:"One endpoint Task",
+     definition:malicious,at:Date.now()});
+   const started=await eventually(async()=>{
+     const status=await host.request("auto.quick.status",null);
+     return status.goals[0]?.phase==="running"?status.goals[0]:null;
+   },20000);
+   const saved=await host.request("get",goal.workflowId);
+   assert.equal(saved.definition.id,goal.workflowId);
+   assert.deepEqual(saved.definition.permissions,quickProfile().permissions,
+     "Sol-suggested permissions cannot override the preauthorized project policy");
+   assert.equal(host.createdWorktrees.size,2);
+   const first=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-api-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
+   assert.ok(host.sessions.size>=2);
+   first.finish();
+   const qc=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="qc-api-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
+   qc.finish({kind:"qc",runId:"qc-api-1",verdict:"pass",
+     summary:"Independent API QC pass",at:Date.now()});
+   const integration=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-mm-final-integration-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
+   integration.finish();
+   const finalQC=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="qc-mm-final-integration-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
+   finalQC.finish({kind:"qc",runId:"qc-mm-final-integration-1",verdict:"pass",
+     summary:"All combined code checked",at:Date.now()});
+   await eventually(async()=>{
+     const state=await host.request("get",goal.workflowId);
+     return state.tasks["mm-final-integration"]?.status==="integrated";
+   },20000);
+   const done=await eventually(async()=>{
+     const row=(await host.request("auto.quick.status",null)).goals[0];
+     return row?.phase==="finished"?row:null;
+   },12000);
+   assert.equal(done.workflowId,goal.workflowId);
+   assert.equal(host.publication.mergeCount,1);
+   assert.equal(host.publication.pr.state,"MERGED");
+   assert.equal(host.sessions.size,5,
+     "One planner, original implementation/QC and final implementation/QC");
+   assert.equal(started.profile.config.publication.baseBranch,"main");
+ }finally{await host.cleanup();}
+});
+
+test("One-command project profile is frozen and auto-start can be cancelled during planning",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   await host.request("auto.quick.configure",quickProfile("ask"));
+   const goal=await host.request("auto.quick.start",{
+     requestId:quickRequestId,goal:"Only plan this goal unless I cancel",
+   });
+   const planner=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId===goal.runId)&&
+     s.commands.some(c=>c.type==="message")),15000);
+   await host.request("auto.quick.configure",quickProfile("allow"));
+   const frozen=(await host.request("auto.quick.status",null)).goals[0];
+   assert.equal(frozen.profile.permissions.actions["github.pr.merge"],"ask");
+   const cancelled=await host.request("auto.quick.cancel",{requestId:quickRequestId});
+   assert.equal(cancelled.phase,"cancelled");
+   planner.finish({kind:"workflow_plan",runId:goal.runId,summary:"Not executable after cancel",
+     definition,at:Date.now()});
+   await new Promise(resolve=>setTimeout(resolve,1750));
+   assert.equal((await host.request("auto.quick.status",null)).goals[0].phase,"cancelled");
+   assert.equal((await host.request("list",null)).length,0);
+   assert.equal(host.createdWorktrees.size,0);
+   assert.equal(host.sessions.size,1);
+ }finally{await host.cleanup();}
+});
+
+test("One-command restores the same Pi planning Session after daemon restart",async()=>{
+ const before=fakePluginHost();
+ let after;
+ let closed=false;
+ try{
+   await before.activate();
+   await before.request("auto.quick.configure",quickProfile("ask"));
+   const goal=await before.request("auto.quick.start",{
+     requestId:quickRequestId,goal:"Implement a small tested endpoint",
+   });
+   const planner=await eventually(()=>[...before.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId===goal.runId)&&
+     s.commands.some(c=>c.type==="message")),15000);
+   await before.cleanup(true);closed=true;
+   after=fakePluginHost(before.shared);
+   await after.activate();
+   planner.finish({kind:"workflow_plan",runId:goal.runId,summary:"Prepared",
+     definition,at:Date.now()});
+   const started=await eventually(async()=>
+     (await after.request("auto.quick.status",null)).goals.find(g=>
+       g.requestId===quickRequestId&&g.phase==="running"),20000);
+   assert.equal(started.workflowId,goal.workflowId);
+   assert.ok(planner.commands.some(c=>c.type==="inspect"),
+     "Recovery inspects the same Pi Session instead of resending the planner prompt");
+   assert.equal(planner.commands.filter(c=>c.type==="message").length,1);
+   await eventually(()=>[...after.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-api-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
+   assert.equal(after.sessions.size,2,"Only one new implementation Pi Session was admitted");
+ }finally{
+   if(after)await after.cleanup();
+   else if(closed)rmSync(before.shared.dir,{recursive:true,force:true});
+   else await before.cleanup();
+ }
+});
+
+test("A missing structured plan stops before any code or Git mutation",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   await host.request("auto.quick.configure",quickProfile());
+   const goal=await host.request("auto.quick.start",{
+     requestId:quickRequestId,goal:"Build a task",
+   });
+   const planner=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId===goal.runId)&&
+     s.commands.some(c=>c.type==="message")),15000);
+   planner.finish();
+   const row=await eventually(async()=>{
+     const r=(await host.request("auto.quick.status",null)).goals[0];
+     return r?.phase==="needs_attention"?r:null;
+   },15000);
+   assert.match(row.message,/report|structured|replay/i);
+   assert.equal(host.createdWorktrees.size,0);
+   assert.equal(host.sessions.size,1);
+   assert.deepEqual(await host.request("list",null),[]);
+ }finally{await host.cleanup();}
+});
+
+test("One-command refuses a competing Workflow already running in the same Workspace",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   await host.request("create",definition);
+   await host.request("auto.configure",{workflowId:"wf",config});
+   const started=await host.request("auto.start",{workflowId:"wf"});
+   assert.equal(started.enabled,true);
+   await host.request("auto.quick.configure",quickProfile());
+   await assert.rejects(host.request("auto.quick.start",{
+     requestId:quickRequestId,goal:"Risky competing DAG",
+   }),/Another Autopilot is running/);
+   assert.equal((await host.request("auto.quick.status",null)).goals.length,0);
+ }finally{await host.cleanup();}
+});

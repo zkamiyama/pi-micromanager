@@ -1,4 +1,4 @@
-/** PI WEB workspace panel. v0.1 is a control-state simulator, not yet a Pi runtime. */
+/** PI WEB workspace panel: distinct simulation preview and real, opt-in Pi Autopilot. */
 import { createLiveRunPanel, selectOrchestraTask } from "./fleet.js";
 import type { PiWebPlugin, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { WorkflowAction, WorkflowDefinition, WorkflowInstance, TaskState, Role } from "../core/workflow.js";
@@ -8,6 +8,7 @@ import type { ApprovalRequest } from "../automation/permissions.js";
 import type { PublishedOperation } from "../automation/publication.js";
 import type { ConvergenceReceipt } from "../automation/convergence.js";
 import type { AdrDraft, AdrFields } from "../automation/adr-promotion.js";
+import type { QuickGoal, QuickProfile } from "../automation/quick-launch.js";
 
 const DEMO: WorkflowDefinition = {
   id: "demo-auth", title: "Auth migration — workflow preview", maxQcRounds: 5,
@@ -23,6 +24,13 @@ type View = "cockpit" | "dag" | "kanban" | "journal";
 type Detail = "compact" | "expanded";
 type InterventionMode = "workflow" | "implementer" | "qc";
 interface State {
+  quickGoalText:string;quickProfile:QuickProfile|null;quickGoals:QuickGoal[];
+  quickSetupDraft:string;quickSetupLoaded:boolean;quickPolling:boolean;
+  quickError:string;quickRequestId?:string;
+  quickSimpleProvider:string;quickSimpleModel:string;
+  quickTestFile:string;quickTestArgs:string;
+  quickRemote:string;quickBase:string;quickMerge:"allow"|"ask"|"deny";
+  quickAdvanced:boolean;
   workflows: WorkflowInstance[];
   journal?:WorkflowJournal;
   adrTargetWorkspaceId:string;
@@ -91,6 +99,21 @@ function stateFor(context: WorkspacePanelContext): State {
         goalRef={draftWorkflowId:value.draftWorkflowId,runId:value.runId};
     }catch{/* Browser storage may be blocked. */}
     state = { workflows: [],
+      quickGoalText:"",quickProfile:null,quickGoals:[],quickSetupLoaded:false,
+      quickPolling:false,quickError:"",
+      quickSimpleProvider:"",quickSimpleModel:"",
+      quickTestFile:"node",quickTestArgs:"--test",
+      quickRemote:"origin",quickBase:"main",quickMerge:"ask",quickAdvanced:false,
+      quickSetupDraft:JSON.stringify({
+        config:{managedWorktrees:true,workspaces:{},
+          finalization:{workspaceId:"auto",autoMerge:true},
+          publication:{remote:"origin",baseBranch:"main",draft:true},
+          models:Object.fromEntries(["planner","implementer","qc","architect"]
+            .map(r=>[r,{provider:"REPLACE_WITH_PI_PROVIDER",model:"REPLACE_WITH_PI_MODEL"}])),
+          test:{file:"node",args:["--test"],timeoutMs:60000},maxAttempts:3},
+        permissions:{default:"allow",
+          actions:{"github.pr.merge":"ask","deploy.production":"deny"}},
+      },null,2),
       adrTargetWorkspaceId:"",adrStatus:"",
       adrFields:{filename:"0010-record-decision.md",title:"Architectural decision",
         context:"",options:"",decision:"",consequences:""},
@@ -135,6 +158,16 @@ const plugin: PiWebPlugin = {
   name: "pi-micromanager",
   activate({ html, lifetimeSignal, runtimePluginId }) {
     let disposed = false;
+    let quickContext:WorkspacePanelContext|undefined;
+    const quickTimer=setInterval(()=>{
+      const context=quickContext;
+      if(disposed||!context)return;
+      const state=stateFor(context);
+      if(!state.quickSetupLoaded||state.quickGoals.some(g=>
+        ["reserved","planning","starting","running"].includes(g.phase)))
+        void loadQuick(context);
+    },2500);
+    lifetimeSignal.addEventListener("abort",()=>clearInterval(quickTimer),{once:true});
     async function send(context: WorkspacePanelContext, operation: string, input: unknown): Promise<unknown> {
       if (!context.peer?.request) throw new Error("Enable the pi-micromanager server plugin in PI WEB settings");
       return context.peer.request(operation, input as never);
@@ -177,7 +210,148 @@ const plugin: PiWebPlugin = {
         state.loaded = true;
         state.status = `${state.workflows.length} saved workflow(s).`;
       } catch (error) { state.status = String(error); }
-      finally { state.busy = false; if (!disposed) context.host.requestRender(); }
+      finally {
+        state.busy = false;
+        if (!disposed){context.host.requestRender();void loadQuick(context);}
+      }
+    }
+    function hydrateSimpleSetup(state:State,profile:QuickProfile):void{
+      const profiles=Object.values(profile.config.models);
+      const first=profiles[0];
+      const common=first&&profiles.every(x=>
+        x.provider===first.provider&&x.model===first.model&&x.effort===first.effort);
+      if(common&&first){
+        state.quickSimpleProvider=first.provider;
+        state.quickSimpleModel=first.model;
+      }else state.quickAdvanced=true;
+      state.quickTestFile=profile.config.test.file;
+      state.quickTestArgs=profile.config.test.args.join("\n");
+      state.quickRemote=profile.config.publication?.remote??"origin";
+      state.quickBase=profile.config.publication?.baseBranch??"main";
+      state.quickMerge=profile.permissions.actions?.["github.pr.merge"]??
+        profile.permissions.default??"ask";
+    }
+    function simpleSetup(state:State):unknown{
+      if(state.quickAdvanced)return JSON.parse(state.quickSetupDraft) as unknown;
+      const provider=state.quickSimpleProvider.trim();
+      const model=state.quickSimpleModel.trim();
+      if(!provider||!model||provider.includes("REPLACE_WITH")||
+        model.includes("REPLACE_WITH"))
+        throw new Error("Enter a real Pi provider and model from the session daemon");
+      const file=state.quickTestFile.trim();
+      const args=state.quickTestArgs.split(/\r?\n/u).map(x=>x.trim()).filter(Boolean);
+      const remote=state.quickRemote.trim(),baseBranch=state.quickBase.trim();
+      const raw=JSON.parse(state.quickSetupDraft) as {
+        config:Record<string,unknown>;
+        permissions:{default?:string;actions?:Record<string,string>};
+      };
+      const models=Object.fromEntries(["planner","implementer","qc","architect"]
+        .map(role=>[role,{provider,model}]));
+      return {...raw,config:{...raw.config,managedWorktrees:true,workspaces:{},
+        models,test:{file,args,timeoutMs:60000},
+        publication:{remote,baseBranch,draft:true},
+        finalization:{workspaceId:"auto",autoMerge:true}},
+        permissions:{...raw.permissions,
+          actions:{...raw.permissions.actions,
+            "github.pr.merge":state.quickMerge,"deploy.production":"deny"}}};
+    }
+    async function loadQuick(context:WorkspacePanelContext):Promise<void>{
+      const state=stateFor(context);
+      if(disposed||state.quickPolling)return;
+      state.quickPolling=true;
+      try{
+        const result=await send(context,"auto.quick.status",null) as {
+          profile:QuickProfile|null;goals:QuickGoal[];
+        };
+        if(!state.quickSetupLoaded){
+          if(result.profile){
+            state.quickSetupDraft=JSON.stringify(result.profile,null,2);
+            hydrateSimpleSetup(state,result.profile);
+          }
+          state.quickSetupLoaded=true;
+        }
+        const old=JSON.stringify({profile:state.quickProfile,goals:state.quickGoals});
+        state.quickProfile=result.profile;state.quickGoals=result.goals;
+        if(old!==JSON.stringify(result))context.host.requestRender();
+      }catch(error){
+        if(!state.quickProfile&&!state.quickGoals.length){
+          state.quickError="Cannot load one-command setup: "+String(error).slice(0,240);
+          context.host.requestRender();
+        }
+      }finally{state.quickPolling=false;}
+    }
+    async function configureQuick(context:WorkspacePanelContext){
+      const state=stateFor(context);if(state.busy)return;
+      state.busy=true;state.quickError="Saving project setup…";
+      context.host.requestRender();
+      try{
+        const result=await send(context,"auto.quick.configure",
+          simpleSetup(state)) as {profile:QuickProfile;goals:QuickGoal[]};
+        state.quickProfile=result.profile;state.quickGoals=result.goals;
+        state.quickSetupDraft=JSON.stringify(result.profile,null,2);
+        hydrateSimpleSetup(state,result.profile);
+        state.quickSetupLoaded=true;
+        state.quickError="Project setup saved. Describe a goal and choose Plan & run.";
+      }catch(error){state.quickError="Setup not saved: "+String(error).slice(0,300);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    function newQuickRequestId():string{
+      // PI WEB may be served over a trusted LAN origin where randomUUID()
+      // is unavailable. getRandomValues also works on non-secure origins.
+      if(!globalThis.crypto?.getRandomValues)
+        throw new Error("Browser cryptographic randomness is unavailable");
+      const bytes=new Uint8Array(16);
+      globalThis.crypto.getRandomValues(bytes);
+      bytes[6]=(bytes[6]!&0x0f)|0x40;
+      bytes[8]=(bytes[8]!&0x3f)|0x80;
+      const hex=Array.from(bytes,x=>x.toString(16).padStart(2,"0")).join("");
+      return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),
+        hex.slice(16,20),hex.slice(20)].join("-");
+    }
+    async function startQuick(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.busy||!state.quickProfile||!state.quickGoalText.trim())return;
+      let requestId:string;
+      try{requestId=state.quickRequestId??newQuickRequestId();}
+      catch(error){
+        state.quickError="Cannot authorize a run: "+String(error);
+        context.host.requestRender();
+        return;
+      }
+      state.quickRequestId=requestId;
+      state.busy=true;state.quickError="Submitting Plan & run…";
+      context.host.requestRender();
+      try{
+        const job=await send(context,"auto.quick.start",{
+          requestId,goal:state.quickGoalText,
+        }) as QuickGoal;
+        state.quickGoals=[job,...state.quickGoals.filter(x=>x.requestId!==job.requestId)];
+        state.quickError="Request saved. Sol will plan, validate and start automatically.";
+      }catch(error){
+        state.quickError="Start not confirmed: "+String(error).slice(0,300)+
+          ". Refresh status before retrying; the request ID is unchanged.";
+      }finally{state.busy=false;context.host.requestRender();}
+    }
+    async function cancelQuick(context:WorkspacePanelContext,requestId:string){
+      const state=stateFor(context);if(state.busy)return;
+      state.busy=true;
+      try{
+        const job=await send(context,"auto.quick.cancel",{requestId}) as QuickGoal;
+        state.quickGoals=state.quickGoals.map(g=>g.requestId===job.requestId?job:g);
+        state.quickError="Auto-start cancelled. A read-only Sol Session may still finish.";
+      }catch(error){state.quickError="Cancel unavailable: "+String(error).slice(0,280);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function openQuickWorkflow(context:WorkspacePanelContext,workflowId:string){
+      await refresh(context,workflowId);
+      const state=stateFor(context);
+      if(state.selected?.definition.id===workflowId)state.view="dag";
+      context.host.requestRender();
+    }
+    function newQuickGoal(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      state.quickGoalText="";delete state.quickRequestId;
+      state.quickError="Ready for a new goal.";context.host.requestRender();
     }
     async function createDemo(context: WorkspacePanelContext) {
       const state = stateFor(context);
@@ -710,6 +884,7 @@ const plugin: PiWebPlugin = {
         workspacePanels: [{
           id: "micromanager", title: "Micromanager", order: 50,
           render(context) {
+            quickContext=context;
             const state = stateFor(context);
             const w = state.selected;
             const tasks = w ? Object.values(w.tasks) : [];
@@ -724,6 +899,156 @@ const plugin: PiWebPlugin = {
                 </select>
               </div>
               <p role="status" aria-live="polite">${state.status}</p>
+
+              <section class="mm-quick" aria-label="Natural-language one-command Autopilot">
+                <div class="mm-quick-heading">
+                  <div><h3>Tell Sol what to build</h3>
+                    <p>One command · Plan → DAG → Pi Runs → QC → GitHub</p></div>
+                  <span class="mm-quick-mark">AUTO</span>
+                </div>
+                <label for="mm-quick-goal">Development goal</label>
+                <textarea id="mm-quick-goal" rows="3" maxlength="4000"
+                  placeholder="What should the agents build? Include acceptance criteria and constraints…"
+                  .value=${state.quickGoalText}
+                  ?disabled=${state.busy||state.quickGoals.some(g=>
+                    ["reserved","planning","starting","running"].includes(g.phase))}
+                  @input=${(e:Event)=>{
+                    const goal=(e.target as HTMLTextAreaElement).value;
+                    if(goal!==state.quickGoalText)delete state.quickRequestId;
+                    state.quickGoalText=goal;context.host.requestRender();
+                  }}></textarea>
+                ${state.quickProfile?html`
+                  <p class="mm-quick-scope">Publish to
+                    <strong>${state.quickProfile.config.publication?.remote}/${state.quickProfile.config.publication?.baseBranch}</strong>
+                    · PR merge: <strong>${state.quickProfile.permissions.actions?.["github.pr.merge"]??
+                      state.quickProfile.permissions.default??"allow"}</strong>
+                    · New isolated Worktrees
+                  </p>`:html`<p class="mm-quick-scope">
+                    First save a project setup below (Pi models, tests, GitHub destination and policy).
+                    No modifying work runs until you explicitly select Plan &amp; run.</p>`}
+                <div class="mm-actions">
+                  <button class="mm-quick-run" ?disabled=${state.busy||!state.quickProfile||
+                    !state.quickGoalText.trim()||state.quickGoals.some(g=>
+                      ["reserved","planning","starting","running"].includes(g.phase))}
+                    @click=${()=>void startQuick(context)}>Plan &amp; run</button>
+                  <button ?disabled=${state.busy}
+                    @click=${()=>void loadQuick(context)}>Refresh progress</button>
+                  ${state.quickGoals.length>0&&!state.quickGoals.some(g=>
+                    ["reserved","planning","starting","running"].includes(g.phase))?
+                    html`<button ?disabled=${state.busy}
+                      @click=${()=>newQuickGoal(context)}>New goal</button>`:null}
+                </div>
+                ${state.quickGoals.slice(0,1).map(job=>html`
+                  <div class="mm-quick-progress" role="status" aria-live="polite">
+                    <strong>${job.phase==="reserved"?"Queued":job.phase==="planning"?"Sol is planning":
+                      job.phase==="starting"?"Preparing Worktrees":
+                      job.phase==="running"?"Autopilot is running":
+                      job.phase==="finished"?"Completed":
+                      job.phase==="cancelled"?"Cancelled":"Needs attention"}</strong>
+                    <p>${job.message}</p>
+                    <p class="mm-quick-ref">Goal: ${job.goal.slice(0,180)}</p>
+                    <p class="mm-quick-ref">Saved target:
+                      ${job.profile.config.publication?.remote}/${job.profile.config.publication?.baseBranch}
+                      · merge ${job.profile.permissions.actions?.["github.pr.merge"]??
+                        job.profile.permissions.default??"allow"}</p>
+                    <p class="mm-quick-ref">Workflow <code>${job.workflowId}</code>
+                      · Request <code>${job.requestId.slice(0,8)}</code></p>
+                    <div class="mm-quick-steps" aria-label="Pipeline">
+                      ${["Plan","Prepare","Execute","Complete"].map((title,index)=>html`
+                        <span class=${(job.phase==="finished"?3:
+                          job.phase==="running"?2:job.phase==="starting"?1:
+                          job.phase==="planning"?0:-1)>=index?
+                          "mm-step-done":""}>${title}</span>`)}
+                    </div>
+                    <div class="mm-actions">
+                      ${["reserved","planning"].includes(job.phase)?html`
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void cancelQuick(context,job.requestId)}>
+                          Cancel before code starts</button>`:null}
+                      ${["starting","running","finished"].includes(job.phase)?html`
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void openQuickWorkflow(context,job.workflowId)}>
+                          Open DAG</button>`:null}
+                    </div>
+                  </div>`)}
+                <details class="mm-quick-setup" ?open=${!state.quickProfile}>
+                  <summary>${state.quickProfile?"Project setup / change settings":
+                    "First-time project setup (required)"}</summary>
+                  <p>Setup is saved once per selected PI WEB project Workspace.
+                    Use a trusted Pi provider and model in the host session daemon.
+                    Each new goal gets isolated Git Worktrees.</p>
+                  <div class="mm-quick-form">
+                    <label>Pi provider ID
+                      <input maxlength="120" placeholder="Authenticated provider ID"
+                        .value=${state.quickSimpleProvider} ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickSimpleProvider=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>Model ID for all four roles
+                      <input maxlength="160" placeholder="Exact Pi model ID"
+                        .value=${state.quickSimpleModel} ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickSimpleModel=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>Test executable
+                      <input maxlength="256" placeholder="node"
+                        .value=${state.quickTestFile} ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickTestFile=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>Test arguments (one per line)
+                      <textarea rows="2" maxlength="2048" placeholder="--test"
+                        .value=${state.quickTestArgs} ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickTestArgs=
+                          (e.target as HTMLTextAreaElement).value;}}></textarea></label>
+                    <label>Git remote
+                      <input maxlength="60" .value=${state.quickRemote}
+                        ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickRemote=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>Target branch
+                      <input maxlength="120" .value=${state.quickBase}
+                        ?disabled=${state.busy||state.quickAdvanced}
+                        @input=${(e:Event)=>{state.quickBase=
+                          (e.target as HTMLInputElement).value;}} /></label>
+                    <label>GitHub PR merge permission
+                      <select .value=${state.quickMerge} ?disabled=${state.busy||state.quickAdvanced}
+                        @change=${(e:Event)=>{state.quickMerge=
+                          (e.target as HTMLSelectElement).value as "allow"|"ask"|"deny";
+                          context.host.requestRender();}}>
+                        <option value="ask">Ask me before merge (safer)</option>
+                        <option value="allow">Auto-merge after QC + CI</option>
+                        <option value="deny">Draft PR only</option>
+                      </select></label>
+                  </div>
+                  ${state.quickMerge==="allow"&&!state.quickAdvanced?html`
+                    <p role="note">Automatic merge is enabled. Verify the GitHub target before saving.</p>`:null}
+                  <label class="mm-quick-advanced-toggle">
+                    <input type="checkbox" .checked=${state.quickAdvanced}
+                      ?disabled=${state.busy}
+                      @change=${(e:Event)=>{
+                        const next=(e.target as HTMLInputElement).checked;
+                        if(next&&!state.quickAdvanced){
+                          try{state.quickSetupDraft=
+                            JSON.stringify(simpleSetup(state),null,2);}
+                          catch{/* Keep last reviewed JSON until simple fields are valid. */}
+                        }
+                        state.quickAdvanced=next;
+                        context.host.requestRender();
+                      }}/>
+                    Advanced: separate models per role / full configuration JSON
+                  </label>
+                  ${state.quickAdvanced?html`
+                    <label for="mm-quick-config">Advanced project profile (JSON)</label>
+                    <textarea id="mm-quick-config" rows="14" spellcheck="false"
+                      .value=${state.quickSetupDraft} ?disabled=${state.busy}
+                      @input=${(e:Event)=>{state.quickSetupDraft=
+                        (e.target as HTMLTextAreaElement).value;}}></textarea>`:null}
+                  <p>Plan &amp; run authorizes modifying Pi code work; your
+                    saved permission policy, independent QC and GitHub rules remain in force.
+                    Only your reviewed setup controls merge rights.</p>
+                  <button ?disabled=${state.busy}
+                    @click=${()=>void configureQuick(context)}>Save project setup</button>
+                </details>
+                <p class="mm-quick-feedback" role="status">${state.quickError}</p>
+              </section>
 
               <details class="mm-goal-proposal">
                 <summary><strong>Ask Sol to plan a new goal</strong> · read-only proposal</summary>
@@ -1109,7 +1434,7 @@ const plugin: PiWebPlugin = {
           },
         }, createLiveRunPanel(html, lifetimeSignal)],
       },
-      dispose() { disposed = true; states.clear(); },
+      dispose() { disposed = true;clearInterval(quickTimer);quickContext=undefined;states.clear(); },
     };
   },
 };
@@ -1124,6 +1449,41 @@ const styles = `
   .mm nav { display:flex; flex-wrap:wrap; gap: 6px; margin:12px 0; }
   .mm nav .selected { border-color: var(--pi-accent-border); color: var(--pi-accent); }
   .mm .toolbar { display:flex; flex-wrap:wrap; gap: 8px; margin-top: 12px; }
+  .mm-quick{border:1px solid var(--pi-accent-border);border-radius:12px;
+    padding:14px;margin:14px 0;background:var(--pi-surface);min-width:0;}
+  .mm-quick-heading{display:flex;justify-content:space-between;gap:12px;align-items:start;}
+  .mm-quick-heading h3{margin:0;font-size:15px;}
+  .mm-quick-heading p{margin:2px 0 12px;font-size:12px;color:var(--pi-muted);}
+  .mm-quick-mark{border-radius:999px;border:1px solid var(--pi-border-muted);
+    color:var(--pi-muted);font-size:10px;padding:2px 8px;letter-spacing:.08em;}
+  .mm-quick label{display:block;font-size:12px;margin:8px 0 4px;}
+  .mm-quick textarea{width:100%;box-sizing:border-box;border:1px solid var(--pi-border-muted);
+    border-radius:8px;background:var(--pi-surface);color:inherit;padding:10px;
+    resize:vertical;font:inherit;min-width:0;}
+  .mm-quick-scope,.mm-quick-feedback{font-size:12px;color:var(--pi-muted);
+    overflow-wrap:anywhere;margin:8px 0;}
+  .mm-quick-run{background:var(--pi-accent-surface, var(--pi-surface))!important;
+    border-color:var(--pi-accent-border)!important;font-weight:600!important;}
+  .mm-quick-progress{margin-top:12px;padding:12px;border-radius:9px;
+    border:1px solid var(--pi-border-muted);background:var(--pi-surface);}
+  .mm-quick-progress p{font-size:12px;overflow-wrap:anywhere;margin:4px 0 8px;}
+  .mm-quick-ref{color:var(--pi-muted);}
+  .mm-quick-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:5px;margin:8px 0 12px;}
+  .mm-quick-steps span{font-size:10px;text-align:center;padding:5px 2px;
+    border-radius:5px;border:1px solid var(--pi-border-muted);color:var(--pi-muted);}
+  .mm-quick-steps .mm-step-done{color:var(--pi-accent);border-color:var(--pi-accent-border);}
+  .mm-quick-setup{margin-top:12px;border-top:1px solid var(--pi-border-muted);padding-top:10px;}
+  .mm-quick-setup summary{cursor:pointer;font-size:12px;}
+  .mm-quick-setup p{font-size:12px;color:var(--pi-muted);}
+  .mm-quick-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(195px,1fr));gap:6px 12px;}
+  .mm-quick-form label{min-width:0;}
+  .mm-quick-form input,.mm-quick-form select{display:block;width:100%;box-sizing:border-box;
+    padding:7px;border:1px solid var(--pi-border-muted);border-radius:6px;
+    background:var(--pi-surface);color:inherit;font:inherit;}
+  .mm-quick-advanced-toggle{display:flex!important;align-items:center;gap:6px;}
+
+
   .mm .mm-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; }
   .mm-card { border:1px solid var(--pi-border-muted); border-radius:10px; padding: 10px; min-width:0; }
   .mm-card h3 { margin:0; font-size:13px; }

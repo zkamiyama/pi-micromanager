@@ -1,0 +1,30 @@
+{
+  "config": {
+    "managedWorktrees": true,
+    "workspaces": {},
+    "finalization": {
+      "workspaceId": "auto",
+      "autoMerge": true
+    },
+    "publication": {
+      "remote": "origin",
+      "baseBranch": "main",
+      "draft": true
+    },
+    "models": {
+      "planner": {"provider": "REPLACE_WITH_PI_PROVIDER", "model": "REPLACE_WITH_PI_MODEL"},
+      "implementer": {"provider": "REPLACE_WITH_PI_PROVIDER", "model": "REPLACE_WITH_PI_MODEL"},
+      "qc": {"provider": "REPLACE_WITH_PI_PROVIDER", "model": "REPLACE_WITH_PI_MODEL"},
+      "architect": {"provider": "REPLACE_WITH_PI_PROVIDER", "model": "REPLACE_WITH_PI_MODEL"}
+    },
+    "test": {"file": "node", "args": ["--test"], "timeoutMs": 60000},
+    "maxAttempts": 3
+  },
+  "permissions": {
+    "default": "allow",
+    "actions": {
+      "github.pr.merge": "ask",
+      "deploy.production": "deny"
+    }
+  }
+}
