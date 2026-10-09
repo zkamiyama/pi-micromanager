@@ -281,3 +281,16 @@ test("A dependent Worktree leased by a Pi Session is not mutated by convergence"
     assert.equal(x.mergeCount,0);
   }finally{x.close();}
 });
+
+test("Concurrent convergence steps serialize one Git fast-forward and one DAG CAS",async()=>{
+  const x=fixture({});
+  try{
+    const outcomes=await Promise.all([x.tick(),x.tick()]);
+    assert.deepEqual(outcomes,["acted","acted"]);
+    assert.equal(x.mergeCount,1);
+    assert.equal(x.integrator.list("p","o","flow").length,1);
+    assert.equal(x.workflows.get("p","o","flow").tasks.source.status,"integrated");
+    assert.equal(x.workflows.get("p","o","flow").tasks.consumer0.status,"ready");
+    assert.equal(await x.tick(),"none");
+  }finally{x.close();}
+});
