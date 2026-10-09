@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtempSync,rmSync,existsSync,mkdirSync} from "node:fs";
+import {mkdtempSync,rmSync,existsSync,mkdirSync,symlinkSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {WorkflowStore} from "../dist/core/store.js";
@@ -120,5 +120,17 @@ test("Live or configured Workflows cannot be provisioned or mutated",async()=>{
     x.ledger.setStatus("project","orchestra","flow",true,"running");
     await assert.rejects(x.manager.preview("project","orchestra","flow","api","/repo"),
       /Pause Autopilot/);
+  }finally{x.close();}
+});
+
+test("A Git worktree checkout swapped for a symlink is never treated as owned",async()=>{
+  const x=fixture();
+  try{
+    const planned=await x.manager.preview("project","orchestra","flow","api","/repo");
+    await x.manager.create("project","orchestra",planned.id);
+    rmSync(planned.path,{recursive:true,force:true});
+    symlinkSync(x.options.dataDirectory,planned.path,"dir");
+    await assert.rejects(x.manager.inspect("project","orchestra",planned.id),
+      /not a real owned directory/);
   }finally{x.close();}
 });
