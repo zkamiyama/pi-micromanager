@@ -3,9 +3,13 @@ export const CONTROL_CHANNEL = "pi-micromanager:control:v1";
 export const RECEIPT_CHANNEL = "pi-micromanager:receipt:v1";
 export const ACTIVITY_CHANNEL = "pi-micromanager:activity:v1";
 
+export interface RunJobContext {
+  kind:"implementation"|"qc"|"diagnosis"|"synthesis";
+  runId:string;
+}
 export type RuntimeControl =
   | { type: "probe"; requestId: string }
-  | { type: "configure"; requestId: string; provider: string; model: string; effort?: string; sessionName?: string }
+  | { type: "configure"; requestId: string; provider: string; model: string; effort?: string; sessionName?: string; job?: RunJobContext }
   | { type: "message"; requestId: string; text: string; delivery: "newTurn" | "steer" | "followUp" }
   | { type: "abort"; requestId: string };
 
@@ -49,9 +53,17 @@ export function parseRuntimeControl(input: unknown): RuntimeControl | undefined 
     if (!bounded(input.provider, 120) || !bounded(input.model, 160)) return;
     if (input.effort !== undefined && !bounded(input.effort, 32)) return;
     if (input.sessionName !== undefined && !bounded(input.sessionName, 120)) return;
+    let job:RunJobContext|undefined;
+    if(input.job!==undefined){
+      if(!record(input.job)||!bounded(input.job.runId,128)||
+        !/^[a-z][a-z0-9-]{0,127}$/.test(input.job.runId)||
+        !["implementation","qc","diagnosis","synthesis"].includes(String(input.job.kind)))return;
+      job={runId:input.job.runId,kind:input.job.kind as RunJobContext["kind"]};
+    }
     return { type: "configure", requestId, provider: input.provider, model: input.model,
       ...(input.effort === undefined ? {} : { effort: input.effort as string }),
-      ...(input.sessionName === undefined ? {} : { sessionName: input.sessionName as string }) };
+      ...(input.sessionName === undefined ? {} : { sessionName: input.sessionName as string }),
+      ...(job ? {job}: {}) };
   }
   if (input.type === "message") {
     if (!bounded(input.text, 16000) ||
