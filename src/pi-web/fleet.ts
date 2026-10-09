@@ -32,6 +32,8 @@ interface GridState {
   evidenceRef:string;
   density:Record<Seat,"compact"|"expanded">;
   activity:Map<string,Activity[]>;
+  historyLoaded:Set<string>;
+  historyLoading:Set<string>;
   loadStatus:string;
   busy:boolean; loaded:boolean;
   listening:boolean; connecting:boolean;
@@ -66,7 +68,7 @@ function stateFor(ctx:WorkspacePanelContext):GridState{
       targetWorkspaceId:ctx.workspace.id,provider:"openai-codex",model:"",effort:"",
       evidenceRef:"",
       density:{planner:"expanded",implementer:"compact",qc:"expanded",architect:"expanded"},
-      activity:new Map(),loadStatus:"Not connected.",busy:false,loaded:false,
+      activity:new Map(),historyLoaded:new Set(),historyLoading:new Set(),loadStatus:"Not connected.",busy:false,loaded:false,
       listening:false,connecting:false,needsReload:false,canvasDimmed:preferences.dimmed,canvasPage:0,
        plannerSessionId:"",nodePositions:preferences.positions,nodeDensity:preferences.density,
        nodeDrafts:new Map(),nodeModes:new Map(),deliveryStatus:new Map()};
@@ -171,7 +173,11 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
           if(p.type!=="agent_activity"||typeof p.sessionId!=="string")return;
           const event=validatedActivity(p.event);if(!event)return;
           const list=s.activity.get(p.sessionId)??[];
-          s.activity.set(p.sessionId,[...list.slice(-15),event]);
+          // Pi sends cumulative message_delta snapshots: update one live line,
+          // rather than allocating a new row for every token.
+          const next=event.kind==="message_delta"&&list.at(-1)?.kind==="message_delta"
+            ?[...list.slice(0,-1),event]:[...list,event];
+          s.activity.set(p.sessionId,next.slice(-60));
           const b=s.active.find(x=>x.sessionId===p.sessionId);
           if(!b&&event.kind!=="message_delta")
             queueMicrotask(()=>{if(!lifetime.aborted)void load(ctx);});
@@ -200,7 +206,8 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
   }
   lifetime.addEventListener("abort",()=>{
     for(const s of states.values()){s.controller?.abort();s.channel?.close();s.activity.clear();
-      s.nodePositions.clear();s.nodeDensity.clear();s.nodeDrafts.clear();s.nodeModes.clear();s.deliveryStatus.clear();}
+      s.nodePositions.clear();s.nodeDensity.clear();s.nodeDrafts.clear();s.nodeModes.clear();s.deliveryStatus.clear();
+      s.historyLoaded.clear();s.historyLoading.clear();}
     states.clear();
   },{once:true});
 
@@ -209,9 +216,49 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     !!b.sessionId&&b.connected===true&&(b.phase==="configured"||b.phase==="running");
   const modeFor=(s:GridState,b:LiveBinding):Mode=>
     b.phase==="configured"?"newTurn":s.nodeModes.get(runKey(b.workflowId,b.runId))==="followUp"?"followUp":"steer";
+
+  function normalizeHistory(value:unknown):Activity[]|undefined {
+    if(!Array.isArray(value)||value.length>60)return;
+    const result:Activity[]=[];
+    for(const entry of [...value].reverse()) {
+      if(!entry||typeof entry!=="object")return;
+      const item=entry as Record<string,unknown>;
+      if(!Number.isSafeInteger(item.id)||typeof item.kind!=="string"||
+        typeof item.at!=="number"||!Number.isSafeInteger(item.at)||
+        typeof item.text!=="string"||item.text.length>512)return;
+      result.push({kind:item.kind,text:item.text,at:item.at,sequence:item.id as number});
+    }
+    return result;
+  }
+  function replayHistory(ctx:WorkspacePanelContext,sessionId:string):void {
+    const s=stateFor(ctx);
+    if(s.historyLoaded.has(sessionId)||s.historyLoading.has(sessionId)||lifetime.aborted)return;
+    s.historyLoading.add(sessionId);
+    void api(ctx,"agents.history",{sessionId}).then(result=>{
+      const saved=normalizeHistory(result);
+      if(!saved)throw new Error("Invalid bounded run activity response");
+      const fresh=s.activity.get(sessionId)??[];
+      const seen=new Set<string>();
+      const merged:Activity[]=[];
+      for(const event of [...saved,...fresh]){
+        const key=JSON.stringify([event.kind,event.at,event.text]);
+        if(seen.has(key))continue;
+        seen.add(key);merged.push(event);
+      }
+      s.activity.set(sessionId,merged.slice(-60));
+      s.historyLoaded.add(sessionId);
+      refresh(ctx);
+    }).catch(error=>{
+      // Do not suppress the original activity projection if history is missing.
+      s.loadStatus="History replay unavailable: "+String(error);
+      refresh(ctx);
+    }).finally(()=>s.historyLoading.delete(sessionId));
+  }
+
   function focus(ctx:WorkspacePanelContext,b:LiveBinding){
     const s=stateFor(ctx);
     s.selectedSessionId=b.sessionId??"";
+    if(b.sessionId)replayHistory(ctx,b.sessionId);
     s.canvasDimmed=false;
     persistCanvas(ctx,s);
     refresh(ctx);
@@ -249,8 +296,9 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     const canvas=header.closest<HTMLElement>(".mm-f-canvas");
     if(!node||!canvas)return;
     const s=stateFor(ctx),key=runKey(b.workflowId,b.runId);
-    s.drag={key,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,
+     s.drag={key,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,
       origin,runs,dependencies,node,canvas,rootY};
+    if(b.sessionId)replayHistory(ctx,b.sessionId);
     // Do not request a host render here. A re-render while captured can cancel
     // the pointer stream, especially when PI WEB re-mounts a workspace panel.
     s.selectedSessionId=b.sessionId??"";
@@ -510,7 +558,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         </div>
       </div>
       <details class="mm-f-history"><summary>Finished executions (${s.history.length})</summary>
-        ${s.history.map(b=>html`<button @click=${()=>{s.selectedSessionId=b.sessionId??"";refresh(ctx)}}>
+        ${s.history.map(b=>html`<button @click=${()=>focus(ctx,b)}>
           ${b.taskId} / ${b.runId} · ${b.phase}</button>`)}
       </details>
       ${selected?html`<section class="mm-f-inspector">
