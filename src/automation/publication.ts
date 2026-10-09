@@ -212,7 +212,8 @@ export class PublicationManager {
       const finalTask=current.tasks[taskId];
       if(finalTask?.status==="passed"){
         this.options.workflows.act(p,o,w,current.revision,
-          "auto:remote-merge:"+qcRunId,{type:"integrate",taskId});
+          "auto:remote-merge:"+qcRunId,
+          {type:"final_merge_confirmed",taskId,headSha:sha,prUrl:inspected.url});
         return "acted";
       }
       if(finalTask?.status!=="integrated")
