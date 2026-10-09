@@ -8,6 +8,7 @@ import { CONTROL_CHANNEL, RECEIPT_CHANNEL, ACTIVITY_CHANNEL } from "../dist/runt
 import { REPORT_CHANNEL } from "../dist/automation/report.js";
 
 const SHA = "a".repeat(40);
+const FINAL = "f".repeat(40);
 const BASE = "b".repeat(40);
 const definition = {
   id:"wf",title:"Build a verified endpoint",maxQcRounds:3,
@@ -27,14 +28,16 @@ function fakePluginHost(shared) {
   const lifetime = new AbortController();
   const sessions = shared?.sessions??new Map();
   const calls = [];
-  const publication={remoteSha:null,pr:null,pushCount:0,createCount:0};
+  const publication={remoteSha:null,pr:null,pushCount:0,createCount:0,readyCount:0,mergeCount:0};
+  const finalization={head:BASE,settled:false};
   const createdWorktrees=new Map();
   const convergence={head:BASE,merges:0};
   let serial = sessions.size;
   const workspace = id => ({
     id,projectId:"project",path:id==="orchestra"?"/repo":
       id==="wt-integrated"?"/repo/integrated":
-      id==="worktree-consumer"?"/repo/consumer":"/repo/api",
+      id==="worktree-consumer"?"/repo/consumer":
+      id==="worktree-final"?"/repo/final":"/repo/api",
     isMain:id==="orchestra",
     label:id,
     ...(id==="orchestra"?{}:{provider:{metadata:{isGitWorktree:true}}}),
@@ -42,7 +45,7 @@ function fakePluginHost(shared) {
   const workspaces = {
     version:1,
     async resolve({projectId,workspaceId}) {
-      if(projectId!=="project"||!["orchestra","worktree-api","wt-integrated","worktree-consumer"].includes(workspaceId))
+      if(projectId!=="project"||!["orchestra","worktree-api","wt-integrated","worktree-consumer","worktree-final"].includes(workspaceId))
         throw new Error("Unknown linked workspace");
       return {project:{id:"project",name:"Project",path:"/repo"},
         workspace:workspace(workspaceId)};
@@ -89,6 +92,10 @@ function fakePluginHost(shared) {
       },
       report:undefined,reported:false,completed:false,
       finish(report) {
+        if(session.commands.some(c=>c.type==="configure"&&
+          c.job?.runId==="impl-mm-final-integration-1")){
+          finalization.head=FINAL;finalization.settled=true;
+        }
         if(report){
           session.report=report;
           session.reported=true;
@@ -117,10 +124,17 @@ function fakePluginHost(shared) {
           return result(args[1]+"\n");
         if(command==="rev-parse HEAD")
           return result(args[1]==="/repo/consumer"?convergence.head+"\n":
+            args[1]==="/repo/final"?finalization.head+"\n":
             args[1]==="/repo/integrated"?"c".repeat(40)+"\n":SHA+"\n");
         if(command==="status --porcelain")
           return result("");
         if(command.startsWith("merge-base --is-ancestor ")){
+          if(args[1]==="/repo/final"){
+            const [, ,source,head]=command.split(" ");
+            const checked=head==="HEAD"?finalization.head:head;
+            return {...result(""),exitCode:
+              source===checked||(source===SHA&&checked===FINAL)?0:1};
+          }
           if(args[1]==="/repo/consumer"){
             const [, ,source,target]=command.split(" ");
             const checked=target==="HEAD"?convergence.head:target;
@@ -139,14 +153,17 @@ function fakePluginHost(shared) {
           return result("Fast-forward\n");
         }
         if(command==="symbolic-ref --quiet --short HEAD")
-          return result("feature/api\n");
+          return result(args[1]==="/repo/final"?"feature/final\n":"feature/api\n");
         if(command==="remote get-url origin")
           return result("https://github.com/acme/repo.git\n");
-        if(command==="ls-remote --heads origin refs/heads/feature/api")
+        if(command.startsWith("ls-remote --heads origin refs/heads/feature/")){
+          const branch=command.split(" ").at(-1);
           return result(publication.remoteSha?
-            publication.remoteSha+"\trefs/heads/feature/api\n":"");
-        if(command==="push --porcelain origin HEAD:refs/heads/feature/api"){
-          publication.pushCount++;publication.remoteSha=SHA;
+            publication.remoteSha+"\t"+branch+"\n":"");
+        }
+        if(command.startsWith("push --porcelain origin HEAD:refs/heads/feature/")){
+          publication.pushCount++;
+          publication.remoteSha=args[1]==="/repo/final"?FINAL:SHA;
           return result("Published mock Git branch\n");
         }
         if(command.startsWith("show-ref --verify --quiet "))
@@ -171,9 +188,21 @@ function fakePluginHost(shared) {
         if(args[0]==="pr"&&args[1]==="create"){
           publication.createCount++;
           publication.pr={number:7,url:"https://github.com/acme/repo/pull/7",
-            headRefName:"feature/api",baseRefName:"main",headRefOid:SHA,
-            isDraft:true,state:"OPEN"};
+            headRefName:finalization.settled?"feature/final":"feature/api",
+            baseRefName:"main",headRefOid:finalization.settled?FINAL:SHA,
+            isDraft:true,state:"OPEN",autoMergeRequest:null};
           return result(publication.pr.url);
+        }
+        if(args[0]==="pr"&&args[1]==="view")
+          return result(JSON.stringify(publication.pr));
+        if(args[0]==="pr"&&args[1]==="ready"){
+          publication.readyCount++;publication.pr.isDraft=false;
+          return result("PR ready\n");
+        }
+        if(args[0]==="pr"&&args[1]==="merge"){
+          publication.mergeCount++;
+          publication.pr.autoMergeRequest={enabledAt:new Date().toISOString()};
+          return result("GitHub auto-merge enabled\n");
         }
       }
       throw new Error("Unexpected host process request "+request.file);
@@ -214,7 +243,7 @@ function fakePluginHost(shared) {
     await resolved.dispose(new AbortController().signal);
     if(!preserve)rmSync(dir,{recursive:true,force:true});
   };
-  return {activate,request,cleanup,sessions,calls,createdWorktrees,publication,convergence,shared:{dir,sessions}};
+  return {activate,request,cleanup,sessions,calls,createdWorktrees,publication,convergence,finalization,shared:{dir,sessions}};
 }
 async function eventually(callback,timeout=6500){
   const started=Date.now();
@@ -579,4 +608,73 @@ test("Real PI WEB scheduler fast-forwards dependent Git Worktree before launchin
     assert.equal(receipts[0].state,"completed");
     assert.equal(receipts[0].sourceSha,SHA);
   }finally{await host.cleanup();}
+});
+
+test("PI WEB full-DAG YOLO creates a fresh final merge Pi Session, final QC, then GitHub auto-merge",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   await host.request("create",{...definition,id:"final-merge-flow"});
+   await host.request("auto.configure",{workflowId:"final-merge-flow",config:{
+     ...config,finalization:{workspaceId:"worktree-final",autoMerge:true},
+     publication:{remote:"origin",baseBranch:"main",draft:true},
+   }});
+   await host.request("auto.start",{workflowId:"final-merge-flow"});
+   const code=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-api-1")&&
+     s.commands.some(c=>c.type==="message")));
+   code.finish();
+   const originalQC=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&c.job?.runId==="qc-api-1")&&
+     s.commands.some(c=>c.type==="message")));
+   originalQC.finish({kind:"qc",runId:"qc-api-1",verdict:"pass",
+     summary:"Code and test evidence verified",at:Date.now()});
+   const finalCode=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&
+       c.job?.runId==="impl-mm-final-integration-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
+   assert.equal(host.publication.pushCount,0,
+     "Intermediate Task cannot publish in a finalization-enabled Workflow");
+   const prompt=finalCode.commands.find(c=>c.type==="message").text;
+   assert.match(prompt,/FINAL integration run/);
+   assert.match(prompt,/Merge ALL source Git commits/);
+   assert.match(prompt,/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/);
+   finalCode.finish();
+   const finalQC=await eventually(()=>[...host.sessions.values()].find(s=>
+     s.commands.some(c=>c.type==="configure"&&
+       c.job?.runId==="qc-mm-final-integration-1")&&
+     s.commands.some(c=>c.type==="message")),15000);
+   assert.notEqual(finalQC.id,finalCode.id);
+   finalQC.finish({kind:"qc",runId:"qc-mm-final-integration-1",
+     verdict:"pass",summary:"Entire combined code independently checked",
+     at:Date.now()});
+   await eventually(async()=>{
+     const state=await host.request("get","final-merge-flow");
+     return state.tasks["mm-final-integration"]?.status==="passed";
+   },15000);
+   await eventually(()=>host.publication.mergeCount===1,15000);
+   assert.equal(host.publication.pushCount,1);
+   assert.equal(host.publication.createCount,1);
+   assert.equal(host.publication.readyCount,1);
+   assert.equal(host.publication.pr.headRefOid,FINAL);
+   assert.equal(host.publication.pr.isDraft,false);
+   assert.equal(host.publication.pr.state,"OPEN");
+   host.publication.pr.state="MERGED";
+   host.publication.pr.autoMergeRequest=null;
+   const status=await eventually(async()=>{
+     const current=await host.request("auto.status",{workflowId:"final-merge-flow"});
+     return current?.enabled===false?current:null;
+   },15000);
+   assert.match(status.status,/finalized|stable|publication/i);
+   const receipts=await host.request("auto.permissions",{workflowId:"final-merge-flow"});
+   assert.ok(receipts.publication.some(r=>
+     r.action==="github.pr.merge"&&r.state==="completed"));
+   assert.equal(host.sessions.size,4,
+     "Original implementation, original QC, final implementation and final QC each own one Pi Session");
+   const state=await host.request("get","final-merge-flow");
+   assert.equal(state.tasks.api.status,"passed");
+   assert.equal(state.tasks["mm-final-integration"].lastQc.headSha,FINAL);
+   assert.ok(!host.calls.some(x=>x.args.includes("--admin")||
+     x.args.includes("--force")||x.args.includes("--delete-branch")));
+ }finally{await host.cleanup();}
 });
