@@ -14,7 +14,15 @@ export interface PublicationConfig {
   baseBranch:string;
   draft:true;
 }
+export interface FinalizationConfig {
+  /** A prelinked non-main PI WEB Worktree dedicated to the combined result. */
+  workspaceId:string;
+  /** End-to-end YOLO: promote Draft PR to ready and use GitHub auto-merge. */
+  autoMerge:boolean;
+}
 export interface AutopilotConfig {
+  /** No final Git integration for legacy configurations unless set explicitly. */
+  finalization?:FinalizationConfig;
   /** Configured publication target enables YOLO push + Draft PR creation.
    * Legacy saved configurations without this field never acquire new network effects. */
   publication?:PublicationConfig;
@@ -67,6 +75,18 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   // the current workflow happens to dispatch those Tasks sequentially.
   if(new Set(Object.values(workspaces)).size!==Object.keys(workspaces).length)
     throw new Error("Each implementation Task requires a distinct linked worktree");
+  let finalization:FinalizationConfig|undefined;
+  if(raw.finalization!==undefined){
+    const f=object(raw.finalization);
+    if(Object.keys(f).some(k=>!["workspaceId","autoMerge"].includes(k)))
+      throw new Error("Unknown finalization field");
+    const workspaceId=str(f.workspaceId,128);
+    if(Object.values(workspaces).includes(workspaceId))
+      throw new Error("Final integration Workspace must be distinct from all coding Worktrees");
+    if(f.autoMerge!==true&&f.autoMerge!==false)
+      throw new Error("Finalization autoMerge must be a boolean");
+    finalization={workspaceId,autoMerge:f.autoMerge};
+  }
   const t=object(raw.test),file=str(t.file,256);
   if(!Array.isArray(t.args)||t.args.length>32||
     !t.args.every(x=>typeof x==="string"&&x.length<=1000))
@@ -92,7 +112,10 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
     if(p.draft!==true)throw new Error("Initial automatic PR publication must be Draft");
     publication={remote,baseBranch,draft:true};
   }
-  return {workspaces, ...(raw.reviewWorkspaces===undefined?{}:{
+  if(finalization&&!publication)
+    throw new Error("Final integration requires a configured GitHub publication destination");
+  return {workspaces, ...(finalization?{finalization}:{}),
+    ...(raw.reviewWorkspaces===undefined?{}:{
     reviewWorkspaces:workspaceMap(raw.reviewWorkspaces)}),
     ...(publication?{publication}:{}),
     models,test:{file,args:t.args as string[],timeoutMs},maxAttempts};
