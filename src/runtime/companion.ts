@@ -253,7 +253,9 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
       // Report replay is explicit and bound to this exact hosted Session.
       if(recorded&&recorded.runId===job.runId)pi.events.emit(REPORT_CHANNEL,recorded);
       respond({requestId:command.requestId,status:"ok",jobRunId:job.runId,
-        idle:context.isIdle(),turnSettled,turnInterrupted,
+        idle:context.isIdle(),
+        ...(turnSettled===undefined?{}:{turnSettled}),
+        ...(turnInterrupted===undefined?{}:{turnInterrupted}),
         hasReport:!!recorded&&recorded.runId===job.runId});
       return;
     }
