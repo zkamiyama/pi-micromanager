@@ -180,9 +180,44 @@ export class PublicationManager {
       throw new Error("Incomplete GitHub PR merge state");
     return row as unknown as FinalPrState;
   }
+  /** Poll exact PR CI without relying on GitHub's optional repository
+   * "Allow auto-merge" setting. Refuse empty, failing or unknown checks.
+   * The PR head is verified again immediately before merge. */
+  private async prChecks(path:string,repo:string,number:number):Promise<"pass"|"pending">{
+    const result=await this.options.host.execFile({
+      file:"gh",args:["pr","checks",String(number),"--repo",repo,
+        "--json","name,bucket"],
+      cwd:path,timeoutMs:45000,signal:this.options.host.lifetimeSignal,
+      unsetEnv:["GH_REPO","GH_HOST","GIT_DIR","GIT_WORK_TREE","GIT_INDEX_FILE"],
+    });
+    if(result.signal||result.stdoutTruncated||result.stderrTruncated||
+      ![0,1,8].includes(result.exitCode??-1))
+      throw new Error("Cannot verify GitHub PR checks; CI state is uncertain");
+    let raw:unknown;
+    try{raw=JSON.parse(result.stdout);}catch{
+      throw new Error("GitHub PR checks did not return valid JSON");
+    }
+    if(!Array.isArray(raw)||raw.length>200)
+      throw new Error("Invalid GitHub PR checks result");
+    let passed=0,waiting=false;
+    for(const item of raw){
+      if(!item||typeof item!=="object"||Array.isArray(item)||
+        typeof (item as Record<string,unknown>).name!=="string"||
+        typeof (item as Record<string,unknown>).bucket!=="string")
+        throw new Error("Malformed GitHub PR check");
+      const bucket=(item as {bucket:string}).bucket;
+      if(bucket==="fail"||bucket==="cancel")
+        throw new Error("GitHub PR checks failed or cancelled; no merge permitted");
+      if(bucket==="pass")passed++;
+      else if(bucket==="pending")waiting=true;
+      else if(bucket!=="skipping")throw new Error("Unknown GitHub PR CI status");
+    }
+    if(raw.length===0||passed===0||waiting)return "pending";
+    return "pass";
+  }
   private async completeFinalPR(record:AutopilotRecord,taskId:string,
     qcRunId:string,sha:string,path:string,branch:string,repo:string,
-    destination:string):Promise<"acted"|"waiting"|"scheduled"|"none">{
+    destination:string):Promise<"acted"|"waiting"|"scheduled"|"checks_pending"|"none">{
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     const pub=record.config.publication!;
     if(!record.config.finalization?.autoMerge)return "none";
@@ -257,7 +292,11 @@ export class PublicationManager {
       return "scheduled";
     }
     if(merge)
-      throw new Error("PR auto-merge is not active after a reserved or scheduled request");
+      throw new Error("Merge response is uncertain: PR is still OPEN without a scheduled request");
+    if(await this.prChecks(path,repo,number)!=="pass")
+      return "checks_pending";
+    // A genuine passing GitHub CI run is mandatory, even if the repository
+    // has no required checks or Allow auto-merge is disabled.
     const receipt=this.reserve(p,o,w,taskId,"github.pr.merge",
       qcRunId,sha,branch,destination);
     this.assertAdmitted(record);
@@ -266,10 +305,13 @@ export class PublicationManager {
       await requireCleanGit(this.options.host,path)!==sha||
       await this.remoteSha(path,pub,branch)!==sha)
       throw new Error("Final PR source was modified before scheduling merge");
-    // --auto uses repository branch protection and required status checks.
-    // No --admin, --delete-branch, or forced merge.
+    // The host has proven all PR checks pass; GitHub independently enforces
+    // its branch protection and review requirements. Unlike --auto, this
+    // works when the repository disables the optional Allow auto-merge flag.
+    // --match-head-commit rejects a changed PR even after our preflight.
+    // Never --admin, --delete-branch, or force.
     await this.gh(path,["pr","merge",String(number),"--repo",repo,
-      "--auto","--merge"]);
+      "--merge","--match-head-commit",sha]);
     const after=await this.finalPrState(path,repo,number);
     if(after.headRefOid!==sha||after.baseRefName!==pub.baseBranch)
       throw new Error("Final PR moved during automatic merge");
@@ -281,10 +323,10 @@ export class PublicationManager {
       this.scheduled(receipt,after.url);
       return "scheduled";
     }
-    throw new Error("GitHub merge result is uncertain; do not repeat without proof");
+    throw new Error("GitHub merge result is uncertain; inspect MERGED before another attempt");
   }
   /** At most one external side effect per tick, after all QC/permission gates. */
-  async step(record:AutopilotRecord,workflow:WorkflowInstance):Promise<"acted"|"waiting"|"scheduled"|"none">{
+  async step(record:AutopilotRecord,workflow:WorkflowInstance):Promise<"acted"|"waiting"|"scheduled"|"checks_pending"|"none">{
     const pub=record.config.publication;
     if(!pub)return "none"; // historical configs do not unexpectedly start network actions
     this.assertAdmitted(record);

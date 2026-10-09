@@ -26,7 +26,7 @@ export interface ExecutorPort {
   /** Optional backwards-compatible host-operated publication. Legacy Workflows
    * with no configured target never publish to a remote. */
   publish?(record:AutopilotRecord,workflow:WorkflowInstance):
-    Promise<"acted"|"waiting"|"scheduled"|"none">;
+    Promise<"acted"|"waiting"|"scheduled"|"checks_pending"|"none">;
   /** Propagate sealed QC code through real dependent Git Worktrees before
    * admitting any Task that might otherwise start on stale source. */
   converge?(record:AutopilotRecord,workflow:WorkflowInstance):
@@ -390,9 +390,15 @@ export class AutopilotEngine {
       if(this.stopping)return;
       if(state==="acted")return;
       if(state==="scheduled"){
-        if(record.status!=="GitHub auto-merge scheduled; waiting for required checks and MERGED state")
+        if(record.status!=="GitHub native auto-merge scheduled; awaiting confirmed MERGED state")
           this.ledger.setStatus(p,o,workflowId,true,
-            "GitHub auto-merge scheduled; waiting for required checks and MERGED state");
+            "GitHub native auto-merge scheduled; awaiting confirmed MERGED state");
+        return;
+      }
+      if(state==="checks_pending"){
+        if(record.status!=="Waiting for GitHub PR checks to pass before safe merge")
+          this.ledger.setStatus(p,o,workflowId,true,
+            "Waiting for GitHub PR checks to pass before safe merge");
         return;
       }
       if(state==="waiting"){

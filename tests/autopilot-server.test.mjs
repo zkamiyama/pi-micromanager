@@ -211,10 +211,15 @@ function fakePluginHost(shared,options={}) {
           publication.readyCount++;publication.pr.isDraft=false;
           return result("PR ready\n");
         }
+        if(args[0]==="pr"&&args[1]==="checks")
+          return result(JSON.stringify([{name:"build-and-test",bucket:"pass"}]));
         if(args[0]==="pr"&&args[1]==="merge"){
+          if(!args.includes("--match-head-commit")||args.includes("--auto")||
+            args.includes("--admin"))
+            throw new Error("Merge should be CI-gated and SHA-bound");
           publication.mergeCount++;
-          publication.pr.autoMergeRequest={enabledAt:new Date().toISOString()};
-          return result("GitHub auto-merge enabled\n");
+          publication.pr.state="MERGED";
+          return result("GitHub merged verified final SHA\n");
         }
       }
       throw new Error("Unexpected host process request "+request.file);
@@ -670,9 +675,7 @@ test("PI WEB full-DAG YOLO creates a fresh final merge Pi Session, final QC, the
    assert.equal(host.publication.readyCount,1);
    assert.equal(host.publication.pr.headRefOid,FINAL);
    assert.equal(host.publication.pr.isDraft,false);
-   assert.equal(host.publication.pr.state,"OPEN");
-   host.publication.pr.state="MERGED";
-   host.publication.pr.autoMergeRequest=null;
+   assert.equal(host.publication.pr.state,"MERGED");
    const status=await eventually(async()=>{
      const current=await host.request("auto.status",{workflowId:"final-merge-flow"});
      return current?.enabled===false?current:null;
@@ -774,11 +777,9 @@ test("Auto-provisioned final Worktree completes QC-gated GitHub MERGED flow",asy
    finalQC.finish({kind:"qc",runId:"qc-mm-final-integration-1",verdict:"pass",
      summary:"Integrated commit checked",at:Date.now()});
    await eventually(()=>host.publication.mergeCount===1,15000);
-   assert.equal(host.publication.pr.state,"OPEN",
-     "An auto-merge request is not a merged PR");
+   assert.equal(host.publication.pr.state,"MERGED",
+     "A completed merge must be confirmed by GitHub, not only host QC");
    assert.equal(host.publication.pushCount,1);
-   host.publication.pr.state="MERGED";
-   host.publication.pr.autoMergeRequest=null;
    await eventually(async()=>(await host.request("get","auto-final-flow"))
      .tasks["mm-final-integration"]?.status==="integrated",15000);
    const wf=await host.request("get","auto-final-flow");

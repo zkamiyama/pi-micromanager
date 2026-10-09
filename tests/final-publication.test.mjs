@@ -59,7 +59,7 @@ function fixture(override={}){
    workflows,ledger);
  let remoteSha=null,pr=null;
  let pushes=0,creates=0,readyCount=0,mergeCount=0,loseMerge=false;
- let commit=FINAL,dirty=false,ancestry=true;
+ let commit=FINAL,dirty=false,ancestry=true,ciState="pass";
  const commands=[];
  const output=(stdout="",exitCode=0)=>({stdout,exitCode,signal:null,
    stderr:"",stdoutTruncated:false,stderrTruncated:false});
@@ -98,11 +98,20 @@ function fixture(override={}){
          readyCount++;if(!pr)throw Error("No PR");
          pr.isDraft=false;return output("Review requested\n");
        }
+       if(command==="pr checks"){
+         const bucket=ciState==="none"?[]:[{name:"build-and-test",bucket:ciState}];
+         return output(JSON.stringify(bucket),ciState==="pending"?8:
+           ciState==="fail"?1:0);
+       }
        if(command==="pr merge"){
          mergeCount++;if(!pr||pr.isDraft)throw Error("Cannot merge draft");
-         pr.autoMergeRequest={enabledAt:new Date().toISOString()};
+         if(!args.includes("--match-head-commit")||
+           args[args.indexOf("--match-head-commit")+1]!==FINAL||
+           args.includes("--admin")||args.includes("--auto"))
+           throw Error("Unsafe GitHub merge options");
+         pr.state="MERGED";
          if(loseMerge){loseMerge=false;throw Error("Lost GitHub merge response");}
-         return output("GitHub auto-merge enabled\n");
+         return output("GitHub merged verified commit\n");
        }
        throw new Error("Unexpected gh "+args.join(" "));
      }
@@ -124,6 +133,7 @@ function fixture(override={}){
    get pr(){return pr;},
    setDirty(v){dirty=v;},setCommit(v){commit=v;},setAncestry(v){ancestry=v;},
    markMerged(){pr.state="MERGED";pr.autoMergeRequest=null;},
+   setCi(v){ciState=v;},
    loseMerge(){loseMerge=true;},
    reopen(){publisher.close();publisher=new PublicationManager(options);},
    tick(){return publisher.step(ledger.get("p","o","all-done"),
@@ -131,7 +141,7 @@ function fixture(override={}){
    close(){publisher.close();approvals.close();ledger.close();
      agents.close();workflows.close();rmSync(dir,{recursive:true,force:true});}};
 }
-test("Final QC only publishes final SHA then readies the Draft PR and requests GitHub auto-merge",async()=>{
+test("Final QC publishes only the verified SHA and waits for CI before a protected merge",async()=>{
  const x=fixture();
  try{
    assert.equal(await x.tick(),"acted");assert.equal(x.pushes,1);
@@ -139,15 +149,11 @@ test("Final QC only publishes final SHA then readies the Draft PR and requests G
    assert.equal(x.pr.isDraft,true);
    assert.equal(await x.tick(),"acted");assert.equal(x.readyCount,1);
    assert.equal(x.pr.isDraft,false);
-   assert.equal(await x.tick(),"scheduled");assert.equal(x.mergeCount,1);
-   assert.ok(x.pr.autoMergeRequest);
-   assert.equal(await x.tick(),"scheduled");
-   assert.equal(x.mergeCount,1,"Never repeat a scheduled GitHub merge");
-   assert.ok(x.publisher.list("p","o","all-done")
-     .some(r=>r.action==="github.pr.merge"&&r.state==="scheduled"));
-   x.markMerged();
+   assert.equal(await x.tick(),"acted");assert.equal(x.mergeCount,1);
+   assert.equal(x.pr.state,"MERGED");
    assert.equal(await x.tick(),"acted");
    assert.equal(await x.tick(),"none");
+   assert.equal(x.mergeCount,1,"Never repeat a confirmed GitHub merge");
    assert.ok(x.publisher.list("p","o","all-done")
      .some(r=>r.action==="github.pr.merge"&&r.state==="completed"));
    assert.ok(!x.commands.some(x=>x.some(arg=>
@@ -173,7 +179,7 @@ test("Merge ask holds the Draft PR and never calls gh pr ready until exact final
    x.approvals.decide("p","o",request.id,"approved");
    assert.equal(await x.tick(),"acted");
    assert.equal(x.readyCount,1);
-   assert.equal(await x.tick(),"scheduled");
+   assert.equal(await x.tick(),"acted");
    assert.equal(x.mergeCount,1);
  }finally{x.close();}
 });
@@ -188,7 +194,7 @@ test("Deny merge leaves Draft PR reviewable without making GitHub auto-merge req
    assert.equal(x.approvals.list("p","o","all-done").length,0);
  }finally{x.close();}
 });
-test("Lost gh merge reply can recover only from a verified GitHub autoMergeRequest",async()=>{
+test("Lost direct-merge response recovers only from exact GitHub MERGED state",async()=>{
  const x=fixture();
  try{
    await x.tick();await x.tick();await x.tick();
@@ -196,10 +202,8 @@ test("Lost gh merge reply can recover only from a verified GitHub autoMergeReque
    await assert.rejects(x.tick(),/Lost GitHub merge response/);
    assert.equal(x.mergeCount,1);
    x.reopen();
-   assert.equal(await x.tick(),"scheduled");
-   assert.equal(x.mergeCount,1,"Do not duplicate ambiguous GitHub merge");
-   x.markMerged();
    assert.equal(await x.tick(),"acted");
+   assert.equal(x.mergeCount,1,"Do not duplicate ambiguous GitHub merge");
    assert.equal(await x.tick(),"none");
  }finally{x.close();}
 });
@@ -218,5 +222,32 @@ test("A dirty or stale final checkout cannot be remotely published or merged",as
    x.setDirty(false);x.setCommit("e".repeat(40));
    await assert.rejects(x.tick(),/differs from QC/);
    assert.equal(x.pushes,0);
+ }finally{x.close();}
+});
+
+test("Missing or pending CI never promotes a PR to MERGED",async()=>{
+ const x=fixture();
+ try{
+   await x.tick();await x.tick();await x.tick();
+   x.setCi("none");
+   assert.equal(await x.tick(),"checks_pending");
+   assert.equal(x.mergeCount,0);
+   x.setCi("pending");
+   assert.equal(await x.tick(),"checks_pending");
+   assert.equal(x.mergeCount,0);
+   x.reopen();
+   x.setCi("pass");
+   assert.equal(await x.tick(),"acted");
+   assert.equal(x.mergeCount,1);
+ }finally{x.close();}
+});
+test("Failing GitHub CI prevents merging even with host QC PASS",async()=>{
+ const x=fixture();
+ try{
+   await x.tick();await x.tick();await x.tick();
+   x.setCi("fail");
+   await assert.rejects(x.tick(),/checks failed/);
+   assert.equal(x.mergeCount,0);
+   assert.equal(x.pr.state,"OPEN");
  }finally{x.close();}
 });
