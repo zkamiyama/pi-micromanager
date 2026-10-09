@@ -42,6 +42,9 @@ function safeBranch(branch:string):boolean{
 }
 export class AutomaticIntegrator {
   private readonly db:DatabaseSync;
+  /** One host-owned Git convergence operation at a time, even when several
+   * independently ticked Workflows reference the same linked Worktree. */
+  private operationQueue:Promise<void>=Promise.resolve();
   constructor(private readonly opt:ConvergenceOptions){
     mkdirSync(dirname(opt.path),{recursive:true,mode:0o700});
     this.db=new DatabaseSync(opt.path);
@@ -151,8 +154,20 @@ export class AutomaticIntegrator {
       throw new Error("Refusing automatic integration into a protected or detached branch");
     return {path:ws.path,head,branch};
   }
-  /** One deterministic action per scheduler tick. No Git merge except ff-only. */
+  /** Serialize Git mutations from concurrent Workflow ticks in this plugin
+   * process; this is not a distributed lock across independent daemon roots. */
   async step(record:AutopilotRecord,workflow:WorkflowInstance):
+    Promise<"acted"|"waiting"|"denied"|"none">{
+    const preceding=this.operationQueue;
+    let release:()=>void=()=>{};
+    this.operationQueue=new Promise<void>(resolve=>{release=resolve;});
+    try{
+      await preceding;
+      return await this.stepOne(record,workflow);
+    }finally{release();}
+  }
+  /** One deterministic action per scheduler tick. No Git merge except ff-only. */
+  private async stepOne(record:AutopilotRecord,workflow:WorkflowInstance):
     Promise<"acted"|"waiting"|"denied"|"none">{
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     for(const source of Object.values(workflow.tasks)){
