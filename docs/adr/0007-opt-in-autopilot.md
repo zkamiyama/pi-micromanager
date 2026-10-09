@@ -16,7 +16,13 @@ Sol intervention planning Run. Never recycle a previous QC or Luna context.
 
 The PI WEB Micromanager tab can validate and save a Workflow Definition JSON
 with explicit Task dependencies, bounded descriptions, and testable per-Task
-`acceptanceCriteria` that are passed unchanged to implementers and QC reviewers. After registering exact existing workspace
+`acceptanceCriteria` that are passed unchanged to implementers and QC reviewers.
+Alternatively a user goal may be submitted to a fresh read-only Sol Pi Session;
+its model-facing `mm_workflow_proposal` tool creates a bounded DAG proposal
+and checks its acyclicity and required acceptance criteria before the typed
+result is emitted. Acceptance is a separate authenticated action calling
+`WorkflowStore.create`; it is idempotent and linked to persisted evidence.
+No prompt alone can enable Autopilot or create a modifying Worktree. After registering exact existing workspace
 IDs and role model profiles, the operator explicitly selects **Start Autopilot**.
 The scheduler does nothing to a workflow that has not opted in. **Pause
 admission** prevents new Task/Run dispatch; it does not abort running Pi turns.
@@ -105,9 +111,13 @@ it does not create/register fresh linked worktrees. Automatic provisioner/GC
 therefore remains blocked pending a public host capability or a separately
 supervised provisioner with safe ownership and discovery.
 
-Autopilot executes **validated, imported DAGs**. Initial natural-language
-goal-to-DAG proposal/approval is a separate milestone; Sol intervention
-planning **is** wired for existing Tasks. The backend interval is not a
+Autopilot executes **validated, reviewed DAGs**. The Sol goal-proposal
+workflow can turn a natural-language objective into an initial, read-only,
+typed `mm_workflow_proposal` report (up to 16 implementation Tasks). That
+proposal is persisted under a separate one-shot Pi Run and cannot start
+implementation. The human explicitly approves it to create the authoritative
+DAG; Worktrees, models, test commands and Autopilot start remain separate
+operator decisions. Sol intervention planning **is also** wired for existing Tasks. The backend interval is not a
 cluster-wide job coordinator: actual provider/auth/worktree restart E2E tests,
 multiple-server leader election, user-attributed audit trails, fully attested
 test logs/screenshots, Git merge policy, and autonomous ADR PR creation all
