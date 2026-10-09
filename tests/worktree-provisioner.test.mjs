@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtempSync,rmSync,existsSync} from "node:fs";
+import {mkdtempSync,rmSync,existsSync,mkdirSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {WorkflowStore} from "../dist/core/store.js";
@@ -38,7 +38,8 @@ function fixture(){
         exitCode=[...registered.values()].some(x=>"refs/heads/"+x.branch===args[3])?0:1;
       }else if(verb.startsWith("worktree add")){
         const path=args[args.length-2],sha=args[args.length-1],branch=args[4];
-        if(failCreate){exitCode=1;stderr="uncertain mock create";}else registered.set(path,{sha,branch});
+        if(failCreate){exitCode=1;stderr="uncertain mock create";}
+        else{mkdirSync(path,{recursive:true,mode:0o700});registered.set(path,{sha,branch});}
       }else if(verb.startsWith("worktree list --porcelain")){
         stdout=[...registered].map(([path,r])=>
           "worktree "+path+"\0HEAD "+r.sha+"\0branch refs/heads/"+r.branch+"\0\0").join("");
