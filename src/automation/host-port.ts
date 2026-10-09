@@ -1,5 +1,5 @@
 /** Public PI WEB Host API adapter for the deterministic Autopilot engine. */
-import { randomUUID } from "node:crypto";
+import { randomUUID,createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type {
   ServerPluginActivationContext, PiWebHostPiSessionsV1,
@@ -178,9 +178,16 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       const clean=before.clean&&after.clean&&before.sha===after.sha;
       const testsPassed=result.exitCode===0&&!result.signal&&
         !result.stdoutTruncated&&!result.stderrTruncated;
-      const details="argv="+JSON.stringify([config.test.file,...config.test.args]).slice(0,350)+
-        " exit="+String(result.exitCode)+" truncated="+String(result.stdoutTruncated||result.stderrTruncated)+
-        " stderr="+result.stderr.slice(-400);
+      // Output may contain credentials or proprietary code. Persist finite
+      // fingerprints and exit metadata, NOT the raw stdout/stderr or arguments.
+      const details="file="+config.test.file.slice(0,100)+
+        " argc="+config.test.args.length+
+        " exit="+String(result.exitCode)+
+        " truncated="+String(result.stdoutTruncated||result.stderrTruncated)+
+        " stdoutBytes="+Buffer.byteLength(result.stdout)+
+        " stdoutSha256="+createHash("sha256").update(result.stdout).digest("hex")+
+        " stderrBytes="+Buffer.byteLength(result.stderr)+
+        " stderrSha256="+createHash("sha256").update(result.stderr).digest("hex");
       return {headSha:after.sha,clean,testsPassed,details};
     },
     onTransition:notify,
