@@ -56,8 +56,13 @@ test("Reviewer capacity counts a real QC seat before admitting a read-only inves
   assert.equal(planNext(w,inFlight,cfg),undefined,
     "Active QC owns the sole reviewer seat; diagnosis must not start");
   w=action(w,{type:"start",taskId:"diag-review-read"});
-  assert.equal(planNext(w,[],cfg),undefined,
-    "Reserved but not yet launched reviewer diagnosis blocks another QC");
+  const own=planNext(w,[],cfg);
+  assert.deepEqual(own,{action:"launch",taskId:"diag-review-read",
+    runId:"task-diag-review-read-1",seat:"qc",kind:"diagnosis"},
+    "An already-reserved reviewer Task may launch its own Session");
+  assert.equal(planNext(w,[{workflowId:w.definition.id,taskId:"diag-review-read",
+    runId:own.runId,seat:"qc",phase:"running"}],cfg),undefined,
+    "The occupied reviewer slot blocks a second QC while diagnosis runs");
 });
 
 test("Planner capacity includes live Sol planning sessions when synthesis becomes ready",()=>{
@@ -286,6 +291,8 @@ test("Four investigators use maximum 2 architect + 1 reviewer slots without over
    peakArchitect=Math.max(peakArchitect,architects);
    peakReviewer=Math.max(peakReviewer,reviewers);
    assert.ok(architects<=2&&reviewers<=1,"Diagnostic role quota exceeded");
+   const complete=Object.values(w.tasks).filter(t=>t.spec.kind==="diagnosis");
+   if(complete.length===4&&complete.every(t=>t.status==="done"))break;
    const next=planNext(w,bindings,cfg);
    if(next?.action==="start"){
      w=action(w,{type:"start",taskId:next.taskId});
@@ -306,8 +313,6 @@ test("Four investigators use maximum 2 architect + 1 reviewer slots without over
      w=action(w,{type:"complete",taskId:running.spec.id});
      continue;
    }
-   const diag=Object.values(w.tasks).filter(t=>t.spec.kind==="diagnosis");
-   if(diag.length===4&&diag.every(t=>t.status==="done"))break;
    throw Error("Investigator deadlock: "+JSON.stringify(Object.values(w.tasks)
      .map(t=>[t.spec.id,t.status])));
  }
