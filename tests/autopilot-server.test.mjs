@@ -26,6 +26,7 @@ function fakePluginHost(shared) {
   const lifetime = new AbortController();
   const sessions = shared?.sessions??new Map();
   const calls = [];
+  const publication={remoteSha:null,pr:null,pushCount:0,createCount:0};
   const createdWorktrees=new Map();
   let serial = sessions.size;
   const workspace = id => ({
@@ -116,6 +117,17 @@ function fakePluginHost(shared) {
           return result("");
         if(command.startsWith("merge-base --is-ancestor "))
           return result("");
+        if(command==="symbolic-ref --quiet --short HEAD")
+          return result("feature/api\n");
+        if(command==="remote get-url origin")
+          return result("https://github.com/acme/repo.git\n");
+        if(command==="ls-remote --heads origin refs/heads/feature/api")
+          return result(publication.remoteSha?
+            publication.remoteSha+"\trefs/heads/feature/api\n":"");
+        if(command==="push --porcelain origin HEAD:refs/heads/feature/api"){
+          publication.pushCount++;publication.remoteSha=SHA;
+          return result("Published mock Git branch\n");
+        }
         if(command.startsWith("show-ref --verify --quiet "))
           return {...result(""),exitCode:1};
         if(command.startsWith("worktree add --no-track -b ")){
@@ -132,6 +144,17 @@ function fakePluginHost(shared) {
       }
       if(request.file==="node"&&args.join(" ")==="--test")
         return result("mock test suite success\n");
+      if(request.file==="gh"){
+        if(args[0]==="pr"&&args[1]==="list")
+          return result(JSON.stringify(publication.pr?[publication.pr]:[]));
+        if(args[0]==="pr"&&args[1]==="create"){
+          publication.createCount++;
+          publication.pr={number:7,url:"https://github.com/acme/repo/pull/7",
+            headRefName:"feature/api",baseRefName:"main",headRefOid:SHA,
+            isDraft:true,state:"OPEN"};
+          return result(publication.pr.url);
+        }
+      }
       throw new Error("Unexpected host process request "+request.file);
     },
   });
@@ -170,7 +193,7 @@ function fakePluginHost(shared) {
     await resolved.dispose(new AbortController().signal);
     if(!preserve)rmSync(dir,{recursive:true,force:true});
   };
-  return {activate,request,cleanup,sessions,calls,createdWorktrees,shared:{dir,sessions}};
+  return {activate,request,cleanup,sessions,calls,createdWorktrees,publication,shared:{dir,sessions}};
 }
 async function eventually(callback,timeout=6500){
   const started=Date.now();
@@ -385,5 +408,54 @@ test("Public integration API advances a QC-passed DAG only after reviewed target
     assert.ok(!host.calls.some(call=>call.file==="git"&&
       ["merge","push","cherry-pick","reset"].includes(call.args[2])),
       "The verification API must not perform a Git mutation");
+  }finally{await host.cleanup();}
+});
+
+test("PI WEB public server fully gates YOLO Git push and Draft PR on two exact approvals",async()=>{
+  const host=fakePluginHost();
+  try{
+    await host.activate();
+    await host.request("create",{...definition,id:"yolo",
+      permissions:{actions:{"git.push":"ask","github.pr.create":"ask"}}});
+    await host.request("auto.configure",{workflowId:"yolo",config:{
+      ...config,publication:{remote:"origin",baseBranch:"main",draft:true},
+    }});
+    await host.request("auto.start",{workflowId:"yolo"});
+    const impl=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.kind==="implementation")&&
+      s.commands.some(c=>c.type==="message")));
+    impl.finish();
+    const qc=await eventually(()=>[...host.sessions.values()].find(s=>
+      s.commands.some(c=>c.type==="configure"&&c.job?.kind==="qc")&&
+      s.commands.some(c=>c.type==="message")));
+    qc.finish({kind:"qc",runId:"qc-api-1",verdict:"pass",
+      summary:"Verified contract",at:Date.now()});
+    await eventually(async()=>(await host.request("get","yolo")).tasks.api.status==="passed");
+    const askPush=await eventually(async()=>{
+      const approvals=await host.request("auto.permissions",{workflowId:"yolo"});
+      return approvals.approvals.find(a=>a.action==="git.push");
+    });
+    assert.equal(askPush.state,"pending");
+    assert.equal(host.publication.pushCount,0);
+    assert.equal(host.publication.createCount,0);
+    await host.request("auto.permission.decide",{
+      approvalId:askPush.id,decision:"approved"});
+    await eventually(()=>host.publication.pushCount===1);
+    const askPr=await eventually(async()=>{
+      const approvals=await host.request("auto.permissions",{workflowId:"yolo"});
+      return approvals.approvals.find(a=>a.action==="github.pr.create");
+    });
+    assert.equal(askPr.state,"pending");
+    assert.equal(host.publication.createCount,0);
+    await host.request("auto.permission.decide",{
+      approvalId:askPr.id,decision:"approved"});
+    await eventually(()=>host.publication.createCount===1);
+    const final=await host.request("auto.permissions",{workflowId:"yolo"});
+    assert.equal(final.publication.length,2);
+    assert.ok(final.publication.every(x=>x.state==="completed"));
+    assert.equal(host.publication.pr.isDraft,true);
+    assert.equal((await host.request("get","yolo")).tasks.api.status,"passed",
+      "Host may not mark the Git change integrated or merged just because PR exists");
+    assert.equal(host.sessions.size,2,"Human approvals must not replay previous Pi Sessions");
   }finally{await host.cleanup();}
 });
