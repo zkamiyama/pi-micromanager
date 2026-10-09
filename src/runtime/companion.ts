@@ -3,15 +3,20 @@
  * Companions expose only public text/tool names; no hidden reasoning or tool args.
  */
 import { createHash } from "node:crypto";
+import { Type } from "@earendil-works/pi-ai";
+import { REPORT_CHANNEL, type RunReport } from "../automation/report.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   CONTROL_CHANNEL, RECEIPT_CHANNEL, ACTIVITY_CHANNEL, parseRuntimeControl,
-  type RuntimeControl, type RuntimeReceipt, type RuntimeActivity, type ActivityKind,
+  type RuntimeControl, type RuntimeReceipt, type RuntimeActivity, type ActivityKind, type RunJobContext,
 } from "./protocol.js";
 
 type StoredReceipt = { id: string; hash: string; result: RuntimeReceipt };
 const receiptEntry = "pi-micromanager:receipt";
 const claimEntry = "pi-micromanager:claim";
+const jobEntry = "pi-micromanager:job:v1";
+const reportEntry = "pi-micromanager:report:v1";
+const safeReadTools=new Set(["read","grep","find","ls","mm_qc_report","mm_task_report"]);
 function digest(control: RuntimeControl): string {
   return createHash("sha256").update(JSON.stringify(control)).digest("hex");
 }
@@ -24,6 +29,8 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
   let sequence = 0;
   let lastPublicText = "";
   let lastEmitAt = 0;
+  let job:RunJobContext|undefined;
+  let recorded:RunReport|undefined;
   const receipts = new Map<string, StoredReceipt>();
   const claims = new Map<string, string>();
 
@@ -38,10 +45,23 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
   function reloadReceipts(context: ExtensionContext): void {
     receipts.clear();
     claims.clear();
+    job=undefined;recorded=undefined;
     // Custom entries do not enter the model context; this is a bounded
     // command receipt and an uncertain-send marker, not a duplicated transcript.
     for (const entry of context.sessionManager.getEntries()) {
       if (entry.type !== "custom") continue;
+      if(entry.customType===jobEntry){
+        const data:unknown=entry.data;
+        if(data&&typeof data==="object"&&"kind" in data&&"runId" in data)
+          job=data as RunJobContext;
+        continue;
+      }
+      if(entry.customType===reportEntry){
+        const data:unknown=entry.data;
+        if(data&&typeof data==="object"&&"runId" in data&&"kind" in data)
+          recorded=data as RunReport;
+        continue;
+      }
       if (entry.customType !== claimEntry && entry.customType !== receiptEntry) continue;
       const data: unknown = entry.data;
       if (!data || typeof data !== "object" || Array.isArray(data) ||
@@ -56,7 +76,7 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
     }
   }
   pi.on("session_start", (_event, context) => { ctx = context; reloadReceipts(context); });
-  pi.on("session_shutdown", () => { ctx = undefined; receipts.clear(); claims.clear(); });
+  pi.on("session_shutdown", () => { ctx = undefined;job=undefined;recorded=undefined;receipts.clear(); claims.clear(); });
 
   pi.on("agent_start", () => { lastPublicText = ""; activity("agent_started", "Agent started"); });
   pi.on("agent_settled", event =>
@@ -86,6 +106,49 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
 
   // PI WEB's pi-session-events connection is a narrow shared event bus. It has
   // no transport-level acknowledgment; this extension supplies one explicitly.
+
+  // A report is one structured model assertion; host Git/test checks remain mandatory.
+  pi.registerTool({
+    name:"mm_qc_report",label:"Submit QC verdict",
+    description:"Submit the final QC verdict exactly once after inspecting code and evidence. This cannot approve merging.",
+    parameters:Type.Object({
+      verdict:Type.Union([Type.Literal("pass"),Type.Literal("fail"),Type.Literal("inconclusive")]),
+      summary:Type.String({minLength:1,maxLength:2000}),
+    }),
+    async execute(_toolId,params){
+      if(!job||job.kind!=="qc")throw new Error("Not bound to an automated QC Run");
+      if(recorded)throw new Error("A verdict was already submitted for this Run");
+      const report:RunReport={kind:"qc",runId:job.runId,verdict:params.verdict,
+        summary:params.summary,at:Date.now()};
+      pi.appendEntry(reportEntry,report);
+      recorded=report;
+      pi.events.emit(REPORT_CHANNEL,report);
+      return {content:[{type:"text" as const,text:"QC verdict recorded; host validation still required."}],
+        details:report};
+    },
+  });
+  pi.registerTool({
+    name:"mm_task_report",label:"Submit task result",
+    description:"Submit one concise evidence-backed summary for a diagnosis or synthesis Task.",
+    parameters:Type.Object({summary:Type.String({minLength:1,maxLength:2000})}),
+    async execute(_toolId,params){
+      if(!job||(job.kind!=="diagnosis"&&job.kind!=="synthesis"))
+        throw new Error("Not bound to a diagnosis or synthesis Run");
+      if(recorded)throw new Error("A Task result was already submitted for this Run");
+      const report:RunReport={kind:"task",runId:job.runId,summary:params.summary,at:Date.now()};
+      pi.appendEntry(reportEntry,report);
+      recorded=report;
+      pi.events.emit(REPORT_CHANNEL,report);
+      return {content:[{type:"text" as const,text:"Task result recorded for the Orchestrator."}],
+        details:report};
+    },
+  });
+  pi.on("tool_call",event=>{
+    if(job&&job.kind!=="implementation"&&!safeReadTools.has(event.toolName))
+      return {block:true,reason:"This automated "+job.kind+" Session is read-only"};
+    return;
+  });
+
   pi.events.on(CONTROL_CHANNEL, input => {
     const command = parseRuntimeControl(input);
     if (!command) return;
@@ -151,6 +214,16 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
             message: "Pi did not accept the exact requested effort" });
           return;
         }
+      }
+      if(command.job){
+        if(job&&JSON.stringify(job)!==JSON.stringify(command.job)){
+          respond({requestId:command.requestId,status:"failed",code:"job_already_bound"});
+          return;
+        }
+        job=command.job;
+        pi.appendEntry(jobEntry,job);
+        if(job.kind!=="implementation")
+          pi.setActiveTools([...pi.getActiveTools().filter(name=>safeReadTools.has(name))]);
       }
       if (command.sessionName !== undefined) pi.setSessionName(command.sessionName);
       activity("model_changed", command.provider + "/" + command.model);
