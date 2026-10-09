@@ -113,6 +113,27 @@ export function workspaceFor(task:TaskState,kind:JobKind,config:AutopilotConfig,
     return config.reviewWorkspaces?.[task.parentTaskId]??config.workspaces[task.parentTaskId];
   return orchestraWorkspaceId;
 }
+/** Read-only review capacity is shared between QC Pi Sessions and
+ * reviewer-role diagnosis Tasks. Count running diagnoses (also when their
+ * Session has not yet launched) plus active implementation-QC leases. */
+function reviewerSlots(workflow:WorkflowInstance,agents:readonly AgentBinding[]):number{
+  const diagnoses=Object.values(workflow.tasks).filter(t=>
+    t.status==="running"&&t.spec.role==="reviewer").length;
+  const qcLeases=agents.filter(a=>a.workflowId===workflow.definition.id&&
+    a.seat==="qc"&&workflow.tasks[a.taskId]?.spec.kind==="implementation"&&
+    !["settled","sealed","failed"].includes(a.phase)).length;
+  return diagnoses+qcLeases;
+}
+/** Planning Sol runs are external to the DAG while synthesis is a Task.
+ * Their shared planner-role cap must never admit both at capacity one. */
+function plannerSlots(workflow:WorkflowInstance,agents:readonly AgentBinding[]):number{
+  const synthesis=Object.values(workflow.tasks).filter(t=>
+    t.status==="running"&&t.spec.role==="planner").length;
+  const plans=agents.filter(a=>a.workflowId===workflow.definition.id&&
+    a.seat==="planner"&&a.runId.startsWith("plan-")&&
+    !["settled","sealed","failed"].includes(a.phase)).length;
+  return synthesis+plans;
+}
 export function planNext(workflow:WorkflowInstance,agents:readonly AgentBinding[],config:AutopilotConfig):
   {action:"start";taskId:string}|{action:"launch";taskId:string;runId:string;seat:Seat;kind:JobKind}|undefined {
   for(const task of Object.values(workflow.tasks)){
@@ -121,6 +142,10 @@ export function planNext(workflow:WorkflowInstance,agents:readonly AgentBinding[
     const active=Object.values(workflow.tasks).filter(t=>t.status==="running"&&
       t.spec.role===task.spec.role).length;
     if(active>=workflow.definition.maxParallelByRole[task.spec.role])continue;
+    if(task.spec.role==="reviewer"&&
+      reviewerSlots(workflow,agents)>=workflow.definition.maxParallelByRole.reviewer)continue;
+    if(task.spec.role==="planner"&&
+      plannerSlots(workflow,agents)>=workflow.definition.maxParallelByRole.planner)continue;
     if(task.spec.kind==="implementation"&&!implementationWorkspace(task,config))continue;
     return {action:"start",taskId:task.spec.id};
   }
@@ -130,12 +155,8 @@ export function planNext(workflow:WorkflowInstance,agents:readonly AgentBinding[
     const seat=kind==="qc"?"qc":roles[task.spec.role];
     const runId=expectedRunId(task);
     if(agents.some(a=>a.workflowId===workflow.definition.id&&a.runId===runId))continue;
-    if(kind==="qc"){
-      const qcCapacity=workflow.definition.maxParallelByRole.reviewer;
-      const busyQc=agents.filter(a=>a.workflowId===workflow.definition.id&&a.seat==="qc"&&
-        !["settled","sealed","failed"].includes(a.phase)).length;
-      if(busyQc>=qcCapacity)continue;
-    }
+    if(kind==="qc"&&
+      reviewerSlots(workflow,agents)>=workflow.definition.maxParallelByRole.reviewer)continue;
     if(task.spec.kind==="implementation"&&kind==="implementation"&&!implementationWorkspace(task,config))continue;
     if(task.spec.kind==="implementation"&&kind==="qc"&&!implementationWorkspace(task,config))continue;
     return {action:"launch",taskId:task.spec.id,runId,seat,kind};
@@ -234,6 +255,8 @@ export class AutopilotEngine {
       }
       const target=current.tasks[amendment.targetTaskId];
       if(!target)throw new Error("Orphan planning amendment");
+      if(plannerSlots(current,known)>=current.definition.maxParallelByRole.planner)
+        continue;
       const roles=record.config.models;
       const prompt=boundedPrompt(
         "You are Sol, planning a human-requested Task-scoped QC investigation. READ ONLY. "+
