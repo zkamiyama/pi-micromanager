@@ -9,6 +9,9 @@ export interface Dependency { taskId: string; gate: Gate }
 export interface TaskSpec {
   id: string;
   title: string;
+  /** Bounded instructions and acceptance criteria shared by implementation and QC. */
+  description?: string;
+  acceptanceCriteria?: string[];
   kind: TaskKind;
   role: Role;
   dependsOn: Dependency[];
@@ -106,7 +109,17 @@ export function validateDefinition(def: WorkflowDefinition): void {
   const tasks = new Map<string, TaskSpec>();
   for (const task of def.tasks) {
     invariant(task !== null && validId(task.id) && !tasks.has(task.id), "duplicate_task", "Task IDs must be unique lowercase kebab-case");
-    invariant(typeof task.title === "string" && !!task.title.trim(), "invalid_task", `Title required for ${task.id}`);
+    invariant(typeof task.title === "string" && !!task.title.trim() && task.title.length <= 200,
+      "invalid_task", `Title must be 1..200 characters for ${task.id}`);
+    if(task.description!==undefined)
+      invariant(typeof task.description==="string"&&!!task.description.trim()&&
+        task.description.length<=4000,"invalid_description",
+        `Description must be 1..4000 characters for ${task.id}`);
+    if(task.acceptanceCriteria!==undefined)
+      invariant(Array.isArray(task.acceptanceCriteria)&&task.acceptanceCriteria.length>=1&&
+        task.acceptanceCriteria.length<=20&&task.acceptanceCriteria.every(x=>
+          typeof x==="string"&&!!x.trim()&&x.length<=500),
+        "invalid_acceptance","Acceptance criteria must be 1..20 nonempty lines <=500 characters");
     invariant(roles.includes(task.role) && ["implementation", "diagnosis", "synthesis"].includes(task.kind), "invalid_task", `Invalid kind or role for ${task.id}`);
     invariant(Array.isArray(task.dependsOn), "invalid_dependencies", `dependsOn required for ${task.id}`);
     if (task.model !== undefined) invariant(typeof task.model === "string" && task.model.length <= 160, "invalid_model", "Invalid model ID");
@@ -399,7 +412,9 @@ export function parseDefinition(input: unknown): WorkflowDefinition {
       return { taskId: dep.taskId as string, gate: dep.gate as Gate };
     });
     return { id: t.id as string, title: t.title as string, kind: t.kind as TaskKind, role: t.role as Role, dependsOn: deps,
-      ...(t.model === undefined ? {} : { model: t.model as string }) };
+      ...(t.model === undefined ? {} : { model: t.model as string }),
+      ...(t.description===undefined?{}:{description:t.description as string}),
+      ...(t.acceptanceCriteria===undefined?{}:{acceptanceCriteria:t.acceptanceCriteria as string[]}) };
   });
   const def = { id: raw.id as string, title: raw.title as string, maxQcRounds: raw.maxQcRounds as number,
     maxParallelByRole: raw.maxParallelByRole as Record<Role, number>, tasks };
