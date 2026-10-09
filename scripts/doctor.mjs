@@ -28,7 +28,10 @@ const version=process.versions.node.split(".").map(Number);
 report(version[0]>22||(version[0]===22&&version[1]>=19),
   "Node.js >=22.19 required (installed "+process.versions.node+")");
 report(run("git",["--version"]).ok,"Git command available");
-report(run("npm",["--version"]).ok,"npm command available");
+// `npm run doctor` itself proves npm is available. On native Windows,
+ // npm.cmd cannot reliably be spawned with execFile-style argv-only calls.
+report(Boolean(process.env.npm_execpath)||run("npm",["--version"]).ok,
+  "npm command available");
 report(run("gh",["--version"]).ok,"GitHub CLI (gh) available");
 report(run("gh",["auth","status"]).ok,"GitHub CLI authenticated for host-side publication");
 report(run("pi",["--version"]).ok,"Pi CLI available on this PATH",false);
