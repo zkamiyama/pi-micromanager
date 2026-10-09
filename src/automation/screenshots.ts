@@ -11,7 +11,7 @@ import type {WorkflowStore} from "../core/store.js";
 import type {AgentRegistry} from "../runtime/registry.js";
 import type {AutopilotLedger} from "./ledger.js";
 import {automationScope} from "./ledger.js";
-import {requireCleanGit,type GitHost} from "./git.js";
+import {gitValue,gitSha,requireCleanGit,type GitHost} from "./git.js";
 
 const MAX_IMAGE=1024*1024;
 const MAX_INLINE=512*1024;
@@ -134,6 +134,18 @@ export class ScreenshotEvidence {
     const head=await requireCleanGit(this.options.host,ws.path);
     if(head!==task.lastQc.headSha)
       throw new Error("Screenshot Git HEAD differs from the QC-evaluated SHA");
+    if(!PATH_PATTERN.test(relativePath))
+      throw new Error("Screenshots must be screenshots/<safe-file>.png/.jpg");
+    // A clean Worktree does not prove an ignored file is part of Git HEAD.
+    // Require exact tracked blob identity in the verified QC commit.
+    const commitBlob=await gitValue(this.options.host,ws.path,
+      ["rev-parse","HEAD:"+relativePath]).catch(()=>{
+        throw new Error("Screenshot is absent from the QC-reviewed Git commit");
+      });
+    const diskBlob=await gitValue(this.options.host,ws.path,
+      ["hash-object","--",relativePath]);
+    if(!gitSha(commitBlob)||commitBlob!==diskBlob)
+      throw new Error("Screenshot bytes do not match the QC-reviewed Git blob");
     const blob=safeScreenshotBytes(ws.path,relativePath);
     const mime=mimeOf(blob,relativePath);
     const sha256=createHash("sha256").update(blob).digest("hex");
