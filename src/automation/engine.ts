@@ -27,6 +27,10 @@ export interface ExecutorPort {
    * with no configured target never publish to a remote. */
   publish?(record:AutopilotRecord,workflow:WorkflowInstance):
     Promise<"acted"|"waiting"|"none">;
+  /** Propagate sealed QC code through real dependent Git Worktrees before
+   * admitting any Task that might otherwise start on stale source. */
+  converge?(record:AutopilotRecord,workflow:WorkflowInstance):
+    Promise<"acted"|"waiting"|"denied"|"none">;
   /** Authorize a modifying Pi attempt before opening its Session. */
   authorizeImplementation?(record:AutopilotRecord,workflow:WorkflowInstance,
     taskId:string,nextAttempt:number):"allow"|"ask"|"deny";
@@ -252,6 +256,22 @@ export class AutopilotEngine {
         throw new Error("Run "+binding.runId+" needs reconciliation ("+binding.phase+"); no duplicate Session will start");
     }
     if(this.stopping)return;
+    if(this.port.converge){
+      const decision=await this.port.converge(record,current);
+      if(this.stopping)return;
+      if(decision==="acted")return;
+      if(decision==="denied"){
+        this.ledger.setStatus(p,o,workflowId,false,
+          "Automatic dependent Git integration denied by Workflow policy; manual reconciliation required");
+        return;
+      }
+      if(decision==="waiting"){
+        if(record.status!=="Awaiting exact Git integration permission")
+          this.ledger.setStatus(p,o,workflowId,true,
+            "Awaiting exact Git integration permission");
+        return;
+      }
+    }
     const next=planNext(current,known,record.config);
     if(next?.action==="start"){
       const nextAttempt=current.tasks[next.taskId]!.attempts+1;
