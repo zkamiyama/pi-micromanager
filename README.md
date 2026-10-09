@@ -65,6 +65,17 @@ The older preview-before-approval Sol workflow remains available. See
 - [ADR-0014 — Automatic managed Git Worktrees and PI WEB identity discovery](docs/adr/0014-automatic-worktree-discovery.md)
 - [ADR-0015 — Durable one-command natural-language DAG launch](docs/adr/0015-one-command-goal-launch.md)
 
+## Adversarial concurrency and intervention verification
+
+Run `npm run test:adversarial` to exercise exhaustive QC/human-barrier
+permutations, simultaneous Sol planning, reviewer/QC and
+synthesis/planner shared capacity, 32-way worker saturation, randomized
+turn completion/retry, and reentrant scheduler admission. See the
+[test matrix and limitations](docs/ADVERSARIAL_TESTING.md).
+These are deterministic mocked-Pi and core SQLite tests; the existing CI
+also exercises disposable real Git Worktrees and GitHub publication
+mocks. They do **not** replace authenticated PI WEB host soak tests.
+
 ## Development
 
 Requires Node.js 22.19+ (PI WEB version constraint). Runtime plugin compatibility should be tested against the installed PI WEB version; source APIs are versioned and may evolve.
