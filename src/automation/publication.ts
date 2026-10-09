@@ -206,6 +206,17 @@ export class PublicationManager {
       const merged=this.reserve(p,o,w,taskId,"github.pr.merge",
         qcRunId,sha,branch,destination);
       if(merged.state!=="completed")this.complete(merged,inspected.url);
+      // Actual GitHub MERGED state, not a scheduled autoMergeRequest,
+      // is the only proof that permits the final DAG integration transition.
+      const current=this.options.workflows.get(p,o,w);
+      const finalTask=current.tasks[taskId];
+      if(finalTask?.status==="passed"){
+        this.options.workflows.act(p,o,w,current.revision,
+          "auto:remote-merge:"+qcRunId,{type:"integrate",taskId});
+        return "acted";
+      }
+      if(finalTask?.status!=="integrated")
+        throw new Error("Final Workflow Task was changed after GitHub merged");
       return merge?.state==="completed"?"none":"acted";
     }
     if(inspected.state!=="OPEN")
@@ -216,6 +227,11 @@ export class PublicationManager {
       const receipt=this.reserve(p,o,w,taskId,"github.pr.ready",
         qcRunId,sha,branch,destination);
       this.assertAdmitted(record);
+      if(this.options.agents.hasUnsealedWorkspace(p,
+        record.config.finalization!.workspaceId)||
+        await requireCleanGit(this.options.host,path)!==sha||
+        await this.remoteSha(path,pub,branch)!==sha)
+        throw new Error("Final PR source changed before Ready transition");
       await this.gh(path,["pr","ready",String(number),"--repo",repo]);
       const after=await this.finalPrState(path,repo,number);
       if(after.isDraft||after.headRefOid!==sha||after.baseRefName!==pub.baseBranch)
