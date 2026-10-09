@@ -25,7 +25,7 @@ interface GridState {
   taskId:string;
   targetWorkspaceId:string;
   provider:string; model:string; effort:string;
-  message:string; mode:Mode; evidenceRef:string;
+  evidenceRef:string;
   density:Record<Seat,"compact"|"expanded">;
   activity:Map<string,Activity[]>;
   loadStatus:string;
@@ -39,6 +39,7 @@ interface GridState {
   nodePositions:Map<string,CanvasPosition>;
   nodeDrafts:Map<string,string>;
   nodeModes:Map<string,Mode>;
+  deliveryStatus:Map<string,string>;
   drag?:{key:string;pointerId:number;startX:number;startY:number;origin:CanvasPosition};
 }
 const states=new Map<string,GridState>();
@@ -50,11 +51,11 @@ function stateFor(ctx:WorkspacePanelContext):GridState{
   if(!s){
     s={active:[],history:[],workflows:[],selectedSessionId:"",workflowId:"",taskId:"",
       targetWorkspaceId:ctx.workspace.id,provider:"openai-codex",model:"",effort:"",
-      message:"",mode:"steer",evidenceRef:"",
+      evidenceRef:"",
       density:{planner:"expanded",implementer:"compact",qc:"expanded",architect:"expanded"},
       activity:new Map(),loadStatus:"Not connected.",busy:false,loaded:false,
       listening:false,connecting:false,canvasDimmed:false,canvasPage:0,
-       plannerSessionId:"",nodePositions:new Map(),nodeDrafts:new Map(),nodeModes:new Map()};
+       plannerSessionId:"",nodePositions:new Map(),nodeDrafts:new Map(),nodeModes:new Map(),deliveryStatus:new Map()};
     states.set(k,s);
   }
   return s;
@@ -99,6 +100,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
        for(const key of s.nodePositions.keys())if(!activeKeys.has(key))s.nodePositions.delete(key);
        for(const key of s.nodeDrafts.keys())if(!activeKeys.has(key))s.nodeDrafts.delete(key);
        for(const key of s.nodeModes.keys())if(!activeKeys.has(key))s.nodeModes.delete(key);
+       for(const key of s.deliveryStatus.keys())if(!activeKeys.has(key))s.deliveryStatus.delete(key);
       if(!s.workflows.some(w=>w.definition.id===s.workflowId))
         s.workflowId=s.workflows[0]?.definition.id??"";
       const wf=s.workflows.find(w=>w.definition.id===s.workflowId);
@@ -167,7 +169,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
   }
   lifetime.addEventListener("abort",()=>{
     for(const s of states.values()){s.controller?.abort();s.channel?.close();s.activity.clear();
-      s.nodePositions.clear();s.nodeDrafts.clear();s.nodeModes.clear();}
+      s.nodePositions.clear();s.nodeDrafts.clear();s.nodeModes.clear();s.deliveryStatus.clear();}
     states.clear();
   },{once:true});
 
@@ -195,13 +197,16 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       if(receipt?.status==="ok"){
         // Acknowledged only. Do not treat acknowledgement as proof the Agent finished.
         s.nodeDrafts.delete(key);
-        s.loadStatus="Command acknowledged by "+b.runId+".";
+         s.loadStatus="Command acknowledged by "+b.runId+".";
+        s.deliveryStatus.set(key,s.loadStatus);
       }else{
         // Keep the draft and never automatically retry an uncertain delivery.
         s.loadStatus="Command to "+b.runId+" "+(receipt?.status??"unknown")+
           ": "+(receipt?.message??"Check session state before retrying.");
+        s.deliveryStatus.set(key,s.loadStatus);
       }
-    }catch(error){s.loadStatus="Command to "+b.runId+" failed: "+String(error);}
+    }catch(error){s.loadStatus="Command to "+b.runId+" failed: "+String(error);
+      s.deliveryStatus.set(key,s.loadStatus);}
     finally{s.busy=false;refresh(ctx);void load(ctx);}
   }
   function startDrag(ctx:WorkspacePanelContext,key:string,origin:CanvasPosition,event:PointerEvent){
@@ -250,6 +255,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
     const task=wf?.tasks[s.taskId];
     const selected=[...s.active,...s.history].find(b=>b.sessionId===s.selectedSessionId);
     const selectedActive=selected&&!phaseEnded(selected.phase);
+    const selectedKey=selected?runKey(selected.workflowId,selected.runId):"";
     const taskRole:Seat=task?.spec.kind==="implementation"?
       (task.status==="awaiting_qc"?"qc":"implementer"):
       task?.spec.kind==="synthesis"?"planner":task?.spec.role==="architect"?"architect":"qc";
@@ -269,14 +275,14 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         provider:s.provider,model:s.model,...(s.effort?{effort:s.effort}:{}),
       });
     };
-    const send=(action:Mode|"abort"|"reconnect"|"seal")=>{
+    const send=(action:"abort"|"reconnect"|"seal")=>{
       if(!selected?.sessionId)return;
       if(action==="reconnect"){void call(ctx,"agents.reconnect",{sessionId:selected.sessionId});return}
       if(action==="seal"){void call(ctx,"agents.seal",{
         sessionId:selected.sessionId,evidenceRef:s.evidenceRef});return}
+      if(!isCommandReady(selected))return;
       void call(ctx,"agents.command",{
-        sessionId:selected.sessionId,action,requestId:crypto.randomUUID(),
-        ...(action==="abort"?{}:{text:s.message}),
+        sessionId:selected.sessionId,action:"abort",requestId:crypto.randomUUID(),
       });
     };
 
@@ -337,6 +343,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
           <small title=${b.runId}>${b.runId} · ${b.model?b.provider+"/"+b.model:"Not configured"}</small>
         </div>
         <div class="mm-f-node-log" aria-label=${"Public activity for "+b.runId}>
+          ${s.deliveryStatus.get(key)?html`<p class="mm-f-receipt" role="status">${s.deliveryStatus.get(key)}</p>`:null}
           ${expanded&&latest.length?latest.map(item=>html`<p><small>${item.kind}</small> ${item.text||"(no text)"}</p>`):
             html`<p>${b.latestText??(b.sessionId?"Waiting for Pi activity…":"Pi Session not created.")}</p>`}
         </div>
@@ -439,20 +446,25 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         <small>${selected.phase} · Session ${selected.sessionId??"not yet created"} · ${selected.workspaceId}</small>
         <div class="mm-f-activity">${(s.activity.get(selected.sessionId??"")??[]).map(event=>
           html`<p><small>${event.kind}</small> ${event.text}</p>`)}</div>
+
         ${selectedActive?html`<div>
           <label>Delivery
-            <select .value=${s.mode} @change=${(e:Event)=>{s.mode=(e.target as HTMLSelectElement).value as Mode;refresh(ctx)}}>
-              <option value="steer">Steer active turn</option>
-              <option value="followUp">Queue follow-up</option>
-              <option value="newTurn">Start configured run</option>
+            <select .value=${modeFor(s,selected)}
+              ?disabled=${selected.phase==="configured"||!isCommandReady(selected)}
+              @change=${(e:Event)=>{s.nodeModes.set(selectedKey,(e.target as HTMLSelectElement).value as Mode);refresh(ctx);}}>
+              ${selected.phase==="configured"?html`<option value="newTurn">Start configured Run</option>`:html`
+                <option value="steer">Steer active turn</option>
+                <option value="followUp">Queue follow-up</option>`}
             </select>
           </label>
-          <textarea rows="3" .value=${s.message}
-            @input=${(e:Event)=>{s.message=(e.target as HTMLTextAreaElement).value;refresh(ctx);}}></textarea>
+          <textarea rows="3" maxlength="16000" aria-label=${"Message "+selected.runId}
+            .value=${s.nodeDrafts.get(selectedKey)??""}
+            ?disabled=${!isCommandReady(selected)}
+            @input=${(e:Event)=>{s.nodeDrafts.set(selectedKey,(e.target as HTMLTextAreaElement).value);refresh(ctx);}}></textarea>
           <div class="mm-f-toolbar">
-            <button ?disabled=${s.busy||!selected.connected||!s.message.trim()}
-              @click=${()=>send(s.mode)}>Send directly to this Pi Session</button>
-            <button ?disabled=${s.busy||!selected.connected} @click=${()=>send("abort")}>Interrupt</button>
+            <button ?disabled=${s.busy||!isCommandReady(selected)||!s.nodeDrafts.get(selectedKey)?.trim()}
+              @click=${()=>void sendNode(ctx,selected)}>Send directly to this Pi Session</button>
+            <button ?disabled=${s.busy||!isCommandReady(selected)} @click=${()=>send("abort")}>Interrupt</button>
             <button ?disabled=${s.busy} @click=${()=>send("reconnect")}>Reconnect session</button>
           </div>
         </div>`:null}
@@ -547,6 +559,7 @@ const css=`
   .mm-f-node-log{min-height:0;flex:1;overflow:auto;padding:5px 10px;border-top:1px solid var(--pi-border-muted);}
   .mm-f-node-log p{font-size:11px;margin:3px 0;line-height:1.35;white-space:pre-wrap;overflow-wrap:anywhere;}
   .mm-f-node-log small{color:var(--pi-muted);font-size:10px;margin-right:4px;}
+  .mm-f-node-log .mm-f-receipt{color:var(--pi-accent);font-size:10px;}
   .mm-f-node-compose{display:flex;align-items:stretch;gap:4px;padding:7px;border-top:1px solid var(--pi-border-muted);}
   .mm-f-node-compose select{width:77px;flex-shrink:0;padding:4px;font-size:11px;}
   .mm-f-node-compose textarea{flex:1;min-width:0;resize:none;height:31px;overflow:auto;padding:5px;font-size:11px;}
