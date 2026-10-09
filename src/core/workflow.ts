@@ -1,4 +1,5 @@
 /** Pure, deterministic workflow state machine. No model or filesystem I/O. */
+import {validatePermissions,type WorkflowPermissions} from "./permissions.js";
 export type Role = "planner" | "implementer" | "reviewer" | "architect";
 export type TaskKind = "implementation" | "diagnosis" | "synthesis";
 export type Gate = "completed" | "qc_passed" | "integrated" | "qc_finalized";
@@ -24,6 +25,8 @@ export interface WorkflowDefinition {
   maxQcRounds: number;
   maxParallelByRole: Record<Role, number>;
   tasks: TaskSpec[];
+  /** Absent policy is YOLO (allow) for supported operations; merge defaults to ask. */
+  permissions?:WorkflowPermissions;
 }
 export interface QCRecord {
   runId: string;
@@ -97,6 +100,8 @@ function validId(value: unknown): value is string { return typeof value === "str
 
 /** Reject cycles and impossible references before any work can start. */
 export function validateDefinition(def: WorkflowDefinition): void {
+  try{validatePermissions(def.permissions);}
+  catch(error){throw new WorkflowError("invalid_permissions",String(error));}
   invariant(validId(def.id), "invalid_id", "Workflow ID must be lowercase kebab-case");
   invariant(typeof def.title === "string" && !!def.title.trim(), "invalid_title", "Workflow title is required");
   invariant(Number.isSafeInteger(def.maxQcRounds) && def.maxQcRounds >= 1 && def.maxQcRounds <= 100, "invalid_budget", "maxQcRounds must be 1..100");
