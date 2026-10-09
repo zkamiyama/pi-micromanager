@@ -43,6 +43,7 @@ interface GridState {
   canvasDimmed:boolean;
   canvasPage:number;
   plannerSessionId:string;
+  pendingTaskFocus?:{workflowId:string;taskId:string;seat:Seat};
   nodePositions:Map<string,CanvasPosition>;
   nodeDensity:Map<string,NodeDensity>;
   nodeDrafts:Map<string,string>;
@@ -82,6 +83,15 @@ function persistCanvas(ctx:WorkspacePanelContext,s:GridState):void {
       serializeCanvasPreferences({dimmed:s.canvasDimmed,positions:s.nodePositions,density:s.nodeDensity}));
   }catch{ /* Browser may deny storage; the canvas still works in memory. */ }
 }
+
+/** Task Lens can open the exact active Run; the PI WEB host still owns tab navigation. */
+export function selectOrchestraTask(ctx:WorkspacePanelContext,workflowId:string,taskId:string,seat:Seat):void{
+  const s=stateFor(ctx);
+  s.pendingTaskFocus={workflowId,taskId,seat};
+  s.canvasDimmed=false;
+  s.loaded=false; // Next panel render will refresh the registry.
+}
+
 const phaseEnded=(phase:string)=>["settled","sealed","failed"].includes(phase);
 const roles:Seat[]=["planner","implementer","qc","architect"];
 function isBinding(value:unknown):value is LiveBinding {
@@ -118,6 +128,15 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
          !Array.isArray(history)||!history.every(isBinding)||!Array.isArray(workflows))
         throw new Error("Unrecognized server schema");
        s.active=active;s.history=history;s.workflows=workflows as WorkflowInstance[];
+       if(s.pendingTaskFocus){
+         const target=s.pendingTaskFocus;
+         const match=active.find(b=>b.workflowId===target.workflowId&&b.taskId===target.taskId&&
+           b.seat===target.seat&&!!b.sessionId);
+         if(match)s.selectedSessionId=match.sessionId!;
+         else s.loadStatus="No active "+target.seat+" Run for "+target.taskId+
+           ". Use Manual one-shot launch after the Task is admitted.";
+         delete s.pendingTaskFocus;
+       }
        s.canvasPage=Math.min(s.canvasPage,Math.max(0,Math.ceil(active.length/12)-1));
        const activeKeys=new Set(active.map(b=>runKey(b.workflowId,b.runId)));
        for(const key of s.nodePositions.keys())if(!activeKeys.has(key))s.nodePositions.delete(key);
