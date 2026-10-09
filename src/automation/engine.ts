@@ -27,6 +27,9 @@ export interface ExecutorPort {
    * with no configured target never publish to a remote. */
   publish?(record:AutopilotRecord,workflow:WorkflowInstance):
     Promise<"acted"|"waiting"|"none">;
+  /** Authorize a modifying Pi attempt before opening its Session. */
+  authorizeImplementation?(record:AutopilotRecord,workflow:WorkflowInstance,
+    taskId:string,nextAttempt:number):"allow"|"ask"|"deny";
 }
 const roles:Record<TaskState["spec"]["role"],Seat>={
   implementer:"implementer",reviewer:"qc",architect:"architect",planner:"planner",
@@ -251,6 +254,22 @@ export class AutopilotEngine {
     if(this.stopping)return;
     const next=planNext(current,known,record.config);
     if(next?.action==="start"){
+      const nextAttempt=current.tasks[next.taskId]!.attempts+1;
+      if(this.port.authorizeImplementation){
+        const decision=this.port.authorizeImplementation(record,current,
+          next.taskId,nextAttempt);
+        if(decision==="deny"){
+          this.ledger.setStatus(p,o,workflowId,false,
+            "Implementation permission denied for "+next.taskId);
+          return;
+        }
+        if(decision==="ask"){
+          if(record.status!=="Awaiting implementation permission")
+            this.ledger.setStatus(p,o,workflowId,true,
+              "Awaiting implementation permission");
+          return;
+        }
+      }
       this.act(record,current,{type:"start",taskId:next.taskId},
         "auto:start:"+workflowId+":"+next.taskId+":"+(current.tasks[next.taskId]!.attempts+1));
       return;
