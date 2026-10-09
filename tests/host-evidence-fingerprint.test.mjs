@@ -28,7 +28,7 @@ test("Host test evidence records output hashes and exit code, not raw potentiall
     },
   };
   const port=createHostExecutor({
-    host,workflows:{},agents:{},getSessions:()=>undefined,
+    host,workflows:{get(){return {tasks:{}};}},agents:{},getSessions:()=>undefined,
     getWorkspaces:()=>({version:1,async resolve({projectId,workspaceId}){
       assert.equal(projectId,"p");
       assert.equal(workspaceId,"wt-1");
