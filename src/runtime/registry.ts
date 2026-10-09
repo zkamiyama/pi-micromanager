@@ -66,6 +66,13 @@ export class AgentRegistry {
     if (!row) throw new Error("Agent session is not registered in this workspace");
     return row;
   }
+  getSeat(projectId: string, workspaceId: string, workflowId: string, taskId: string, seat: Seat): AgentBinding | undefined {
+    for (const [value, name] of [[projectId,"projectId"],[workspaceId,"workspaceId"],
+      [workflowId,"workflowId"],[taskId,"taskId"]] as const) identity(value,name);
+    return this.db.prepare("SELECT " + fields +
+      " FROM agent_bindings WHERE project_id=? AND workspace_id=? AND workflow_id=? AND task_id=? AND seat=?")
+      .get(projectId,workspaceId,workflowId,taskId,seat) as unknown as AgentBinding | undefined;
+  }
   reserve(input: Reservation, at = new Date().toISOString()): AgentBinding {
     validate(input);
     this.db.exec("BEGIN IMMEDIATE");

@@ -27,7 +27,9 @@ test("implementers require separate worktrees; QC can share a workspace",()=>fix
  assert.equal(db.list("project","worktree").length,2);
 }));
 test("activity stores a bounded event history without token delta duplication",()=>fixture(db=>{
- const binding=db.assign(reservation(),"session-1");
+ const key=reservation();
+ db.reserve(key);
+ const binding=db.assign(key,"session-1");
  for(let i=0;i<100;i++) db.record(binding,{kind:"tool_started",text:"read",at:1700000000000+i,sequence:i+1});
  db.record(binding,{kind:"message_delta",text:"current text",at:1700000010000,sequence:101});
  assert.equal(db.activities("project","worktree","session-1").length,60);
