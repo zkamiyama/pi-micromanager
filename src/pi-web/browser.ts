@@ -1000,7 +1000,13 @@ const plugin: PiWebPlugin = {
                     <input type="checkbox" .checked=${state.quickAdvanced}
                       ?disabled=${state.busy}
                       @change=${(e:Event)=>{
-                        state.quickAdvanced=(e.target as HTMLInputElement).checked;
+                        const next=(e.target as HTMLInputElement).checked;
+                        if(next&&!state.quickAdvanced){
+                          try{state.quickSetupDraft=
+                            JSON.stringify(simpleSetup(state),null,2);}
+                          catch{/* Keep last reviewed JSON until simple fields are valid. */}
+                        }
+                        state.quickAdvanced=next;
                         context.host.requestRender();
                       }}/>
                     Advanced: separate models per role / full configuration JSON
