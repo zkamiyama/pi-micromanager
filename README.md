@@ -171,7 +171,10 @@ QC-reviewed SHA, place or commit a PNG/JPEG file in that linked Worktree under
 `screenshots/<name>.png` (or `.jpg/.jpeg`). In **Micromanager → Journal → Actual
 QC screenshot evidence**, choose the sealed QC Run and relative file path,
 then use **Capture verified screenshot bytes**. The host checks the Run,
-sealed evidence, workspace authority, Git HEAD, file type and path. It stores
+sealed evidence, workspace authority, Git HEAD, file type and path. It also
+proves that the screenshot is **tracked in the exact QC-reviewed Git commit**
+and that the current on-disk blob matches it. An ignored/untracked image is
+not accepted even if ordinary Git status reports the checkout as clean. It stores
 up to 1 MiB of original bytes in a private, SHA-256 content-addressed store,
 with quotas and strict scope isolation.
 
@@ -184,7 +187,8 @@ This is not automatic screenshot generation.
 
 **Stage an ADR based on source evidence:** Once all Workflow Tasks are
 integrated or completed, open **Journal → Propose a verified architecture
-decision (ADR)**. Enter a non-main linked Git review Workspace ID and a
+decision (ADR)**. Enter a **separate** non-main linked Git review Workspace ID (never one of
+the Workflow's current or historical Agent Worktrees) and a
 four-digit filename such as `0012-token-rotation.md`, then author Context,
 Considered Options, Decision, and Consequences. The read-only preview embeds
 the exact durable QC Run / Git SHA / evidence references and revalidates any
