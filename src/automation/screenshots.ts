@@ -122,9 +122,8 @@ export class ScreenshotEvidence {
     if(!evidence||evidence.ref!==binding.evidenceRef||
       evidence.sessionId!==binding.sessionId)
       throw new Error("QC Run evidence is missing or mismatched");
-    if(this.options.agents.list(projectId,orchestraWorkspaceId,"active")
-      .some(b=>b.workspaceId===binding.workspaceId))
-      throw new Error("QC Worktree is currently owned by another active Run");
+    if(this.options.agents.hasUnsealedWorkspace(projectId,binding.workspaceId))
+      throw new Error("QC Worktree is currently owned by an unsealed Run");
     const provider=this.options.workspaces();
     if(!provider)throw new Error("PI WEB Workspace authority unavailable");
     const resolved=await provider.resolve({projectId,workspaceId:binding.workspaceId});
