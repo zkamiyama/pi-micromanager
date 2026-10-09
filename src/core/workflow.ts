@@ -48,7 +48,9 @@ export interface Amendment {
   id: string;
   targetTaskId: string;
   afterQcRunId: string;
-  status: "armed" | "activated" | "completed" | "cancelled";
+  status: "planning" | "armed" | "activated" | "completed" | "cancelled";
+  instruction?: string;
+  planRationale?: string;
   agents: DiagnosticAgent[];
   synthesisTaskId?: string;
 }
@@ -72,6 +74,8 @@ export type WorkflowAction =
   | { type: "implementation_finished"; taskId: string; headSha: string; criteriaRevision: number; testsPassed: boolean }
   | { type: "qc_finalized"; taskId: string; runId: string; headSha: string; criteriaRevision: number; attempt: number; verdict: QCResult }
   | { type: "arm_diagnosis"; amendmentId: string; targetTaskId: string; afterQcRunId: string; agents: DiagnosticAgent[] }
+  | { type: "request_intervention"; interventionId: string; targetTaskId: string; afterQcRunId: string; instruction: string }
+  | { type: "plan_intervention"; interventionId: string; agents: DiagnosticAgent[]; rationale: string }
   | { type: "cancel_amendment"; amendmentId: string }
   | { type: "complete"; taskId: string }
   | { type: "resume_after_diagnosis"; amendmentId: string; decision: "rework" | "accept_pass" }
@@ -175,6 +179,36 @@ function installDiagnosis(instance: WorkflowInstance, amendment: Amendment): voi
   validateDefinition(instance.definition);
 }
 
+
+/** Validate proposed independent investigators before touching the graph. */
+function checkInvestigators(instance: WorkflowInstance, amendmentId: string, agents: DiagnosticAgent[]): void {
+  invariant(Array.isArray(agents) && agents.length >= 1 && agents.length <= 4,
+    "invalid_agents", "1..4 diagnosis agents required");
+  const seen = new Set<string>();
+  for (const agent of agents) {
+    invariant(agent !== null && validId(agent.id) && !seen.has(agent.id) &&
+      (agent.role === "architect" || agent.role === "reviewer") &&
+      typeof agent.title === "string" && agent.title.trim().length > 0 && agent.title.length <= 200 &&
+      typeof agent.model === "string" && agent.model.trim().length > 0 && agent.model.length <= 160,
+      "invalid_agents", "Each investigator requires a unique id, allowed role, model and title");
+    seen.add(agent.id);
+  }
+  for (const id of [...agents.map(a => "diag-" + amendmentId + "-" + a.id), "synthesis-" + amendmentId]) {
+    invariant(validId(id) && !Object.hasOwn(instance.tasks, id), "invalid_id",
+      "Dynamic task id collision: " + id);
+  }
+}
+function noOtherPendingIntervention(instance: WorkflowInstance, taskId: string): void {
+  invariant(!instance.amendments.some(a => a.targetTaskId === taskId &&
+    ["planning", "armed", "activated"].includes(a.status)),
+    "barrier_exists", "Task already has an active or pending intervention");
+}
+function normalPostQcStatus(instance: WorkflowInstance, task: TaskState): TaskStatus {
+  invariant(task.lastQc, "invalid_transition", "No finalized QC to release");
+  return task.lastQc.verdict === "pass" ? "passed" :
+    task.qcRounds >= instance.definition.maxQcRounds ? "needs_human" : "ready";
+}
+
 /** One command = one immutable revision; storage enforces CAS and command idempotency. */
 export function applyAction(current: WorkflowInstance, action: WorkflowAction, at: string): WorkflowInstance {
   const instance = structuredClone(current);
@@ -202,32 +236,71 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       message = `${t.spec.id} tests ${action.testsPassed ? "passed; QC required" : "failed; rework required"}`;
       break;
     }
+
     case "arm_diagnosis": {
       const t = taskById(instance, action.targetTaskId);
-      invariant(t.spec.kind === "implementation" && ["ready", "running", "awaiting_qc"].includes(t.status), "invalid_transition", "Can only arm before QC finalization");
+      invariant(t.spec.kind === "implementation" && ["ready", "running", "awaiting_qc"].includes(t.status),
+        "invalid_transition", "Can only arm before QC finalization");
       invariant(validId(action.amendmentId) && validId(action.afterQcRunId), "invalid_id", "Invalid amendment or QC ID");
       invariant(instance.amendments.every(a => a.id !== action.amendmentId), "duplicate_amendment", "Amendment already exists");
-      invariant(!instance.amendments.some(a => a.targetTaskId === t.spec.id && a.status === "armed"), "barrier_exists", "Task already has an armed barrier");
-      invariant(action.agents.length >= 1 && action.agents.length <= 4, "invalid_agents", "1..4 diagnosis agents required");
-      const seen = new Set<string>();
-      for (const a of action.agents) {
-        invariant(validId(a.id) && !seen.has(a.id) && roles.includes(a.role) && !!a.model.trim(), "invalid_agents", "Unique agent id, role and model are required");
-        invariant(a.role === "architect" || a.role === "reviewer", "invalid_agents", "Diagnosis agents must be architect or reviewer");
-        seen.add(a.id);
+      noOtherPendingIntervention(instance, t.spec.id);
+      checkInvestigators(instance, action.amendmentId, action.agents);
+      instance.amendments.push({
+        id: action.amendmentId, targetTaskId: action.targetTaskId, afterQcRunId: action.afterQcRunId,
+        status: "armed", agents: structuredClone(action.agents),
+      });
+      message = "Armed " + action.amendmentId + "; suspend normal path after QC " + action.afterQcRunId;
+      break;
+    }
+    case "request_intervention": {
+      const t = taskById(instance, action.targetTaskId);
+      invariant(t.spec.kind === "implementation" && ["ready", "running", "awaiting_qc"].includes(t.status),
+        "invalid_transition", "A task-scoped QC barrier needs an active or upcoming implementation");
+      invariant(validId(action.interventionId) && validId(action.afterQcRunId),
+        "invalid_id", "Invalid intervention/QC run ID");
+      invariant(typeof action.instruction === "string" && action.instruction.trim().length > 0 &&
+        action.instruction.length <= 4000, "invalid_instruction", "Instruction must be 1..4000 characters");
+      invariant(instance.amendments.every(a => a.id !== action.interventionId),
+        "duplicate_amendment", "Intervention ID already exists");
+      noOtherPendingIntervention(instance, t.spec.id);
+      instance.amendments.push({
+        id: action.interventionId, targetTaskId: t.spec.id, afterQcRunId: action.afterQcRunId,
+        status: "planning", instruction: action.instruction.trim(), agents: [],
+      });
+      message = "Intervention " + action.interventionId + " requested on " + t.spec.id + "; QC transition reserved pending Sol plan";
+      break;
+    }
+    case "plan_intervention": {
+      const a = instance.amendments.find(a => a.id === action.interventionId);
+      invariant(a && a.status === "planning", "invalid_transition", "Intervention is not waiting for a plan");
+      const t = taskById(instance, a.targetTaskId);
+      invariant(typeof action.rationale === "string" && action.rationale.trim().length > 0 &&
+        action.rationale.length <= 4000, "invalid_plan", "Planner rationale is required");
+      checkInvestigators(instance, a.id, action.agents);
+      a.agents = structuredClone(action.agents);
+      a.planRationale = action.rationale.trim();
+      if (t.status === "held") {
+        invariant(t.lastQc && (a.afterQcRunId === "next" || a.afterQcRunId === t.lastQc.runId),
+          "qc_mismatch", "Held QC run differs from intervention");
+        a.status = "activated";
+        installDiagnosis(instance, a);
+        message = "Sol plan registered for " + a.id + "; diagnosis ready after QC barrier";
+      } else {
+        invariant(["ready", "running", "awaiting_qc"].includes(t.status),
+          "invalid_transition", "Intervention target is no longer active");
+        a.status = "armed";
+        message = "Sol plan registered for " + a.id + "; awaiting QC " + a.afterQcRunId;
       }
-      // Validate potential dynamic node IDs *before* registering the barrier.
-      for (const id of [...action.agents.map(a => `diag-${action.amendmentId}-${a.id}`), `synthesis-${action.amendmentId}`]) {
-        invariant(validId(id) && !Object.hasOwn(instance.tasks, id), "invalid_id", `Dynamic task id collision: ${id}`);
-      }
-      instance.amendments.push({ id: action.amendmentId, targetTaskId: action.targetTaskId, afterQcRunId: action.afterQcRunId, status: "armed", agents: structuredClone(action.agents) });
-      message = `Armed ${action.amendmentId}; suspend normal path after QC ${action.afterQcRunId}`;
       break;
     }
     case "cancel_amendment": {
       const a = instance.amendments.find(a => a.id === action.amendmentId);
-      invariant(a && a.status === "armed", "invalid_transition", "Only an unactivated amendment can be cancelled");
+      invariant(a && (a.status === "planning" || a.status === "armed"),
+        "invalid_transition", "Only an unactivated intervention can be cancelled");
+      const t = taskById(instance, a.targetTaskId);
+      if (t.status === "held") t.status = normalPostQcStatus(instance, t);
       a.status = "cancelled";
-      message = `Cancelled amendment ${a.id}`;
+      message = "Cancelled amendment " + a.id + "; restored " + t.spec.id + " -> " + t.status;
       break;
     }
     case "qc_finalized": {
@@ -236,16 +309,18 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       const evidence = t.pendingWork;
       invariant(evidence.headSha === action.headSha && evidence.criteriaRevision === action.criteriaRevision && evidence.attempt === action.attempt, "stale_qc", "QC result does not match current implementation evidence");
       invariant(validId(action.runId) && ["pass", "fail", "inconclusive"].includes(action.verdict), "invalid_qc", "Invalid QC result");
-      const barrier = instance.amendments.find(a => a.targetTaskId === t.spec.id && a.status === "armed");
+      const barrier = instance.amendments.find(a => a.targetTaskId === t.spec.id && (a.status === "planning" || a.status === "armed"));
       if (barrier) invariant(barrier.afterQcRunId === "next" || barrier.afterQcRunId === action.runId, "qc_mismatch", "Barrier targets a different QC run; no auto-transition permitted");
       t.qcRounds += 1;
       t.lastQc = { runId: action.runId, verdict: action.verdict, headSha: action.headSha, criteriaRevision: action.criteriaRevision, attempt: action.attempt };
       delete t.pendingWork;
       if (barrier) {
         t.status = "held";
-        barrier.status = "activated";
-        installDiagnosis(instance, barrier);
-        message = `QC ${action.runId} finalized (${action.verdict}); barrier ${barrier.id} activated`;
+        if (barrier.status === "armed") {
+          barrier.status = "activated";
+          installDiagnosis(instance, barrier);
+        }
+        message = `QC ${action.runId} finalized (${action.verdict}); barrier ${barrier.id} ${barrier.status === "planning" ? "waiting for Sol plan" : "activated"}`;
       } else {
         t.status = action.verdict === "pass" ? "passed" : t.qcRounds >= instance.definition.maxQcRounds ? "needs_human" : "ready";
         message = `QC ${action.runId} finalized (${action.verdict}); status=${t.status}`;
