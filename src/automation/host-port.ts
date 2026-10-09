@@ -1,5 +1,6 @@
 /** Public PI WEB Host API adapter for the deterministic Autopilot engine. */
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import type {
   ServerPluginActivationContext, PiWebHostPiSessionsV1,
   PiWebHostWorkspacesV1,
@@ -10,6 +11,13 @@ import type { AgentBinding, AgentRegistry, Reservation, Seat } from "../runtime/
 import type { PiSessionBridge } from "../runtime/session-bridge.js";
 import type { ExecutorPort, LaunchJob } from "./engine.js";
 
+// Prevent Git environment inherited from a Pi/PI WEB host from redirecting
+// commands to an unrelated repository, index, or object store.
+const GIT_ENV_KEYS=[
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES","GIT_COMMON_DIR","GIT_DIR",
+  "GIT_INDEX_FILE","GIT_OBJECT_DIRECTORY","GIT_PREFIX",
+  "GIT_QUARANTINE_PATH","GIT_WORK_TREE",
+];
 export interface HostPortOptions {
   host:ServerPluginActivationContext;
   workflows:WorkflowStore;
@@ -32,7 +40,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
   }
   async function gitRead(path:string,args:string[]):Promise<string> {
     const r=await host.execFile({file:"git",args:["-C",path,...args],
-      signal:host.lifetimeSignal,timeoutMs:10000});
+      signal:host.lifetimeSignal,timeoutMs:10000,unsetEnv:GIT_ENV_KEYS});
     if(r.exitCode!==0||r.signal||r.stdoutTruncated||r.stderrTruncated)
       throw new Error("Git check failed: "+(r.stderr||r.stdout).slice(-280));
     return r.stdout.trim();
@@ -47,6 +55,9 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
     const w=await workspace(projectId,workspaceId);
     if(w.isMain||w.provider?.metadata?.isGitWorktree!==true)
       throw new Error("Automatic code execution requires an existing linked, isolated PI WEB Git worktree");
+    const root=await gitRead(w.path,["rev-parse","--show-toplevel"]);
+    if(resolve(root)!==resolve(w.path))
+      throw new Error("Git root does not match the resolved PI WEB linked worktree");
     return w;
   }
   return {
