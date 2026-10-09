@@ -8,6 +8,7 @@ import type { ApprovalRequest } from "../automation/permissions.js";
 import type { PublishedOperation } from "../automation/publication.js";
 import type { ConvergenceReceipt } from "../automation/convergence.js";
 import type { AdrDraft, AdrFields } from "../automation/adr-promotion.js";
+import type { QuickGoal, QuickProfile } from "../automation/quick-launch.js";
 
 const DEMO: WorkflowDefinition = {
   id: "demo-auth", title: "Auth migration — workflow preview", maxQcRounds: 5,
@@ -23,6 +24,9 @@ type View = "cockpit" | "dag" | "kanban" | "journal";
 type Detail = "compact" | "expanded";
 type InterventionMode = "workflow" | "implementer" | "qc";
 interface State {
+  quickGoalText:string;quickProfile:QuickProfile|null;quickGoals:QuickGoal[];
+  quickSetupDraft:string;quickSetupLoaded:boolean;quickPolling:boolean;
+  quickError:string;quickRequestId?:string;
   workflows: WorkflowInstance[];
   journal?:WorkflowJournal;
   adrTargetWorkspaceId:string;
@@ -91,6 +95,18 @@ function stateFor(context: WorkspacePanelContext): State {
         goalRef={draftWorkflowId:value.draftWorkflowId,runId:value.runId};
     }catch{/* Browser storage may be blocked. */}
     state = { workflows: [],
+      quickGoalText:"",quickProfile:null,quickGoals:[],quickSetupLoaded:false,
+      quickPolling:false,quickError:"",
+      quickSetupDraft:JSON.stringify({
+        config:{managedWorktrees:true,workspaces:{},
+          finalization:{workspaceId:"auto",autoMerge:true},
+          publication:{remote:"origin",baseBranch:"main",draft:true},
+          models:Object.fromEntries(["planner","implementer","qc","architect"]
+            .map(r=>[r,{provider:"REPLACE_WITH_PI_PROVIDER",model:"REPLACE_WITH_PI_MODEL"}])),
+          test:{file:"node",args:["--test"],timeoutMs:60000},maxAttempts:3},
+        permissions:{default:"allow",
+          actions:{"github.pr.merge":"ask","deploy.production":"deny"}},
+      },null,2),
       adrTargetWorkspaceId:"",adrStatus:"",
       adrFields:{filename:"0010-record-decision.md",title:"Architectural decision",
         context:"",options:"",decision:"",consequences:""},
@@ -135,6 +151,16 @@ const plugin: PiWebPlugin = {
   name: "pi-micromanager",
   activate({ html, lifetimeSignal, runtimePluginId }) {
     let disposed = false;
+    let quickContext:WorkspacePanelContext|undefined;
+    const quickTimer=setInterval(()=>{
+      const context=quickContext;
+      if(disposed||!context)return;
+      const state=stateFor(context);
+      if(!state.quickSetupLoaded||state.quickGoals.some(g=>
+        ["reserved","planning","starting","running"].includes(g.phase)))
+        void loadQuick(context);
+    },2500);
+    lifetimeSignal.addEventListener("abort",()=>clearInterval(quickTimer),{once:true});
     async function send(context: WorkspacePanelContext, operation: string, input: unknown): Promise<unknown> {
       if (!context.peer?.request) throw new Error("Enable the pi-micromanager server plugin in PI WEB settings");
       return context.peer.request(operation, input as never);
@@ -177,7 +203,85 @@ const plugin: PiWebPlugin = {
         state.loaded = true;
         state.status = `${state.workflows.length} saved workflow(s).`;
       } catch (error) { state.status = String(error); }
-      finally { state.busy = false; if (!disposed) context.host.requestRender(); }
+      finally {
+        state.busy = false;
+        if (!disposed){context.host.requestRender();void loadQuick(context);}
+      }
+    }
+    async function loadQuick(context:WorkspacePanelContext):Promise<void>{
+      const state=stateFor(context);
+      if(disposed||state.quickPolling)return;
+      state.quickPolling=true;
+      try{
+        const result=await send(context,"auto.quick.status",null) as {
+          profile:QuickProfile|null;goals:QuickGoal[];
+        };
+        if(!state.quickSetupLoaded){
+          if(result.profile)state.quickSetupDraft=JSON.stringify(result.profile,null,2);
+          state.quickSetupLoaded=true;
+        }
+        const old=JSON.stringify({profile:state.quickProfile,goals:state.quickGoals});
+        state.quickProfile=result.profile;state.quickGoals=result.goals;
+        if(old!==JSON.stringify(result))context.host.requestRender();
+      }catch(error){
+        if(!state.quickProfile&&!state.quickGoals.length){
+          state.quickError="Cannot load one-command setup: "+String(error).slice(0,240);
+          context.host.requestRender();
+        }
+      }finally{state.quickPolling=false;}
+    }
+    async function configureQuick(context:WorkspacePanelContext){
+      const state=stateFor(context);if(state.busy)return;
+      state.busy=true;state.quickError="Saving project setup…";
+      context.host.requestRender();
+      try{
+        const result=await send(context,"auto.quick.configure",
+          JSON.parse(state.quickSetupDraft)) as {profile:QuickProfile;goals:QuickGoal[]};
+        state.quickProfile=result.profile;state.quickGoals=result.goals;
+        state.quickSetupDraft=JSON.stringify(result.profile,null,2);
+        state.quickSetupLoaded=true;
+        state.quickError="Project setup saved. Describe a goal and choose Plan & run.";
+      }catch(error){state.quickError="Setup not saved: "+String(error).slice(0,300);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function startQuick(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.busy||!state.quickProfile||!state.quickGoalText.trim())return;
+      const requestId=state.quickRequestId??crypto.randomUUID();
+      state.quickRequestId=requestId;
+      state.busy=true;state.quickError="Submitting Plan & run…";
+      context.host.requestRender();
+      try{
+        const job=await send(context,"auto.quick.start",{
+          requestId,goal:state.quickGoalText,
+        }) as QuickGoal;
+        state.quickGoals=[job,...state.quickGoals.filter(x=>x.requestId!==job.requestId)];
+        state.quickError="Request saved. Sol will plan, validate and start automatically.";
+      }catch(error){
+        state.quickError="Start not confirmed: "+String(error).slice(0,300)+
+          ". Refresh status before retrying; the request ID is unchanged.";
+      }finally{state.busy=false;context.host.requestRender();}
+    }
+    async function cancelQuick(context:WorkspacePanelContext,requestId:string){
+      const state=stateFor(context);if(state.busy)return;
+      state.busy=true;
+      try{
+        const job=await send(context,"auto.quick.cancel",{requestId}) as QuickGoal;
+        state.quickGoals=state.quickGoals.map(g=>g.requestId===job.requestId?job:g);
+        state.quickError="Auto-start cancelled. A read-only Sol Session may still finish.";
+      }catch(error){state.quickError="Cancel unavailable: "+String(error).slice(0,280);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function openQuickWorkflow(context:WorkspacePanelContext,workflowId:string){
+      await refresh(context,workflowId);
+      const state=stateFor(context);
+      if(state.selected?.definition.id===workflowId)state.view="dag";
+      context.host.requestRender();
+    }
+    function newQuickGoal(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      state.quickGoalText="";delete state.quickRequestId;
+      state.quickError="Ready for a new goal.";context.host.requestRender();
     }
     async function createDemo(context: WorkspacePanelContext) {
       const state = stateFor(context);
@@ -710,6 +814,7 @@ const plugin: PiWebPlugin = {
         workspacePanels: [{
           id: "micromanager", title: "Micromanager", order: 50,
           render(context) {
+            quickContext=context;
             const state = stateFor(context);
             const w = state.selected;
             const tasks = w ? Object.values(w.tasks) : [];
@@ -1109,7 +1214,7 @@ const plugin: PiWebPlugin = {
           },
         }, createLiveRunPanel(html, lifetimeSignal)],
       },
-      dispose() { disposed = true; states.clear(); },
+      dispose() { disposed = true;clearInterval(quickTimer);quickContext=undefined;states.clear(); },
     };
   },
 };
