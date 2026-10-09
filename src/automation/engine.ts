@@ -255,7 +255,8 @@ export class AutopilotEngine {
     const next=planNext(current,known,record.config);
     if(next?.action==="start"){
       const nextAttempt=current.tasks[next.taskId]!.attempts+1;
-      if(this.port.authorizeImplementation){
+      if(current.tasks[next.taskId]?.spec.kind==="implementation"&&
+        this.port.authorizeImplementation){
         const decision=this.port.authorizeImplementation(record,current,
           next.taskId,nextAttempt);
         if(decision==="deny"){
