@@ -6,6 +6,7 @@ import type { WorkflowJournal } from "../automation/journal.js";
 import type { RetentionPreview } from "../automation/retention.js";
 import type { ApprovalRequest } from "../automation/permissions.js";
 import type { PublishedOperation } from "../automation/publication.js";
+import type { ConvergenceReceipt } from "../automation/convergence.js";
 import type { AdrDraft, AdrFields } from "../automation/adr-promotion.js";
 
 const DEMO: WorkflowDefinition = {
@@ -49,6 +50,7 @@ interface State {
   permissionStatus:string;
   approvalRequests:ApprovalRequest[];
   publishedOperations:PublishedOperation[];
+  convergenceReceipts:ConvergenceReceipt[];
   autopilotEnabled: boolean;
   autopilotConfigured: boolean;
   autopilotConfigFor?:string;
@@ -104,7 +106,7 @@ function stateFor(context: WorkspacePanelContext): State {
       },null,2),
       autopilotStatus:"Not configured",autopilotEnabled:false,autopilotConfigured:false,
       permissionStatus:"No permission decisions loaded",
-      approvalRequests:[],publishedOperations:[],
+      approvalRequests:[],publishedOperations:[],convergenceReceipts:[],
       goalText:"",goalProvider:"",goalModel:"",goalEffort:"",
       goalStatus:goalRef?"A prior goal proposal can be checked":"No proposal in progress",
       goalProposalText:"",goalProposalReady:false,
@@ -148,7 +150,7 @@ const plugin: PiWebPlugin = {
         if (id) {
           if (state.selected?.definition.id !== id){
             delete state.journal;delete state.retentionPreview;
-             state.approvalRequests=[];state.publishedOperations=[];
+             state.approvalRequests=[];state.publishedOperations=[];state.convergenceReceipts=[];
              state.permissionStatus="Select Load permissions to review current requests";
             delete state.screenshotPreview;
             delete state.adrDraft;state.adrStatus="";
@@ -399,9 +401,11 @@ const plugin: PiWebPlugin = {
         }
         const latest=await send(context,"auto.permissions",{workflowId}) as {
           approvals:ApprovalRequest[];publication:PublishedOperation[];
+          convergence:ConvergenceReceipt[];
         };
         state.approvalRequests=latest.approvals;
         state.publishedOperations=latest.publication;
+        state.convergenceReceipts=latest.convergence??[];
         if(kind==="load")state.permissionStatus="Loaded persisted publication decisions.";
       }catch(error){state.permissionStatus="Permissions unavailable: "+String(error);}
       finally{state.busy=false;context.host.requestRender();}
@@ -819,9 +823,11 @@ const plugin: PiWebPlugin = {
                 <section class="mm-permissions">
                   <strong>Workflow permissions · allow / ask / deny</strong>
                   <p>Default: ${w?.definition.permissions?.default??"allow"} (YOLO).
-                    Merge and deployment default to ask. Edit the Workflow definition JSON
-                    before import to change decisions. The host publisher checks the
-                    policy; strong Pi shell restrictions require an OS sandbox.</p>
+                    `git.integrate` fast-forwards clean unstarted dependent
+                    Worktrees after sealed QC. Divergent branches require human
+                    reconciliation; merge and deployment remain separate.
+                    Edit Workflow JSON before import to change decisions.
+                    Strong Pi shell restrictions still require an OS sandbox.</p>
                   <button ?disabled=${state.busy||!w}
                     @click=${()=>void permissionCommand(context,"load")}>
                     Load publication & approvals</button>
@@ -844,6 +850,13 @@ const plugin: PiWebPlugin = {
                       <p>${x.action} · ${x.state} · Task ${x.taskId}</p>
                       <p>Commit <code>${x.sha}</code></p>
                       ${x.result?html`<p>${x.result}</p>`:null}
+                    </article>`)}
+                  ${state.convergenceReceipts.map(x=>html`
+                    <article class="mm-permission-request">
+                      <p>Git fast-forward · ${x.state} · ${x.sourceTaskId}
+                        → ${x.targetTaskId}</p>
+                      <p>QC ${x.qcRunId}: <code>${x.sourceSha}</code></p>
+                      <p>Target ${x.targetWorkspaceId} · Branch ${x.branch}</p>
                     </article>`)}
                   <p role="status">${state.permissionStatus}</p>
                 </section>
