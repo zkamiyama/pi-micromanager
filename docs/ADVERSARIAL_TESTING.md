@@ -43,6 +43,7 @@ repository remote policy are **not** measured by these tests.
 | Two simultaneously requested Sol plans | Planner limit=1 admits at most one live plan; second is admitted after first settles |
 | Four independent investigators | Max two architects and one reviewer are fully utilized; no fourth is admitted prematurely; synthesis/human hold remain gated |
 | 32 independent implementation branches | Reach 8 concurrent implementation Sessions and 4 independent QC Sessions without exceeding either limit |
+| 64 independently QC-gated source Tasks | With role maxima set to 128, saturate all 64 available implementation seats and all 64 reviewer QC seats, with no arbitrary lower cap; this is a scheduler workload, not a simulated GitHub final merge |
 | Eight seeded 16-Task workloads | Randomized completion orders, bounded first-QC failures and rework; all complete; no duplicate Run IDs or shared concurrent code Worktrees |
 | 120 simultaneous scheduler ticks | One authoritative start CAS and one host launch per unique Pi Run, despite reentrant triggers |
 | Malformed Task kind/role | Wrong modifying/review/planning seat assignments are rejected at DAG validation |
