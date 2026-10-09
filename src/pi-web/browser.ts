@@ -155,6 +155,10 @@ const plugin: PiWebPlugin = {
           workflowId,...(operation==="configure"?{config:JSON.parse(state.autopilotDraft)}:{}),
         }) as {enabled:boolean;status:string};
         state.autopilotEnabled=result.enabled;state.autopilotStatus=result.status;
+        if(operation==="configure"){
+          state.autopilotConfigured=true;
+          state.autopilotConfigFor=workflowId;
+        }
       }catch(error){state.autopilotStatus=String(error);}
       finally{state.busy=false;context.host.requestRender();}
     }
