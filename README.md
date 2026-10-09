@@ -56,7 +56,7 @@ The example DAG is at [`examples/auth.workflow.json`](examples/auth.workflow.jso
 ## Opt-in Autopilot (real Pi execution)
 
 1. In PI WEB, create/verify **separate linked Git worktrees** in the target project. Record each linked workspace's PI WEB ID. A modifying Task must not use the project's main checkout.
-2. Under **Micromanager → Import a real Workflow DAG (JSON)**, save your versioned Task DAG (or use the example `examples/auth.workflow.json`). Verify Task IDs, dependency gates and requested changes before starting.
+2. Under **Micromanager → Import a real Workflow DAG (JSON)**, save your versioned Task DAG (or use the example `examples/auth.workflow.json`). Replace the editable template placeholders and give each Task a concrete `description` plus `acceptanceCriteria` lines. Implementation and QC Runs receive **the same** contract. Verify Task IDs, dependency gates and requested changes before starting.
 3. Under **Autopilot → configuration (JSON)**, map every implementation Task ID to an existing linked Worktree workspace ID; configure **all four** exact Pi provider/model profiles and a bounded executable test argv. Save configuration, then explicitly **Start Autopilot**.
 4. Watch actual one-shot Pi Runs in the **Orchestra** tab. The scheduler makes fresh Sessions for implementation/QC/rework, but it never auto-merges. Use **Pause admission** to stop *new* work; current running Pi turns continue unless directly interrupted.
 5. For a human QC intervention, use **Task Lens** to register the after-next-QC barrier. Sol produces a typed plan, the investigations and synthesis run read-only, and a **human explicit resume** remains required.
