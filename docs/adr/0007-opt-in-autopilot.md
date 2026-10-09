@@ -15,7 +15,8 @@ created for **each** implementation attempt, QC, diagnosis, synthesis, and
 Sol intervention planning Run. Never recycle a previous QC or Luna context.
 
 The PI WEB Micromanager tab can validate and save a Workflow Definition JSON
-with explicit Task dependencies. After registering exact existing workspace
+with explicit Task dependencies, bounded descriptions, and testable per-Task
+`acceptanceCriteria` that are passed unchanged to implementers and QC reviewers. After registering exact existing workspace
 IDs and role model profiles, the operator explicitly selects **Start Autopilot**.
 The scheduler does nothing to a workflow that has not opted in. **Pause
 admission** prevents new Task/Run dispatch; it does not abort running Pi turns.
