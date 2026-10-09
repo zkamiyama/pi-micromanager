@@ -87,7 +87,12 @@ turn-start/settlement marker as Pi Session custom entries **before** notifying
 the host. After a server restart, the host reconnects to the *existing*
 Session and requests a read-only `inspect` receipt; it may restore a running
 or settled Run **only** when idle state, runId, and persisted turn marker agree.
-It replays the structured report separately. A missing Session, unknown
+It replays the structured report separately. For a Run that has already
+settled, an isolated read-only PI WEB session-events connection can inspect
+the **same native Pi Session** and replay its one-shot structured report, with
+no new model turn. This closes the gap where settlement reached the server
+but the report event did not. A mismatched runId, missing report or unsettled
+turn proof cannot satisfy the finalization gate. A missing Session, unknown
 delivery, conflicting report or ambiguous idle state **pauses** rather than
 restarting an attempt. Workflow transitions are idempotent under durable
 command IDs; a Run can be sealed after crash recovery only if its specific
