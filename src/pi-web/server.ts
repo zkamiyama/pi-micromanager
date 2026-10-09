@@ -15,6 +15,7 @@ import { type RuntimeActivity, type RuntimeControl } from "../runtime/protocol.j
 import { AutopilotLedger, parseAutopilotConfig } from "../automation/ledger.js";
 import { AutopilotEngine } from "../automation/engine.js";
 import { createHostExecutor } from "../automation/host-port.js";
+import { IntegrationVerifier } from "../automation/integration.js";
 import { classifyRecoveredRun } from "../automation/recovery.js";
 import type { AutopilotRecord } from "../automation/ledger.js";
 
@@ -53,6 +54,10 @@ const plugin:PiWebServerPlugin={
   const store=new WorkflowStore(join(host.dataDirectory,"workflows.sqlite"));
   const agents=new AgentRegistry(join(host.dataDirectory,"agents.sqlite"));
   const ledger=new AutopilotLedger(join(host.dataDirectory,"autopilot.sqlite"));
+  const integration=new IntegrationVerifier({
+    path:join(host.dataDirectory,"integration.sqlite"),
+    host,workflows:store,agents,ledger,workspaces:()=>workspaces,
+  });
   let sessions:PiWebHostPiSessionsV1|undefined;
   let sessionEvents:PiWebHostPiSessionEventsV1|undefined;
   let workspaces:PiWebHostWorkspacesV1|undefined;
@@ -419,6 +424,19 @@ const plugin:PiWebServerPlugin={
             }
             return j(created);
           }
+          case "auto.integration.preview":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            if(ledger.get(p,o,workflowId)?.enabled)
+              throw new Error("Pause Autopilot before confirming external Git integration");
+            return j(await integration.preview(p,o,workflowId,
+              id(input.taskId),id(input.targetWorkspaceId)));
+          }
+          case "auto.integration.confirm":{
+            const input=object(ctx.input),previewId=id(input.previewId);
+            // Revalidation of the exact Task revision, QC evidence and external
+            // target commit is performed inside the verifier before CAS.
+            return j(await integration.confirm(p,o,previewId));
+          }
           case "auto.status":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             store.get(p,o,workflowId);
@@ -644,7 +662,7 @@ const plugin:PiWebServerPlugin={
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       for(const bridge of live.values())bridge.stop();
-      live.clear();viewers.clear();ledger.close();agents.close();store.close();
+      live.clear();viewers.clear();integration.close();ledger.close();agents.close();store.close();
     },
   };
  },
