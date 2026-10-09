@@ -151,6 +151,19 @@ test("Capture requires a clean exact Git snapshot and refuses symlinked screensh
       /no longer match/);
   }finally{x.close();}
 });
+test("Ignored but visually valid PNG is refused unless it is in the exact QC commit",async()=>{
+  const x=fixture();
+  try{
+    const ignoreFile=join(x.base,"git-exclusions");
+    writeFileSync(ignoreFile,"screenshots/ignored.png\n");
+    git(x.linked,"config","core.excludesFile",ignoreFile);
+    writeFileSync(join(x.linked,"screenshots","ignored.png"),PNG);
+    assert.equal(git(x.linked,"status","--porcelain"),"",
+      "Ignored screenshot does not appear in Git porcelain state");
+    await assert.rejects(x.capture("screenshots/ignored.png"),
+      /absent from the QC-reviewed Git commit/);
+  }finally{x.close();}
+});
 test("Invalid or missing Run evidence can never be used to capture arbitrary files",async()=>{
   const x=fixture();
   try{
