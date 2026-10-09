@@ -12,6 +12,9 @@ import { WorkflowError, type WorkflowAction, type TaskState } from "../core/work
 import { AgentRegistry, type AgentBinding, type Reservation, type Seat } from "../runtime/registry.js";
 import { PiSessionBridge } from "../runtime/session-bridge.js";
 import { type RuntimeActivity, type RuntimeControl } from "../runtime/protocol.js";
+import { AutopilotLedger } from "../automation/ledger.js";
+import { AutopilotEngine } from "../automation/engine.js";
+import { createHostExecutor } from "../automation/host-port.js";
 
 function object(value:unknown):Record<string,unknown> {
   if(value===null||typeof value!=="object"||Array.isArray(value))
@@ -47,11 +50,21 @@ const plugin:PiWebServerPlugin={
  activate(host){
   const store=new WorkflowStore(join(host.dataDirectory,"workflows.sqlite"));
   const agents=new AgentRegistry(join(host.dataDirectory,"agents.sqlite"));
+  const ledger=new AutopilotLedger(join(host.dataDirectory,"autopilot.sqlite"));
   let sessions:PiWebHostPiSessionsV1|undefined;
   let sessionEvents:PiWebHostPiSessionEventsV1|undefined;
   let workspaces:PiWebHostWorkspacesV1|undefined;
   const live=new Map<string,PiSessionBridge>();
   const viewers=new Set<Fanout>();
+  let autopilot:AutopilotEngine|undefined;
+  let automationTimer:ReturnType<typeof setInterval>|undefined;
+  function scheduleAutopilot(projectId:string,workspaceId:string,workflowId:string):void {
+    if(host.lifetimeSignal.aborted)return;
+    const cfg=ledger.get(projectId,workspaceId,workflowId);
+    if(cfg?.enabled&&autopilot)queueMicrotask(()=>{
+      if(!host.lifetimeSignal.aborted)void autopilot!.tick(cfg);
+    });
+  }
   const orchestraKey=(project:string,orchestraWorkspaceId:string)=>JSON.stringify([project,orchestraWorkspaceId]);
   const bridgeKey=(binding:AgentBinding)=>JSON.stringify([binding.projectId,binding.orchestraWorkspaceId,binding.sessionId]);
   function notifyRun(binding:AgentBinding):void {
@@ -65,6 +78,10 @@ const plugin:PiWebServerPlugin={
   }
   function emit(binding:AgentBinding,event:RuntimeActivity):void {
     agents.record(binding,event);
+    if(event.kind==="agent_settled"){
+      notifyRun(agents.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId!));
+      scheduleAutopilot(binding.projectId,binding.orchestraWorkspaceId,binding.workflowId);
+    }
     const scope=orchestraKey(binding.projectId,binding.orchestraWorkspaceId);
     for(const viewer of viewers){
       if(viewer.scope!==scope)continue;
@@ -83,7 +100,17 @@ const plugin:PiWebServerPlugin={
     if(!sessionEvents)throw new Error("PI WEB session-events capability missing");
     const conn=await sessionEvents.connect({
       projectId:binding.projectId,workspaceId:binding.workspaceId,sessionId:binding.sessionId});
-    const bridge=new PiSessionBridge(conn,event=>emit(binding,event));
+    const bridge=new PiSessionBridge(conn,event=>emit(binding,event),report=>{
+      if(!binding.requestId.startsWith("auto:"))return;
+      try{
+        ledger.recordReport(binding,report);
+        scheduleAutopilot(binding.projectId,binding.orchestraWorkspaceId,binding.workflowId);
+      }catch(error){
+        try{ledger.setStatus(binding.projectId,binding.orchestraWorkspaceId,binding.workflowId,
+          false,"Paused safely: invalid/conflicting Run report: "+String(error).slice(0,750));}
+        catch{/* Workflow may not be configured. */}
+      }
+    });
     live.set(key,bridge);
     conn.signal.addEventListener("abort",()=>{if(live.get(key)===bridge)live.delete(key);},{once:true});
     return bridge;
@@ -124,11 +151,21 @@ const plugin:PiWebServerPlugin={
         binding.phase==="configured"||binding.phase==="running"?binding.phase:"connected"):"uncertain");
     return {bridge,status:reply.status};
   }
+  autopilot=new AutopilotEngine(store,agents,ledger,createHostExecutor({
+    host,workflows:store,agents,
+    getSessions:()=>sessions,getWorkspaces:()=>workspaces,probe,
+    validateRun:plannedRunId,notify:notifyRun,
+  }));
   return {
     start({capabilities}){
       sessions=capabilities.resolve(PI_WEB_HOST_PI_SESSIONS_CAPABILITY);
       sessionEvents=capabilities.resolve(PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY);
       workspaces=capabilities.resolve(PI_WEB_HOST_WORKSPACES_CAPABILITY);
+      automationTimer=setInterval(()=>{
+        if(host.lifetimeSignal.aborted)return;
+        for(const cfg of ledger.list().filter(x=>x.enabled))void autopilot!.tick(cfg);
+      },1500);
+      automationTimer.unref();
     },
     peer:{
       async request(ctx){
@@ -288,8 +325,9 @@ const plugin:PiWebServerPlugin={
       },
     },
     dispose(){
+      if(automationTimer)clearInterval(automationTimer);
       for(const bridge of live.values())bridge.stop();
-      live.clear();viewers.clear();agents.close();store.close();
+      live.clear();viewers.clear();ledger.close();agents.close();store.close();
     },
   };
  },
