@@ -1,6 +1,6 @@
 # ADR-0003: Bounded evidence, live journal, and knowledge promotion
 
-- Status: Accepted design; bounded evidence Journal and sealed-activity retention now implemented (ADR-0009), native cleanup pending
+- Status: Accepted design; bounded Journal/retention (ADR-0009) and private QC screenshots/reviewed ADR staging (ADR-0010) implemented; native cleanup/PR publication pending
 - Date: 2026-10-09
 
 ## Decision
@@ -65,10 +65,18 @@ entire Workflow has completed integration/synthesis. Both event age and
 Run sealing age must meet the operator's 30–365 day threshold.
 
 Native Pi Session JSONL, owned/linked Worktrees, branches, command receipts,
-QC evidence and unfinished Workflow state remain untouched. PI WEB does not
+QC evidence and unfinished Workflow state remain untouched.
+
+ADR-0010 adds explicit, SHA-256 content-addressed private PNG/JPEG screenshot
+capture only when an existing file is tracked in the exact sealed QC Git commit,
+and verifies the stored image bytes on read. It also provides a **reviewed**
+ADR proposal with actual QC/evidence/screenshot references that can be staged
+without a Git commit in a distinct review Worktree. The operator still owns
+Git review and PR publication; Micromanager never claims a user-authored
+ADR is already accepted. PI WEB does not
 offer a public native Session archive/delete API in the current v1 contract;
 such cleanup must not be replaced by raw filesystem deletion.
 
 ## Consequences and limitations
 
-The current implementation only runs explicit, scoped GC for sealed public activity projections; no native Session/Worktree GC or ADR PR creation is implemented. `WorkflowInstance.events` has a maximum of 200 entries to bound state. Existing PI WEB session cleanup and worktree removal must remain separate until their lifecycle protections are explicitly integrated.
+The current implementation only runs explicit, scoped GC for sealed public activity projections. Real screenshot bytes and human-reviewed ADR file staging are available, but no native Session/Worktree GC, automatic screenshot taking or ADR PR publishing is implemented. `WorkflowInstance.events` has a maximum of 200 entries to bound state. Existing PI WEB session cleanup and worktree removal must remain separate until their lifecycle protections are explicitly integrated.
