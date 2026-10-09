@@ -134,13 +134,17 @@ const plugin:PiWebServerPlugin={
       projectId:binding.projectId,workspaceId:binding.workspaceId,
       sessionId:binding.sessionId,
     });
+    let reportError:unknown;
     const bridge=new PiSessionBridge(conn,()=>{},report=>{
-      if(report.runId!==binding.runId)
-        throw new Error("Wrong Run identity in replayed native Pi report");
-      ledger.recordReport(binding,report);
+      try{
+        if(report.runId!==binding.runId)
+          throw new Error("Wrong Run identity in replayed native Pi report");
+        ledger.recordReport(binding,report);
+      }catch(error){reportError=error;}
     });
     try{
       const inspected=await bridge.send({type:"inspect",requestId:randomUUID()},7000);
+      if(reportError)throw reportError;
       if(classifyRecoveredRun(binding.runId,inspected)!=="settled"||
         inspected.hasReport!==true)
         throw new Error("Settled Pi report replay lacks a valid durable turn proof");
