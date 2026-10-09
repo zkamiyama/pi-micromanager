@@ -116,12 +116,21 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       const started=await checked.bridge.send({
         type:"message",requestId:randomUUID(),text:job.prompt,delivery:"newTurn",
       },10000);
+      const observed=agents.get(job.projectId,job.orchestraWorkspaceId,created.sessionId);
       if(started.status!=="ok"){
-        binding=agents.update(binding,started.status==="uncertain"?"uncertain":"blocked");
-        notify(binding);
+        // A short Pi turn may have settled before the command receipt arrives.
+        // Never regress a terminal Run to blocked/uncertain or replay its prompt.
+        if(observed.phase!=="settled"&&observed.phase!=="sealed"){
+          binding=agents.update(observed,started.status==="uncertain"?"uncertain":"blocked");
+          notify(binding);
+        }
         throw new Error("Pi did not acknowledge the automatic start ("+started.status+")");
       }
-      binding=agents.update(binding,"running");
+      if(observed.phase==="settled"||observed.phase==="running"){
+        notify(observed);
+        return observed;
+      }
+      binding=agents.update(observed,"running");
       notify(binding);
       return binding;
     },
