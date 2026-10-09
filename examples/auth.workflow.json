@@ -1,0 +1,44 @@
+{
+  "id": "auth-migration",
+  "title": "Authentication migration",
+  "maxQcRounds": 5,
+  "maxParallelByRole": {
+    "planner": 1,
+    "implementer": 4,
+    "reviewer": 2,
+    "architect": 1
+  },
+  "tasks": [
+    {
+      "id": "contract",
+      "title": "Establish auth contract",
+      "kind": "implementation",
+      "role": "implementer",
+      "dependsOn": []
+    },
+    {
+      "id": "api",
+      "title": "Implement authentication API",
+      "kind": "implementation",
+      "role": "implementer",
+      "dependsOn": [{ "taskId": "contract", "gate": "qc_passed" }]
+    },
+    {
+      "id": "ui",
+      "title": "Implement sign-in UI",
+      "kind": "implementation",
+      "role": "implementer",
+      "dependsOn": [{ "taskId": "contract", "gate": "qc_passed" }]
+    },
+    {
+      "id": "e2e",
+      "title": "E2E integration checks",
+      "kind": "implementation",
+      "role": "implementer",
+      "dependsOn": [
+        { "taskId": "api", "gate": "integrated" },
+        { "taskId": "ui", "gate": "integrated" }
+      ]
+    }
+  ]
+}

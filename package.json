@@ -1,0 +1,37 @@
+{
+  "name": "pi-micromanager",
+  "version": "0.1.0-alpha.1",
+  "description": "A human-steerable control plane for Pi agent swarms",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "keywords": ["pi-package", "multi-agent", "workflow", "dag", "pi-web"],
+  "files": ["dist", "docs", "examples", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.0",
+    "@jmfederico/pi-web": "^1.202610.1",
+    "@types/node": "^24.13.3",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.0",
+    "@jmfederico/pi-web": "^1.202610.1"
+  },
+  "piWeb": {
+    "plugins": [
+      {
+        "id": "micromanager",
+        "browserRoot": "dist/pi-web",
+        "module": "dist/pi-web/browser.js",
+        "serverModule": "dist/pi-web/server.js",
+        "machineSpecific": true,
+        "defaultEnabled": false
+      }
+    ]
+  }
+}
