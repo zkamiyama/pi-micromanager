@@ -188,7 +188,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
           history.find(x=>!!x.sessionId)?.sessionId??"";
       s.loadStatus=selectionNotice||(active.length+" active/pending execution(s), "+history.length+" completed execution(s).");
       s.loaded=true;
-    }catch(error){s.loadStatus=String(error)}
+    }catch(error){s.loadStatus=String(error);s.loaded=true;}
     finally{s.busy=false;refresh(ctx);
       if(s.needsReload){s.needsReload=false;queueMicrotask(()=>{if(!lifetime.aborted)void load(ctx);});}
     }
@@ -209,7 +209,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
   async function listen(ctx:WorkspacePanelContext) {
     const s=stateFor(ctx);
     if(s.listening||s.connecting||lifetime.aborted)return;
-    if(!ctx.peer?.openChannel){s.loadStatus="Live channel unavailable";refresh(ctx);return}
+    if(!ctx.peer?.openChannel){s.loadStatus="Live channel unavailable";s.retryCount=5;refresh(ctx);return}
     s.connecting=true;refresh(ctx);
     const ctl=new AbortController();s.controller=ctl;
     try{
@@ -247,10 +247,12 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         },
       });
       if(ctl.signal.aborted||lifetime.aborted){channel.close();return}
-      s.channel=channel;s.listening=true;s.retryCount=0;s.loadStatus="Listening for actual Pi session activity.";
+      s.channel=channel;s.listening=true;s.loadStatus="Listening for actual Pi session activity.";
+      const connectedAt=Date.now();
       void channel.closed.then(()=>{
         if(s.channel!==channel)return;
         delete s.channel;delete s.controller;s.listening=false;
+        if(Date.now()-connectedAt>30000)s.retryCount=0;
         scheduleReconnect(ctx);
         if(s.retryCount>=5)s.loadStatus="Live stream reconnect limit reached. Use Reconnect stream.";
         refresh(ctx);
