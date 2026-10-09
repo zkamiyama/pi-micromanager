@@ -22,11 +22,11 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **Runtime adapter implemented experimentally (not authenticated E2E-verified):** Public PI WEB session creation in an existing resolved workspace, Pi companion model/effort handshake, direct steer/abort, bounded activity streams, immutable per-Run registry and Orchestra Live Runs/History.
 
-**New opt-in Autopilot (PR #7):** A real server-side scheduler now runs **validated, saved** DAGs in fresh Pi Sessions. It admits ready implementation Tasks, checks Git commits and real test exit codes, starts independent read-only QC, honors QC retry budgets and human holds, dispatches Sol's typed intervention plan and parallel frozen-snapshot diagnosis/synthesis, and persists bounded evidence receipts. An unknown/aborted Run **pauses safely**; server restart reconciles existing Sessions from durable Pi turn markers before resuming. Automatic Git merge/push is prohibited.
+**New opt-in Autopilot (PR #7):** A real Sol goal-proposal Session can first turn a natural-language objective into a strictly validated DAG for **explicit human approval**. After approval and Worktree/model configuration, the server-side scheduler runs **validated, saved** DAGs in fresh Pi Sessions. It admits ready implementation Tasks, checks Git commits and real test exit codes, starts independent read-only QC, honors QC retry budgets and human holds, dispatches Sol's typed intervention plan and parallel frozen-snapshot diagnosis/synthesis, and persists bounded evidence receipts. An unknown/aborted Run **pauses safely**; server restart reconciles existing Sessions from durable Pi turn markers before resuming. Automatic Git merge/push is prohibited.
 
-**Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. This does not add automatic Sol dispatch.
+**Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. The planner window represents a real Session only when Sol is actually running.
 
-**Still not implemented/verified:** Automatic Worktree creation/registration, initial free-form goal → DAG generation, independent provider-authenticated multi-Agent E2E, comprehensive screenshot and artifact evidence, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, approved Git integration/merge, ADR publication, Android-specific UI or TTS. Only **Task-scoped** Sol intervention planning is wired; an original DAG has to be imported/created first. Existing demo transition buttons remain a simulator.
+**Still not implemented/verified:** Automatic Worktree creation/registration, unattended goal → execution without explicit DAG approval/worktree setup, independent provider-authenticated multi-Agent E2E, comprehensive screenshot and artifact evidence, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, approved Git integration/merge, ADR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
 
 ## Architecture and ADRs
 
@@ -55,8 +55,17 @@ The example DAG is at [`examples/auth.workflow.json`](examples/auth.workflow.jso
 
 ## Opt-in Autopilot (real Pi execution)
 
+The **initial Sol proposal is read-only**. It is a fresh Pi Session using the
+`mm_workflow_proposal` tool, limited to 16 implementation Tasks with bounded
+requirements, valid acyclic dependencies and explicit acceptance criteria.
+The proposed definition is retained as a typed report in the scoped SQLite
+ledger and native Pi Session. A human must review/accept the exact proposal
+before a real Workflow is created. If desired, copy the proposal into the
+editable JSON importer to revise it before saving; proposal text alone
+cannot launch a modifying Agent.
+
 1. In PI WEB, create/verify **separate linked Git worktrees** in the target project. Record each linked workspace's PI WEB ID. A modifying Task must not use the project's main checkout.
-2. Under **Micromanager → Import a real Workflow DAG (JSON)**, save your versioned Task DAG (or use the example `examples/auth.workflow.json`). Replace the editable template placeholders and give each Task a concrete `description` plus `acceptanceCriteria` lines. Implementation and QC Runs receive **the same** contract. Verify Task IDs, dependency gates and requested changes before starting.
+2. Under **Micromanager → Ask Sol to plan a new goal**, enter a precise natural-language goal and exact authenticated Pi planner provider/model. Check the real Pi Session proposal, inspect its DAG and choose **Approve and save exact proposal**. Alternatively import a reviewed JSON DAG through **Import a real Workflow DAG**. In either case, give each Task a concrete `description` and `acceptanceCriteria` lines. Implementation and QC Runs receive **the same** contract. Verify Task IDs, dependency gates and requested changes before starting.
 3. Under **Autopilot → configuration (JSON)**, map every implementation Task ID to an existing linked Worktree workspace ID; configure **all four** exact Pi provider/model profiles and a bounded executable test argv. Save configuration, then explicitly **Start Autopilot**.
 4. Watch actual one-shot Pi Runs in the **Orchestra** tab. The scheduler makes fresh Sessions for implementation/QC/rework, but it never auto-merges. Use **Pause admission** to stop *new* work; current running Pi turns continue unless directly interrupted.
 5. For a human QC intervention, use **Task Lens** to register the after-next-QC barrier. Sol produces a typed plan, the investigations and synthesis run read-only, and a **human explicit resume** remains required.
