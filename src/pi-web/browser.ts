@@ -823,7 +823,7 @@ const plugin: PiWebPlugin = {
                 <section class="mm-permissions">
                   <strong>Workflow permissions · allow / ask / deny</strong>
                   <p>Default: ${w?.definition.permissions?.default??"allow"} (YOLO).
-                    `git.integrate` fast-forwards clean unstarted dependent
+                    Git integration fast-forwards clean unstarted dependent
                     Worktrees after sealed QC. Divergent branches require human
                     reconciliation; merge and deployment remain separate.
                     Edit Workflow JSON before import to change decisions.
