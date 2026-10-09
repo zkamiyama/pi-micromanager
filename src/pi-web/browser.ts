@@ -247,7 +247,7 @@ const plugin: PiWebPlugin = {
         state.autopilotEnabled=false;state.autopilotConfigured=false;
         delete state.autopilotConfigFor;
         state.goalStatus="Approved "+created.definition.id+
-          ". Configure exact models, tests and linked worktrees before starting Autopilot.";
+          ". Configure models and tests; automatic Worktree creation is available on Start.";
         delete state.goalRef;state.goalProposalReady=false;saveGoalRef(context,undefined);
         state.workflows=state.workflows.filter(x=>x.definition.id!==created.definition.id).concat(created);
       }catch(error){state.goalStatus="Proposal acceptance failed: "+String(error);}
@@ -387,6 +387,21 @@ const plugin: PiWebPlugin = {
       finally{s.busy=false;context.host.requestRender();}
     }
 
+    function insertAutoManagedWorktrees(context:WorkspacePanelContext){
+      const state=stateFor(context);
+      if(state.autopilotEnabled)return;
+      try{
+        const raw=JSON.parse(state.autopilotDraft) as Record<string,unknown>;
+        raw.workspaces??={};
+        raw.managedWorktrees=true;
+        raw.finalization={workspaceId:"auto",autoMerge:true};
+        state.autopilotDraft=JSON.stringify(raw,null,2);
+        state.autopilotStatus="Automatic Worktrees staged. On explicit Start, "+
+          "missing Task Worktrees and the final Worktree will be created and "+
+          "their PI WEB identities verified before any Pi Session. Save the configuration first.";
+      }catch(error){state.autopilotStatus=String(error);}
+      context.host.requestRender();
+    }
     function insertFinalWorkspace(context:WorkspacePanelContext){
       const state=stateFor(context);
       if(state.autopilotEnabled||!state.finalWorktreeWorkspaceId.trim())return;
@@ -435,8 +450,10 @@ const plugin: PiWebPlugin = {
       try{
         const result=await send(context,"auto."+operation,{
           workflowId,...(operation==="configure"?{config:JSON.parse(state.autopilotDraft)}:{}),
-        }) as {enabled:boolean;status:string};
+        }) as {enabled:boolean;status:string;config?:unknown};
         state.autopilotEnabled=result.enabled;state.autopilotStatus=result.status;
+        if(operation==="start"&&result.config)
+          state.autopilotDraft=JSON.stringify(result.config,null,2);
         if(operation==="configure"){
           state.autopilotConfigured=true;
           state.autopilotConfigFor=workflowId;
@@ -766,9 +783,10 @@ const plugin: PiWebPlugin = {
               ${w?html`<details class="mm-managed-worktree">
                 <summary><strong>Manage isolated Git Worktree</strong> · preview before creating</summary>
                 <p>Create a new Task branch and linked Git Worktree in Micromanager's own data
-                  directory. PI WEB discovers Git Worktrees automatically, but its public
-                  capability does not provide Workspace registration. After creation, select
-                  the new workspace in PI WEB and enter its ID below. No Worktree is deleted automatically.</p>
+                  directory. PI WEB discovers linked Git Worktrees automatically.
+                  In managed Autopilot mode, the Workspace ID is resolved and verified on Start.
+                  Manual ID entry remains available for legacy configurations.
+                  No Worktree is deleted automatically.</p>
                 <label>Unstarted implementation Task
                   <select aria-label="Task for managed Git Worktree" .value=${state.worktreeTaskId}
                     ?disabled=${state.busy||state.autopilotEnabled}
@@ -826,10 +844,14 @@ const plugin: PiWebPlugin = {
                   base branch and credentials. Legacy configurations never push unexpectedly.
                   Exact models, linked Worktrees and host tests are still required.</p>
                 <label for="mm-auto-config">Autopilot configuration (JSON)</label>
-                <p>For end-to-end YOLO, select a separate linked Git Worktree
-                  for the final combined code. After the original DAG is QC-passed,
-                  a fresh Pi Run merges all approved SHAs, is independently QC-checked,
-                  and then opens and auto-merges the final GitHub PR.</p>
+                <p>Opt into automatic provisioning to create missing Task Worktrees
+                  and a separate final Worktree at explicit Start. PI WEB discovers Git
+                  Worktrees automatically; the host validates their exact identities before
+                  admitting any Pi Session. Independent final QC and Workflow permissions
+                  gate the GitHub auto-merge.</p>
+                <button ?disabled=${state.busy||state.autopilotEnabled}
+                  @click=${()=>insertAutoManagedWorktrees(context)}>
+                  Auto-provision DAG Worktrees + final integration (opt in)</button>
                 <label>Final integration Workspace ID
                   <input .value=${state.finalWorktreeWorkspaceId}
                     ?disabled=${state.busy||state.autopilotEnabled}
