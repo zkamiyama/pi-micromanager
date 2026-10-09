@@ -830,6 +830,91 @@ const plugin: PiWebPlugin = {
               </div>
               <p role="status" aria-live="polite">${state.status}</p>
 
+              <section class="mm-quick" aria-label="Natural-language one-command Autopilot">
+                <div class="mm-quick-heading">
+                  <div><h3>Tell Sol what to build</h3>
+                    <p>One command · Plan → DAG → Pi Runs → QC → GitHub</p></div>
+                  <span class="mm-quick-mark">AUTO</span>
+                </div>
+                <label for="mm-quick-goal">Development goal</label>
+                <textarea id="mm-quick-goal" rows="3" maxlength="4000"
+                  placeholder="What should the agents build? Include acceptance criteria and constraints…"
+                  .value=${state.quickGoalText}
+                  ?disabled=${state.busy||state.quickGoals.some(g=>
+                    ["reserved","planning","starting","running"].includes(g.phase))}
+                  @input=${(e:Event)=>{
+                    const goal=(e.target as HTMLTextAreaElement).value;
+                    if(goal!==state.quickGoalText)delete state.quickRequestId;
+                    state.quickGoalText=goal;context.host.requestRender();
+                  }}></textarea>
+                ${state.quickProfile?html`
+                  <p class="mm-quick-scope">Publish to
+                    <strong>${state.quickProfile.config.publication?.remote}/${state.quickProfile.config.publication?.baseBranch}</strong>
+                    · PR merge: <strong>${state.quickProfile.permissions.actions?.["github.pr.merge"]??
+                      state.quickProfile.permissions.default??"allow"}</strong>
+                    · New isolated Worktrees
+                  </p>`:html`<p class="mm-quick-scope">
+                    First save a project setup below (Pi models, tests, GitHub destination and policy).
+                    No modifying work runs until you explicitly select Plan &amp; run.</p>`}
+                <div class="mm-actions">
+                  <button class="mm-quick-run" ?disabled=${state.busy||!state.quickProfile||
+                    !state.quickGoalText.trim()||state.quickGoals.some(g=>
+                      ["reserved","planning","starting","running"].includes(g.phase))}
+                    @click=${()=>void startQuick(context)}>Plan &amp; run</button>
+                  <button ?disabled=${state.busy}
+                    @click=${()=>void loadQuick(context)}>Refresh progress</button>
+                  ${state.quickGoals.length>0&&!state.quickGoals.some(g=>
+                    ["reserved","planning","starting","running"].includes(g.phase))?
+                    html`<button ?disabled=${state.busy}
+                      @click=${()=>newQuickGoal(context)}>New goal</button>`:null}
+                </div>
+                ${state.quickGoals.slice(0,1).map(job=>html`
+                  <div class="mm-quick-progress" role="status" aria-live="polite">
+                    <strong>${job.phase==="reserved"?"Queued":job.phase==="planning"?"Sol is planning":
+                      job.phase==="starting"?"Preparing Worktrees":
+                      job.phase==="running"?"Autopilot is running":
+                      job.phase==="finished"?"Completed":
+                      job.phase==="cancelled"?"Cancelled":"Needs attention"}</strong>
+                    <p>${job.message}</p>
+                    <p class="mm-quick-ref">Workflow <code>${job.workflowId}</code>
+                      · Request <code>${job.requestId.slice(0,8)}</code></p>
+                    <div class="mm-quick-steps" aria-label="Pipeline">
+                      ${["Plan","Prepare","Execute","Complete"].map((title,index)=>html`
+                        <span class=${(({reserved:-1,planning:0,starting:1,
+                          running:2,finished:3,needs_attention:-1,cancelled:-1}
+                          as Record<string,number>)[job.phase]??-1)>=index?
+                          "mm-step-done":""}>${title}</span>`)}
+                    </div>
+                    <div class="mm-actions">
+                      ${["reserved","planning"].includes(job.phase)?html`
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void cancelQuick(context,job.requestId)}>
+                          Cancel before code starts</button>`:null}
+                      ${["starting","running","finished"].includes(job.phase)?html`
+                        <button ?disabled=${state.busy}
+                          @click=${()=>void openQuickWorkflow(context,job.workflowId)}>
+                          Open DAG</button>`:null}
+                    </div>
+                  </div>`)}
+                <details class="mm-quick-setup" ?open=${!state.quickProfile}>
+                  <summary>${state.quickProfile?"Project setup / change settings":
+                    "First-time project setup (required)"}</summary>
+                  <p>These defaults are saved once per project Workspace. Replace the Pi model
+                    IDs and choose a real test command. <code>github.pr.merge: ask</code>
+                    requests review; <code>allow</code> permits hands-free merge after QC and
+                    GitHub CI. Sol cannot override your policy. A Plan &amp; run click explicitly
+                    authorizes new code changes under these settings.</p>
+                  <label for="mm-quick-config">Saved run profile (JSON)</label>
+                  <textarea id="mm-quick-config" rows="14" spellcheck="false"
+                    .value=${state.quickSetupDraft} ?disabled=${state.busy}
+                    @input=${(e:Event)=>{state.quickSetupDraft=
+                      (e.target as HTMLTextAreaElement).value;}}></textarea>
+                  <button ?disabled=${state.busy}
+                    @click=${()=>void configureQuick(context)}>Save project setup</button>
+                </details>
+                <p class="mm-quick-feedback" role="status">${state.quickError}</p>
+              </section>
+
               <details class="mm-goal-proposal">
                 <summary><strong>Ask Sol to plan a new goal</strong> · read-only proposal</summary>
                 <p>Sol creates a structured Task DAG through a real Pi Session. Nothing is
@@ -1229,6 +1314,34 @@ const styles = `
   .mm nav { display:flex; flex-wrap:wrap; gap: 6px; margin:12px 0; }
   .mm nav .selected { border-color: var(--pi-accent-border); color: var(--pi-accent); }
   .mm .toolbar { display:flex; flex-wrap:wrap; gap: 8px; margin-top: 12px; }
+  .mm-quick{border:1px solid var(--pi-accent-border);border-radius:12px;
+    padding:14px;margin:14px 0;background:var(--pi-surface);min-width:0;}
+  .mm-quick-heading{display:flex;justify-content:space-between;gap:12px;align-items:start;}
+  .mm-quick-heading h3{margin:0;font-size:15px;}
+  .mm-quick-heading p{margin:2px 0 12px;font-size:12px;color:var(--pi-muted);}
+  .mm-quick-mark{border-radius:999px;border:1px solid var(--pi-border-muted);
+    color:var(--pi-muted);font-size:10px;padding:2px 8px;letter-spacing:.08em;}
+  .mm-quick label{display:block;font-size:12px;margin:8px 0 4px;}
+  .mm-quick textarea{width:100%;box-sizing:border-box;border:1px solid var(--pi-border-muted);
+    border-radius:8px;background:var(--pi-surface);color:inherit;padding:10px;
+    resize:vertical;font:inherit;min-width:0;}
+  .mm-quick-scope,.mm-quick-feedback{font-size:12px;color:var(--pi-muted);
+    overflow-wrap:anywhere;margin:8px 0;}
+  .mm-quick-run{background:var(--pi-accent-surface, var(--pi-surface))!important;
+    border-color:var(--pi-accent-border)!important;font-weight:600!important;}
+  .mm-quick-progress{margin-top:12px;padding:12px;border-radius:9px;
+    border:1px solid var(--pi-border-muted);background:var(--pi-surface);}
+  .mm-quick-progress p{font-size:12px;overflow-wrap:anywhere;margin:4px 0 8px;}
+  .mm-quick-ref{color:var(--pi-muted);}
+  .mm-quick-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:5px;margin:8px 0 12px;}
+  .mm-quick-steps span{font-size:10px;text-align:center;padding:5px 2px;
+    border-radius:5px;border:1px solid var(--pi-border-muted);color:var(--pi-muted);}
+  .mm-quick-steps .mm-step-done{color:var(--pi-accent);border-color:var(--pi-accent-border);}
+  .mm-quick-setup{margin-top:12px;border-top:1px solid var(--pi-border-muted);padding-top:10px;}
+  .mm-quick-setup summary{cursor:pointer;font-size:12px;}
+  .mm-quick-setup p{font-size:12px;color:var(--pi-muted);}
+
   .mm .mm-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; }
   .mm-card { border:1px solid var(--pi-border-muted); border-radius:10px; padding: 10px; min-width:0; }
   .mm-card h3 { margin:0; font-size:13px; }
