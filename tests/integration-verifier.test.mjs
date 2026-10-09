@@ -146,3 +146,18 @@ test("Crash between authoritative integration commit and preview receipt recover
     assert.equal(after.revision,current.revision+1);
   }finally{x.close();}
 });
+
+test("Separate QC review workspace cannot disguise the writer's own checkout as integration",async()=>{
+  const x=fixture();
+  try{
+    const current=x.ledger.get("p","o","flow");
+    x.ledger.save("p","o","flow",{
+      ...current.config,
+      workspaces:{...current.config.workspaces,api:"wt-integration"},
+      reviewWorkspaces:{api:"wt-source"},
+    });
+    await assert.rejects(x.service.preview("p","o","flow","api","wt-integration"),
+      /Source implementation\/QC Worktree/);
+    assert.equal(x.workflows.get("p","o","flow").tasks.api.status,"passed");
+  }finally{x.close();}
+});
