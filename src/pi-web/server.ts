@@ -15,6 +15,8 @@ import { type RuntimeActivity, type RuntimeControl } from "../runtime/protocol.j
 import { AutopilotLedger } from "../automation/ledger.js";
 import { AutopilotEngine } from "../automation/engine.js";
 import { createHostExecutor } from "../automation/host-port.js";
+import { classifyRecoveredRun } from "../automation/recovery.js";
+import type { AutopilotRecord } from "../automation/ledger.js";
 
 function object(value:unknown):Record<string,unknown> {
   if(value===null||typeof value!=="object"||Array.isArray(value))
@@ -58,8 +60,11 @@ const plugin:PiWebServerPlugin={
   const viewers=new Set<Fanout>();
   let autopilot:AutopilotEngine|undefined;
   let automationTimer:ReturnType<typeof setInterval>|undefined;
+  let bootstrap:Promise<void>|undefined;
+  let automationReady=false;
+  const recoveryFlights=new Map<string,Promise<void>>();
   function scheduleAutopilot(projectId:string,workspaceId:string,workflowId:string):void {
-    if(host.lifetimeSignal.aborted)return;
+    if(host.lifetimeSignal.aborted||!automationReady)return;
     const cfg=ledger.get(projectId,workspaceId,workflowId);
     if(cfg?.enabled&&autopilot)queueMicrotask(()=>{
       if(!host.lifetimeSignal.aborted)void autopilot!.tick(cfg);
@@ -151,6 +156,49 @@ const plugin:PiWebServerPlugin={
         binding.phase==="configured"||binding.phase==="running"?binding.phase:"connected"):"uncertain");
     return {bridge,status:reply.status};
   }
+
+  /** Attach to the *same* Pi Session after restart; never replay an uncertain Run. */
+  function reconcileWorkflow(record:AutopilotRecord):Promise<void>{
+    const key=JSON.stringify([record.projectId,record.orchestraWorkspaceId,record.workflowId]);
+    const existing=recoveryFlights.get(key);
+    if(existing)return existing;
+    const flight=(async()=>{
+      const entries=agents.list(record.projectId,record.orchestraWorkspaceId,"active")
+        .filter(b=>b.workflowId===record.workflowId&&b.requestId.startsWith("auto:"));
+      for(const binding of entries){
+        if(host.lifetimeSignal.aborted)throw new Error("Plugin is shutting down");
+        if(binding.phase!=="running"||!binding.sessionId)
+          throw new Error("Run "+binding.runId+" requires manual reconciliation ("+binding.phase+")");
+        const bridge=await connect(binding);
+        const response=await bridge.send({type:"inspect",requestId:randomUUID()},7000);
+        const outcome=classifyRecoveredRun(binding.runId,response);
+        if(outcome==="uncertain")
+          throw new Error("Run "+binding.runId+" has no provable last-turn state; no replay permitted");
+        if(outcome==="running")continue;
+        const current=agents.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId);
+        if(current.phase==="running"){
+          agents.record(current,{
+            kind:"agent_settled",sequence:1,at:Date.now(),
+            text:outcome==="aborted"?"Agent interrupted":"Agent settled",
+          });
+          notifyRun(agents.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId));
+        }
+      }
+    })();
+    recoveryFlights.set(key,flight);
+    void flight.finally(()=>{if(recoveryFlights.get(key)===flight)recoveryFlights.delete(key);})
+      .catch(()=>{/* Awaited caller handles failures. */});
+    return flight;
+  }
+  async function restoreEnabledAutopilots():Promise<void>{
+    for(const cfg of ledger.list().filter(x=>x.enabled)){
+      try{await reconcileWorkflow(cfg);}
+      catch(error){
+        ledger.setStatus(cfg.projectId,cfg.orchestraWorkspaceId,cfg.workflowId,false,
+          "Paused on restart: "+String(error).slice(0,800));
+      }
+    }
+  }
   autopilot=new AutopilotEngine(store,agents,ledger,createHostExecutor({
     host,workflows:store,agents,
     getSessions:()=>sessions,getWorkspaces:()=>workspaces,probe,
@@ -161,11 +209,19 @@ const plugin:PiWebServerPlugin={
       sessions=capabilities.resolve(PI_WEB_HOST_PI_SESSIONS_CAPABILITY);
       sessionEvents=capabilities.resolve(PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY);
       workspaces=capabilities.resolve(PI_WEB_HOST_WORKSPACES_CAPABILITY);
-      automationTimer=setInterval(()=>{
+      bootstrap=restoreEnabledAutopilots().catch(error=>{
+        host.logger.error("Autopilot restore failed",{message:String(error).slice(0,500)});
+      }).then(()=>{
         if(host.lifetimeSignal.aborted)return;
-        for(const cfg of ledger.list().filter(x=>x.enabled))void autopilot!.tick(cfg);
-      },1500);
-      automationTimer.unref();
+        automationReady=true;
+        automationTimer=setInterval(()=>{
+          if(host.lifetimeSignal.aborted)return;
+          for(const cfg of ledger.list().filter(x=>x.enabled))void autopilot!.tick(cfg);
+        },1500);
+        automationTimer.unref();
+        for(const cfg of ledger.list().filter(x=>x.enabled))scheduleAutopilot(
+          cfg.projectId,cfg.orchestraWorkspaceId,cfg.workflowId);
+      });
     },
     peer:{
       async request(ctx){
@@ -223,10 +279,12 @@ const plugin:PiWebServerPlugin={
                   throw new Error("QC requires an existing linked Worktree");
               }
             }
+            if(bootstrap)await bootstrap;
             const manual=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
               !b.requestId.startsWith("auto:")&&
               !["sealed","failed"].includes(b.phase));
             if(manual)throw new Error("Manually owned Runs are still live or unsealed; reconcile them first");
+            await reconcileWorkflow(configured);
             ledger.setStatus(p,o,workflowId,true,"Autopilot running; no merge or Worktree GC is automatic");
             scheduleAutopilot(p,o,workflowId);
             return j(ledger.get(p,o,workflowId));
