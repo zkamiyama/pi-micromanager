@@ -496,7 +496,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       </details>
     </section>`;
   }
-  return {id:"live-runs",title:"Live Runs",order:51,render};
+  return {id:"live-runs",title:"Orchestra",order:51,render};
 }
 const css=`
   .mm-fleet {box-sizing:border-box;padding:14px;color:inherit;min-width:0;font:inherit;font-size:13px;}
