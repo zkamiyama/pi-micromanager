@@ -15,7 +15,7 @@ export interface PublicationConfig {
   draft:true;
 }
 export interface FinalizationConfig {
-  /** A prelinked non-main PI WEB Worktree dedicated to the combined result. */
+  /** Real PI WEB ID, or "auto" until opted-in provisioning resolves it. */
   workspaceId:string;
   /** End-to-end YOLO: promote Draft PR to ready and use GitHub auto-merge. */
   autoMerge:boolean;
@@ -23,6 +23,8 @@ export interface FinalizationConfig {
 export interface AutopilotConfig {
   /** No final Git integration for legacy configurations unless set explicitly. */
   finalization?:FinalizationConfig;
+  /** Explicit permission to create missing linked Worktrees when Autopilot starts. */
+  managedWorktrees?:true;
   /** Configured publication target enables YOLO push + Draft PR creation.
    * Legacy saved configurations without this field never acquire new network effects. */
   publication?:PublicationConfig;
@@ -70,7 +72,10 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
     models[seat]={provider:str(p.provider,120),model:str(p.model,160),
       ...(p.effort===undefined?{}:{effort:str(p.effort,32)})};
   }
-  const workspaces=workspaceMap(raw.workspaces);
+  if(raw.managedWorktrees!==undefined&&raw.managedWorktrees!==true)
+    throw new Error("managedWorktrees must be true when configured");
+  const managedWorktrees=raw.managedWorktrees===true;
+  const workspaces=workspaceMap(raw.workspaces??(managedWorktrees?{}:undefined));
   // A single modifying Worktree shared across Tasks is never safe, even when
   // the current workflow happens to dispatch those Tasks sequentially.
   if(new Set(Object.values(workspaces)).size!==Object.keys(workspaces).length)
@@ -81,6 +86,8 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
     if(Object.keys(f).some(k=>!["workspaceId","autoMerge"].includes(k)))
       throw new Error("Unknown finalization field");
     const workspaceId=str(f.workspaceId,128);
+    if(workspaceId==="auto"&&!managedWorktrees)
+      throw new Error("Automatic final Workspace requires managedWorktrees opt-in");
     if(Object.values(workspaces).includes(workspaceId)||
       (raw.reviewWorkspaces!==undefined&&
         Object.values(workspaceMap(raw.reviewWorkspaces)).includes(workspaceId)))
@@ -116,7 +123,8 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   }
   if(finalization&&!publication)
     throw new Error("Final integration requires a configured GitHub publication destination");
-  return {workspaces, ...(finalization?{finalization}:{}),
+  return {workspaces, ...(managedWorktrees?{managedWorktrees:true as const}:{}),
+    ...(finalization?{finalization}:{}),
     ...(raw.reviewWorkspaces===undefined?{}:{
     reviewWorkspaces:workspaceMap(raw.reviewWorkspaces)}),
     ...(publication?{publication}:{}),

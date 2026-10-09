@@ -17,6 +17,7 @@ import { AutopilotEngine } from "../automation/engine.js";
 import { createHostExecutor } from "../automation/host-port.js";
 import { IntegrationVerifier } from "../automation/integration.js";
 import { ManagedWorktreeProvisioner } from "../automation/worktree-provisioner.js";
+import { resolveManagedGitWorkspace } from "../automation/workspace-discovery.js";
 import { ActivityRetention } from "../automation/retention.js";
 import { buildJournal } from "../automation/journal.js";
 import { ScreenshotEvidence } from "../automation/screenshots.js";
@@ -586,8 +587,9 @@ const plugin:PiWebServerPlugin={
             if(active)throw new Error("Cannot reconfigure while an automated Pi Run is unsealed");
             const missing=Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation"&&
               !config.workspaces[t.spec.id]).map(t=>t.spec.id);
-            if(missing.length)throw new WorkflowError("missing_worktrees",
-              "Configure an existing linked worktree per implementation Task: "+missing.join(", "));
+            if(missing.length&&!config.managedWorktrees)
+              throw new WorkflowError("missing_worktrees",
+                "Configure a linked Worktree per Task or opt into managedWorktrees: "+missing.join(", "));
             return j(ledger.save(p,o,workflowId,config));
           }
           case "auto.start":{
@@ -599,9 +601,41 @@ const plugin:PiWebServerPlugin={
             const fresh=ledger.get(p,o,workflowId);
             if(fresh?.enabled)return j(fresh);
             if(!workspaces)throw new Error("PI WEB workspace authority unavailable");
+            const manual=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
+              !b.requestId.startsWith("auto:")&&
+              !["sealed","failed"].includes(b.phase));
+            if(manual)throw new Error("Manually owned Runs are still live or unsealed; reconcile them first");
+            // The operator explicitly started Autopilot; save/configure alone
+            // never mutates Git. Prepare ALL Worktrees before starting a Pi Run.
+            let ready=configured;
+            if(ready.config.managedWorktrees){
+              const workspacesByTask={...ready.config.workspaces};
+              const missing=Object.values(workflow.tasks).filter(t=>
+                t.spec.kind==="implementation"&&!workspacesByTask[t.spec.id]);
+              const needsFinal=ready.config.finalization?.workspaceId==="auto";
+              if(missing.length||needsFinal){
+                for(const task of missing){
+                  const plan=await provisioner.ensure(p,o,workflowId,task.spec.id,ctx.project.path);
+                  workspacesByTask[task.spec.id]=await resolveManagedGitWorkspace(
+                    workspaces,p,plan.path);
+                }
+                let finalization=ready.config.finalization;
+                if(needsFinal&&finalization){
+                  const plan=await provisioner.ensure(p,o,workflowId,
+                    "mm-final-integration",ctx.project.path);
+                  finalization={...finalization,workspaceId:
+                    await resolveManagedGitWorkspace(workspaces,p,plan.path)};
+                }
+                // Persist all host-validated identities before ANY Pi Session.
+                ready=ledger.save(p,o,workflowId,{
+                  ...ready.config,workspaces:workspacesByTask,
+                  ...(finalization?{finalization}:{}),
+                });
+              }
+            }
             const owners=new Set<string>();
             for(const task of Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation")){
-              const workerId=configured.config.workspaces[task.spec.id];
+              const workerId=ready.config.workspaces[task.spec.id];
               if(!workerId)throw new Error("Task "+task.spec.id+" needs a linked Worktree");
               const resolved=await workspaces.resolve({projectId:p,workspaceId:workerId});
               if(resolved.project.id!==p||resolved.workspace.projectId!==p||
@@ -611,7 +645,7 @@ const plugin:PiWebServerPlugin={
               if(owners.has(resolved.workspace.path))
                 throw new Error("Multiple implementation Tasks resolve to the same Worktree path");
               owners.add(resolved.workspace.path);
-              const reviewId=configured.config.reviewWorkspaces?.[task.spec.id];
+              const reviewId=ready.config.reviewWorkspaces?.[task.spec.id];
               if(reviewId){
                 const qc=await workspaces.resolve({projectId:p,workspaceId:reviewId});
                 if(qc.project.id!==p||qc.workspace.id!==reviewId||qc.workspace.isMain||
@@ -619,12 +653,21 @@ const plugin:PiWebServerPlugin={
                   throw new Error("QC requires an existing linked Worktree");
               }
             }
-            const manual=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
-              !b.requestId.startsWith("auto:")&&
-              !["sealed","failed"].includes(b.phase));
-            if(manual)throw new Error("Manually owned Runs are still live or unsealed; reconcile them first");
-            await reconcileWorkflow(configured);
-            ledger.setStatus(p,o,workflowId,true,"Autopilot running; no merge or Worktree GC is automatic");
+            if(ready.config.finalization){
+              const finalId=ready.config.finalization.workspaceId;
+              if(finalId==="auto")throw new Error("Final Worktree identity remains unresolved");
+              const final=await workspaces.resolve({projectId:p,workspaceId:finalId});
+              if(final.project.id!==p||final.workspace.projectId!==p||
+                final.workspace.id!==finalId||final.workspace.isMain||
+                final.workspace.provider?.metadata?.isGitWorktree!==true||
+                owners.has(final.workspace.path))
+                throw new Error("Final integration requires an independent linked Worktree");
+              if(Object.values(ready.config.reviewWorkspaces??{}).includes(finalId))
+                throw new Error("Final Worktree cannot share a QC Workspace");
+            }
+            await reconcileWorkflow(ready);
+            ledger.setStatus(p,o,workflowId,true,
+              "Autopilot running; managed Worktrees retained, PR merge gated by QC and policy");
             scheduleAutopilot(p,o,workflowId);
             return j(ledger.get(p,o,workflowId));
           }

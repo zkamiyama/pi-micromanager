@@ -1,6 +1,6 @@
-/** Explicit, append-only Git Worktree provisioning under the plugin-owned data root.
- * PI WEB's public workspace API does not expose registration/discovery: this
- * creates a Git-linked Worktree, never invents a PI WEB Workspace ID. */
+/** Durable Git Worktree provisioning under the plugin-owned data root.
+ * PI WEB discovers Git worktrees on demand. The resolved PI WEB identity is
+ * verified separately before admitting any Pi Session. */
 import {createHash,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {mkdirSync,realpathSync,lstatSync,existsSync} from "node:fs";
@@ -94,13 +94,21 @@ export class ManagedWorktreeProvisioner {
     if(this.options.ledger.get(projectId,orchestraWorkspaceId,workflowId)?.enabled)
       throw new Error("Pause Autopilot before modifying Git Worktrees");
     const workflow=this.options.workflows.get(projectId,orchestraWorkspaceId,workflowId);
-    const task=workflow.tasks[taskId];
-    if(!task||task.spec.kind!=="implementation"||task.attempts!==0||
-      !["ready","blocked"].includes(task.status))
-      throw new Error("Only unstarted implementation Tasks may receive managed Worktrees");
-    const mapped=this.options.ledger.get(projectId,orchestraWorkspaceId,workflowId)
-      ?.config.workspaces[taskId];
-    if(mapped)throw new Error("Task already has a configured PI WEB Workspace ID");
+    const config=this.options.ledger.get(projectId,orchestraWorkspaceId,workflowId)?.config;
+    const isFinal=taskId==="mm-final-integration"&&
+      config?.managedWorktrees===true&&config.finalization?.workspaceId==="auto"&&
+      !Object.hasOwn(workflow.tasks,taskId);
+    if(isFinal){
+      if(Object.values(workflow.tasks).some(t=>t.attempts!==0))
+        throw new Error("Final Worktree must be provisioned before any Task starts");
+    }else{
+      const task=workflow.tasks[taskId];
+      if(!task||task.spec.kind!=="implementation"||task.attempts!==0||
+        !["ready","blocked"].includes(task.status))
+        throw new Error("Only unstarted implementation Tasks may receive managed Worktrees");
+      if(config?.workspaces[taskId])
+        throw new Error("Task already has a configured PI WEB Workspace ID");
+    }
     return workflow;
   }
   async preview(projectId:string,orchestraWorkspaceId:string,
@@ -201,5 +209,18 @@ export class ManagedWorktreeProvisioner {
       throw new Error("Git Worktree add was not confirmed; inspect reserved plan, do not retry: "+
         result.stderr.slice(-230));
     return this.inspect(projectId,orchestraWorkspaceId,id);
+  }
+  /** Opt-in automatic provisioning. Reserved mutations are only inspected,
+   * never replayed, including after a host restart or lost Git response. */
+  async ensure(projectId:string,orchestraWorkspaceId:string,workflowId:string,
+    taskId:string,repoRoot:string):Promise<WorktreePlan>{
+    const existing=this.find(projectId,orchestraWorkspaceId,workflowId,taskId);
+    if(existing?.stage==="reserved"||existing?.stage==="created")
+      return this.inspect(projectId,orchestraWorkspaceId,existing.id);
+    const revision=this.options.workflows.get(projectId,orchestraWorkspaceId,workflowId).revision;
+    const prepared=existing?.stage==="prepared"&&existing.revision===revision&&
+      existing.expiresAt>Date.now()?existing:
+      await this.preview(projectId,orchestraWorkspaceId,workflowId,taskId,repoRoot);
+    return this.create(projectId,orchestraWorkspaceId,prepared.id,repoRoot);
   }
 }
