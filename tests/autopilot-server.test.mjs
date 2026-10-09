@@ -672,7 +672,8 @@ test("PI WEB full-DAG YOLO creates a fresh final merge Pi Session, final QC, the
    assert.equal(host.sessions.size,4,
      "Original implementation, original QC, final implementation and final QC each own one Pi Session");
    const state=await host.request("get","final-merge-flow");
-   assert.equal(state.tasks.api.status,"passed");
+   assert.equal(state.tasks.api.status,"integrated");
+   assert.equal(state.tasks["mm-final-integration"].status,"integrated");
    assert.equal(state.tasks["mm-final-integration"].lastQc.headSha,FINAL);
    assert.ok(!host.calls.some(x=>x.args.includes("--admin")||
      x.args.includes("--force")||x.args.includes("--delete-branch")));
