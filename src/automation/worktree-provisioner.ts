@@ -4,11 +4,11 @@
 import {createHash,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {mkdirSync,realpathSync,lstatSync,existsSync} from "node:fs";
-import {dirname,join,resolve,relative,sep} from "node:path";
+import {dirname,join,resolve,relative,sep,isAbsolute} from "node:path";
 import type {WorkflowStore} from "../core/store.js";
 import type {AutopilotLedger} from "./ledger.js";
 import {automationScope} from "./ledger.js";
-import {git,gitHead,gitSha,inspectedGitRoot,requireCleanGit,type GitHost} from "./git.js";
+import {git,requireCleanGit,type GitHost} from "./git.js";
 
 export type WorktreeStage="prepared"|"reserved"|"created";
 export interface WorktreePlan {
@@ -98,7 +98,7 @@ export class ManagedWorktreeProvisioner {
   async preview(projectId:string,orchestraWorkspaceId:string,
     workflowId:string,taskId:string,repoRoot:string):Promise<WorktreePlan>{
     const workflow=this.validateTask(projectId,orchestraWorkspaceId,workflowId,taskId);
-    if(!repoRoot||!repoRoot.startsWith(sep))throw new Error("Expected host-resolved absolute project path");
+    if(!repoRoot||!isAbsolute(repoRoot))throw new Error("Expected host-resolved absolute project path");
     const cleanSha=await requireCleanGit(this.options.host,repoRoot);
     const scope=automationScope(projectId,orchestraWorkspaceId);
     const target=managedPath(this.options.dataDirectory,scope,workflowId,taskId);
