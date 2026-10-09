@@ -36,12 +36,20 @@ worktree registry, branch identity, head SHA, exact Git root, and cleanliness.
 A matching result transitions to `created`. An absent or conflicting result
 remains unresolved for explicit operator reconciliation; nothing is deleted.
 
-The PI WEB `workspaces` v1 public capability **does not create, register, or
-list** newly linked workspaces. Its bundled Git provider will discover linked
-Git Worktrees, but the operator must select the new workspace in PI WEB, copy
-its actual PI WEB Workspace ID, and insert/save that ID in the Autopilot
-configuration. **Never derive PI WEB's opaque Workspace IDs from internal
-hashing algorithms or call private routes.**
+The PI WEB server-plugin `workspaces` v1 capability exposes only `resolve`,
+not create or list. However, **PI WEB does not register Git Worktrees**: its
+bundled Git provider automatically lists the linked Worktrees of a project,
+and the browser HTTP `GET /api/projects/:projectId/workspaces` route returns
+the current list. In this ADR's original **manual** workflow, the operator
+may copy a real Workspace ID from PI WEB.
+
+**Superseded/extended by ADR-0014 for explicitly opted-in automatic
+provisioning:** the pinned Git provider's internal ID derivation is treated
+only as a *candidate*. It must pass public host `workspaces.resolve` authority
+validation with the exact new Worktree path, linked Git metadata and project
+scope before a Pi Session. The implementation fails closed when PI WEB changes
+the ID scheme or provider. Do not use an unverified hash as authority and
+do not call private host internals.
 
 ## Git integration is an evidence-verified claim, not an automatic merge
 
@@ -82,9 +90,11 @@ falsely imply that other worktrees contain the code.
 
 ## Limitations and future integration
 
-- Worktree **creation** now has an explicit supported workflow, but it is not
-  fully automatic provisioning into PI WEB's workspace registry. The actual
-  PI WEB Workspace ID is still supplied by the operator.
+- Manual preview/confirm remains available. With explicit
+  `managedWorktrees: true`, automatic creation and host-verified PI WEB ID
+  resolution occur at Autopilot Start (ADR-0014). This relies on the current
+  PI WEB Git provider's version-specific ID scheme, not an exposed public
+  `workspaces.list` capability.
 - No cleanup, automatic divergent branch merge or conflict resolution is
   performed by the integration verifier. ADR-0011 handles optional,
   exact-QC automated Git Push and Draft PR creation separately; ADR-0012

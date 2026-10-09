@@ -30,7 +30,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. The planner window represents a real Session only when Sol is actually running.
 
-**Still not implemented/verified:** Automatic discovery/registration of newly created Worktrees as PI WEB Workspace IDs, unattended goal → execution without explicit DAG approval/Workspace setup, independent provider-authenticated multi-Agent E2E, automatic browser screenshot capture and broader artifact types, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, general unattended dependency conflict reconciliation and policy-bypassing protected-branch operations, ADR Git commit/PR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
+**Still not implemented/verified:** A stable public server-plugin Workspace list/ID API (managed IDs are host-verified against the currently pinned PI WEB Git provider), unattended goal → execution without explicit DAG approval/model/test setup, independent provider-authenticated multi-Agent E2E, automatic browser screenshot capture and broader artifact types, full Pi JSONL replay, safe Pi Session/Worktree garbage collection, general unattended dependency conflict reconciliation and policy-bypassing protected-branch operations, ADR Git commit/PR publication, Android-specific UI or TTS. Sol now supports both **read-only initial goal-to-DAG proposals** and Task-scoped intervention planning; proposed DAGs still need explicit acceptance and real run configuration. Existing demo transition buttons remain a simulator.
 
 ## Architecture and ADRs
 
@@ -47,6 +47,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - [ADR-0011 — YOLO Workflow permissions and QC-gated Draft PR publication](docs/adr/0011-yolo-workflow-permissions-and-publication.md)
 - [ADR-0012 — Safe automatic dependent Worktree Git convergence](docs/adr/0012-safe-automatic-git-convergence.md)
 - [ADR-0013 — Final Pi integration, independent QC and GitHub auto-merge](docs/adr/0013-final-integration-and-github-automerge.md)
+- [ADR-0014 — Automatic managed Git Worktrees and PI WEB identity discovery](docs/adr/0014-automatic-worktree-discovery.md)
 
 ## Development
 
@@ -74,9 +75,9 @@ before a real Workflow is created. If desired, copy the proposal into the
 editable JSON importer to revise it before saving; proposal text alone
 cannot launch a modifying Agent.
 
-1. In PI WEB, create/verify **separate linked Git worktrees**, or use **Micromanager → Manage isolated Git Worktree → Preview → Create** to create a task-owned branch/linked Git Worktree after explicit review. Select the new workspace in PI WEB and copy its **actual PI WEB Workspace ID** into Autopilot configuration. A modifying Task must not use the project's main checkout.
+1. In PI WEB, select a registered **Git project** with a clean exact checkout. PI WEB discovers `git worktree` checkouts automatically; newly created linked Worktrees do **not** need GUI registration. Existing manual Worktree IDs can still be used.
 2. Under **Micromanager → Ask Sol to plan a new goal**, enter a precise natural-language goal and exact authenticated Pi planner provider/model. Check the real Pi Session proposal, inspect its DAG and choose **Approve and save exact proposal**. Alternatively import a reviewed JSON DAG through **Import a real Workflow DAG**. In either case, give each Task a concrete `description` and `acceptanceCriteria` lines. Implementation and QC Runs receive **the same** contract. Verify Task IDs, dependency gates and requested changes before starting.
-3. Under **Autopilot → configuration (JSON)**, map every implementation Task ID to an existing linked Worktree workspace ID; configure **all four** exact Pi provider/model profiles and a bounded executable test argv. For YOLO publication, verify `publication.remote` and `publication.baseBranch` and make sure `gh` and Git authentication are available on the host. Legacy configs without `publication` never push. Save configuration, then explicitly **Start Autopilot**.
+3. Under **Autopilot → configuration (JSON)**, choose **Auto-provision DAG Worktrees + final integration (opt in)** or provide existing linked Worktree IDs. Set **all four** exact Pi provider/model profiles and a bounded executable test argv. For YOLO publication, verify `publication.remote`, `publication.baseBranch`, and host Git/`gh` authentication. Save configuration, then explicitly **Start Autopilot**. Only at Start does managed mode create missing Task Worktrees and the separate final Worktree, verify their actual PI WEB identities and persist the resolved IDs **before** launching any Pi Session. Legacy configs without `publication` never push.
 4. Watch actual one-shot Pi Runs in the **Orchestra** tab. The scheduler makes fresh Sessions for implementation/QC/rework and can publish QC-passed Draft PRs. It fast-forwards clean unstarted dependent Worktrees. With explicit finalization config, it then creates a dedicated final integration Pi Run and final QC, and can safely request GitHub PR auto-merge without bypassing branch protection. Use **Pause admission** to stop *new* work; current running Pi turns continue unless directly interrupted.
 5. For a human QC intervention, use **Task Lens** to register the after-next-QC barrier. Sol produces a typed plan, the investigations and synthesis run read-only, and a **human explicit resume** remains required.
 
@@ -98,6 +99,16 @@ Example configuration (replace IDs and all provider/model values with your real 
   "maxAttempts": 5
 }
 ```
+
+For **fully managed** opt-in DAG execution, use `"managedWorktrees": true`,
+`"workspaces": {}`, `"finalization": {"workspaceId":"auto","autoMerge":true}`,
+and `"publication": {"remote":"origin","baseBranch":"main","draft":true}`
+alongside the same required `models`, `test` and `maxAttempts` fields.
+The `"auto"` value is only an explicit pre-start request, **not** a PI WEB
+Workspace ID; Start replaces it with a host-verified real ID. If a Task already
+has a configured real ID, the provisioner keeps it and creates only missing
+Worktrees. Finalization/auto-merge is never enabled implicitly by
+`managedWorktrees` alone.
 
 Models may optionally specify a supported `effort`. Use actual **Task IDs** from the imported DAG, not the placeholders above. A QC reviewer defaults to the implementation Worktree as a read-only snapshot unless `reviewWorkspaces` provides a separately linked workspace whose HEAD already matches the implementation SHA. Independent diagnoses run against that same frozen snapshot. Worktrees must remain clean; a dirty checkout or unsupported exact model causes a safe stop.
 
@@ -192,11 +203,13 @@ every original QC source commit is in the final HEAD, re-runs tests, and
 launches a **different read-only Pi Session for independent final QC**.
 Failed QC triggers bounded new implementation attempts, not auto-acceptance.
 
-To enable this, first select/create a **separate PI WEB linked Worktree**
-distinct from all Task code and QC Worktrees. In **Autopilot**, enter that
-Worktree's real PI WEB Workspace ID and choose **Enable full-DAG integration
-+ YOLO PR auto-merge**. This stages the following configuration, which you
-must explicitly save before starting Autopilot:
+To enable this, choose one of two explicit paths in **Autopilot**: enter a
+pre-existing linked final Workspace ID, or choose **Auto-provision DAG Worktrees
++ final integration (opt in)**. The latter stages
+`managedWorktrees: true` and `finalization.workspaceId: "auto"` in the
+configuration. Save it, then explicitly Start Autopilot: Git Worktrees are
+created and PI WEB IDs verified *before* any Run. For an already linked final
+Worktree, the corresponding legacy configuration remains valid:
 
 ```json
 {
@@ -213,7 +226,12 @@ must explicitly save before starting Autopilot:
 ```
 
 Other required configuration keys (`models`, `workspaces`, `test`,
-`maxAttempts`) remain unchanged. When `finalization` is enabled, Task
+`maxAttempts`) remain unchanged. Managed mode may start with an empty
+`workspaces` map; the host fills it before admitting an Agent.
+Worktree creation is opt-in, never deletes existing Worktrees and never
+directly modifies the main checkout. The current PI WEB Git provider's ID
+derivation is version-specific and verified by public `workspaces.resolve`;
+a mismatch pauses safely. See [ADR-0014](docs/adr/0014-automatic-worktree-discovery.md). When `finalization` is enabled, Task
 branches are **not** published individually. Only the final QC-approved SHA
 is pushed; the host creates a Draft GitHub PR. With
 `finalization.autoMerge=true`, Workflow `github.pr.merge` permission
@@ -266,15 +284,24 @@ rather than assuming Git has been updated.
 
 ## Managed Worktrees and Git integration proof
 
-**Worktree creation (explicit, no automatic deletion):** Select an unstarted
-implementation Task in the **Manage isolated Git Worktree** section. Preview
+**Worktree creation (explicit or managed opt-in; no automatic deletion):** For the
+legacy preview/confirm route, select an unstarted implementation Task in the
+**Manage isolated Git Worktree** section. Preview
 the repository's clean base SHA, a task-scoped branch and a location inside
 Micromanager's private data directory. Click **Create reviewed Git Worktree**
 only when you intend to add that Git branch and checkout. If the response is
 uncertain, use **Inspect reserved Worktree**; never issue another blind create.
-Once PI WEB's Git provider discovers the newly linked checkout, select it in
-PI WEB and copy its Workspace ID into the configuration. This registration
-step is manual because public PI WEB `workspaces` v1 has no create/list API.
+PI WEB's Git provider discovers linked Worktrees on demand without any
+registration step. For manual configuration, copy the Workspace ID from PI WEB.
+With `managedWorktrees: true`, Autopilot creates missing Worktrees on explicit
+Start, calculates candidate IDs according to the pinned PI WEB Git provider,
+and **validates each candidate via PI WEB's public `workspaces.resolve`**
+before saving the mapping. The browser HTTP route
+`GET /api/projects/:projectId/workspaces` also lists current Worktrees,
+but the server-plugin host capability exposes only `resolve`, not `list`;
+the host plugin does not assume an internal authenticated loopback HTTP URL.
+If PI WEB changes its ID algorithm, no Pi Session is started and the operator
+can still manually configure existing IDs. See ADR-0014.
 
 **QC-to-Git integration (verified, not performed):** QC PASS is intentionally
 not a Git merge. Perform the actual Git integration yourself, following your

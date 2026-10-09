@@ -2,7 +2,7 @@
 
 - Status: Implemented in the experimental orchestrator, mocked PI WEB and disposable real Git CI; real authenticated E2E deferred
 - Date: 2026-10-09
-- Extends: ADR-0002, ADR-0007, ADR-0011, ADR-0012
+- Extends: ADR-0002, ADR-0007, ADR-0011, ADR-0012; provisioning updated by ADR-0014
 
 ## Why finalization needs its own Task and QC
 
@@ -21,9 +21,9 @@ independent leaves and resolving conflicts.
 
 ## Configured boundary
 
-A new or consciously reconfigured Workflow must opt into the complete
-pipeline by providing a distinct **existing linked PI WEB Git Worktree
-ID** in the Autopilot configuration:
+A new or consciously reconfigured Workflow must **explicitly** opt into
+full-DAG final integration. It may provide a distinct existing linked PI WEB
+Git Workspace ID as before:
 
 ```json
 {
@@ -32,13 +32,21 @@ ID** in the Autopilot configuration:
 }
 ```
 
-This Worktree must be distinct from every implementation and independent
-QC Worktree, non-main, on a separate review branch, Git-root exact and
-clean before each Run. The public PI WEB `workspaces` v1 API has no
-create/list/registration action, so the operator must still register/select
-the Worktree explicitly. Configurations **without** `finalization`
-retain the earlier Task-per-PR behavior and cannot unexpectedly begin
-a new final merge.
+Alternatively, an explicitly reviewed Autopilot configuration may specify
+`managedWorktrees: true`, `workspaces: {}`, and
+`finalization: { "workspaceId": "auto", "autoMerge": true }`. On **Start**,
+Micromanager creates missing Task Worktrees and a dedicated final Worktree,
+resolves each to an authority-verified PI WEB Workspace ID and durably saves
+the real IDs before Pi runs. This does not occur during Sol planning or
+configuration save. See ADR-0014 for the current host API limitation and the
+version-dependent discovery compatibility check.
+
+In both paths the final Worktree must be distinct from every implementation
+and independent QC Worktree, non-main, on its own branch, Git-root exact and
+clean before each Run. PI WEB discovers Git Worktrees directly using
+`git worktree list`; manual GUI registration is **not** required.
+Configurations **without** `finalization` retain the Task-per-PR behavior;
+enabling `managedWorktrees` alone never enables GitHub auto-merge.
 
 ## State machine
 
@@ -118,9 +126,11 @@ or claim to have merged.
   Git DAG conditions from ADR-0012. A divergent pre-task Worktree
   may pause before full-DAG finalization; final conflict repair
   currently applies once the original DAG is stable.
-- The complete finalization path requires an explicitly configured
-  existing Worktree and working Git/`gh` authentication. Remote
-  branch policies and upstream repository configuration still apply.
+- The complete finalization path requires an explicit existing Worktree ID
+  **or** explicit managed provisioning, and working Git/`gh` authentication.
+  Remote branch policies and upstream repository configuration still apply.
+  Managed Workspace identity derivation is PI WEB version-specific, checked
+  against its host authority, and stops safely if the contract changes.
 - Original Workflows without finalization retain legacy semantics;
   no main checkout is rewritten by this feature.
 - Multiple simultaneous control plane instances sharing checkout
