@@ -1,6 +1,6 @@
 # Adversarial orchestration and intervention verification
 
-- Status: In CI on PR #9; no authenticated real Pi/PI WEB performance certification
+- Status: Maintained Node.js 22/24 CI regression suite; no authenticated real Pi/PI WEB performance certification
 - Scope: Deterministic Task DAG transitions, one-shot Pi Session reservations,
   shared per-Workflow concurrency limits, QC barriers, bounded retries,
   cancellation/restart behavior and Git evidence gates.
