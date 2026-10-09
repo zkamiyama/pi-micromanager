@@ -210,7 +210,7 @@ const plugin: PiWebPlugin = {
               ?disabled=${state.busy}
               @click=${() => { void change(context, { type: "cancel_amendment", amendmentId: pending.id }); }}>
               Cancel pending intervention</button>` : null}
-            ${pending?.status === "planning" ? html`<button ?disabled=${state.busy}
+            ${pending?.status === "planning" && !state.autopilotConfigured ? html`<button ?disabled=${state.busy}
               @click=${() => { void change(context, {
                 type: "plan_intervention", interventionId: pending.id,
                 rationale: "SIMULATION ONLY: independent root-cause and alternative analysis",
@@ -223,8 +223,12 @@ const plugin: PiWebPlugin = {
           ${pending ? html`<div class="mm-intervention-state" role="status">
             <strong>Intervention ${pending.id}: ${pending.status}</strong>
             <p>${pending.instruction ?? "Typed diagnostic plan"} · after QC: ${pending.afterQcRunId}</p>
-            ${pending.status === "planning" ? html`<p>Barrier is durable. Sol planner connection is NOT implemented;
-              this task will remain held if QC finishes before planning.</p>` : null}
+            ${pending.status === "planning" ? html`<p>Barrier is durable.
+              ${state.autopilotEnabled?
+                "Autopilot launches a fresh read-only Sol planning Run; QC remains held if it finishes first.":
+                state.autopilotConfigured?
+                  "Autopilot is paused. Start it to run Sol planning; the QC barrier remains armed.":
+                  "The demo planner is simulation-only until real Autopilot is configured."}</p>` : null}
             ${pending.planRationale ? html`<p>Plan: ${pending.planRationale}</p>` : null}
           </div>` : null}
         </div>` : html`<div class="mm-lens-content">
