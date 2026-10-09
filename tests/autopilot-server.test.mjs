@@ -190,14 +190,20 @@ test("Public plugin bridge runs a real configured one-shot implementer and QC, n
       s.commands.some(c=>c.type==="configure"&&c.job?.kind==="qc")&&
       s.commands.some(c=>c.type==="message")));
     assert.notEqual(qc.id,first.id);
-    qc.finish({kind:"qc",runId:"qc-api-1",verdict:"pass",
-      summary:"Read-only contract and host tests passed",at:Date.now()});
+    // Simulate a native Pi report persisted while the server missed its event.
+    // On settlement the host must inspect the SAME Session, never redo QC.
+    qc.report={kind:"qc",runId:"qc-api-1",verdict:"pass",
+      summary:"Read-only contract and host tests passed",at:Date.now()};
+    qc.reported=true;
+    qc.finish();
     await eventually(async()=>((await host.request("get","wf")).tasks.api.status==="passed"));
     const wf=await host.request("get","wf");
     assert.equal(wf.tasks.api.status,"passed");
     assert.equal(wf.tasks.api.lastQc.headSha,SHA);
     const all=await host.request("agents.list",{view:"all"});
     assert.equal(all.filter(b=>b.phase==="sealed").length,2);
+    assert.ok(qc.commands.some(x=>x.type==="inspect"),
+      "A lost native report is recovered with read-only inspection");
     assert.equal(host.sessions.size,2,"No duplicate hosted Sessions");
     assert.ok(host.calls.some(c=>c.file==="node"&&c.cwd==="/repo/api"));
     assert.ok(host.calls.some(c=>c.file==="git"&&c.args.includes("status")));
@@ -219,13 +225,15 @@ test("Read-only Sol goal report does not create or execute a DAG before explicit
       maxParallelByRole:{implementer:1,reviewer:1,architect:1,planner:1},
       tasks:[{id:"endpoint",title:"Health endpoint",kind:"implementation",role:"implementer",
         description:"Expose GET /health",acceptanceCriteria:["HTTP 200"],dependsOn:[]}]};
+    const pending=await host.request("auto.proposal",{draftWorkflowId:goal.draftWorkflowId,runId:goal.runId});
+    assert.equal(pending.canAccept,false,"A live planner without settled evidence is not approvable");
     session.report={kind:"workflow_plan",runId:goal.runId,summary:"Ready for human review",
       definition:approval,at:Date.now()};
-    session.publish(REPORT_CHANNEL,session.report);
-    const pending=await host.request("auto.proposal",{draftWorkflowId:goal.draftWorkflowId,runId:goal.runId});
-    assert.equal(pending.canAccept,false,"A submitted report alone cannot authorize workflow creation");
-    session.finish();
+    session.reported=true;
+    session.finish(); // report notification was lost, but native Session retained it
     const draft=await host.request("auto.proposal",{draftWorkflowId:goal.draftWorkflowId,runId:goal.runId});
+    assert.ok(session.commands.some(x=>x.type==="inspect"));
+    assert.equal(draft.canAccept,true,"Missed native report must be restored by read-only inspection");
     assert.equal(draft.canAccept,true);
     assert.deepEqual(draft.proposal,approval);
     assert.deepEqual(await host.request("list",null),[]);
