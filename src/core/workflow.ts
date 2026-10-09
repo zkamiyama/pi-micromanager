@@ -18,6 +18,8 @@ export interface TaskSpec {
   dependsOn: Dependency[];
   /** A provider model ID, not a CLI or API credential. */
   model?: string;
+  /** Only the Workflow engine may generate this internal, post-DAG Task. */
+  systemPurpose?:"final-integration";
 }
 export interface WorkflowDefinition {
   id: string;
@@ -85,7 +87,8 @@ export type WorkflowAction =
   | { type: "cancel_amendment"; amendmentId: string }
   | { type: "complete"; taskId: string }
   | { type: "resume_after_diagnosis"; amendmentId: string; decision: "rework" | "accept_pass" }
-  | { type: "integrate"; taskId: string };
+  | { type: "integrate"; taskId: string }
+  | { type: "prepare_final_integration" };
 
 export class WorkflowError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "WorkflowError"; }
@@ -379,6 +382,46 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       t.status = action.decision === "rework" ? "ready" : "passed";
       a.status = "completed";
       message = `Resolved ${a.id}; ${t.spec.id} -> ${t.status}`;
+      break;
+    }
+    case "prepare_final_integration": {
+      const id="mm-final-integration";
+      invariant(!Object.hasOwn(instance.tasks,id),"finalization_exists",
+        "Final integration Task already exists");
+      invariant(instance.definition.tasks.length<512,"finalization_capacity",
+        "Final integration needs a free Workflow Task slot");
+      invariant(!instance.amendments.some(a=>
+        a.status!=="cancelled"&&a.status!=="completed"),"finalization_held",
+        "Resolve all human interventions before final integration");
+      const original=Object.values(instance.tasks);
+      invariant(original.every(t=>t.spec.kind==="implementation"?
+        (["passed","integrated"].includes(t.status)&&
+          t.lastQc?.verdict==="pass"):
+        t.status==="done"),"finalization_blocked",
+        "All original implementation Tasks need QC PASS, and other Tasks must finish");
+      const sources=original.filter(t=>t.spec.kind==="implementation");
+      invariant(sources.length>0,"finalization_blocked",
+        "Final integration needs QC-passed source commits");
+      const spec:TaskSpec={
+        id,title:"Integrate all approved code and run final QC",
+        kind:"implementation",role:"implementer",
+        systemPurpose:"final-integration",
+        description:"Combine every original Task's QC-approved Git commit in "+
+          "a separate final integration Worktree. Resolve any Git merge conflicts, "+
+          "commit the full integration result, and preserve all source commits.",
+        acceptanceCriteria:[
+          "Final Git HEAD contains every original Task's sealed QC-approved commit as an ancestor",
+          "Final Git Worktree is clean and configured integration tests pass",
+          "Independent final QC confirms the complete combined implementation",
+        ],
+        dependsOn:original.map(t=>({taskId:t.spec.id,
+          gate:t.spec.kind==="implementation"?"qc_passed":"completed"})),
+      };
+      instance.definition.tasks.push(spec);
+      instance.tasks[id]={spec,status:"blocked",attempts:0,qcRounds:0};
+      validateDefinition(instance.definition);
+      message="Prepared final-integration Task for "+sources.length+
+        " QC-approved source commit(s)";
       break;
     }
     case "integrate": {
