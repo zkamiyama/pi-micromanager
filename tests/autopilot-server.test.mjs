@@ -551,9 +551,21 @@ test("Real PI WEB scheduler fast-forwards dependent Git Worktree before launchin
       s.commands.some(c=>c.type==="message")));
     qc.finish({kind:"qc",runId:"qc-api-1",verdict:"pass",
       summary:"Verified upstream API contract",at:Date.now()});
-    const child=await eventually(()=>[...host.sessions.values()].find(s=>
-      s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-consumer-1")&&
-      s.commands.some(c=>c.type==="message")),15000);
+    let child;
+    try{
+      child=await eventually(()=>[...host.sessions.values()].find(s=>
+        s.commands.some(c=>c.type==="configure"&&c.job?.runId==="impl-consumer-1")&&
+        s.commands.some(c=>c.type==="message")),15000);
+    }catch(error){
+      const status=await host.request("auto.status",{workflowId:"dependency-chain"});
+      const workflow=await host.request("get","dependency-chain");
+      const approvals=await host.request("auto.permissions",{workflowId:"dependency-chain"});
+      assert.fail("Child launch unavailable: "+String(error)+"; status="+
+        JSON.stringify(status)+"; workflow="+JSON.stringify(workflow.tasks)+
+        "; convergence="+JSON.stringify(host.convergence)+
+        "; approvals="+JSON.stringify(approvals)+"; calls="+
+        JSON.stringify(host.calls.slice(-30)));
+    }
     assert.equal(host.convergence.merges,1);
     assert.equal(host.convergence.head,SHA);
     assert.equal(child.afterConvergence,true,
