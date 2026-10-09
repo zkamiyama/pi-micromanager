@@ -14,6 +14,7 @@ const DEMO: WorkflowDefinition = {
 };
 type View = "cockpit" | "dag" | "kanban" | "journal";
 type Detail = "compact" | "expanded";
+type InterventionMode = "workflow" | "implementer" | "qc";
 interface State {
   workflows: WorkflowInstance[];
   selected?: WorkflowInstance;
@@ -22,6 +23,9 @@ interface State {
   loaded: boolean;
   view: View;
   detailByRole: Record<Role, Detail>;
+  selectedTaskId?: string;
+  interventionMode: InterventionMode;
+  interventionDraft: string;
 }
 const roleNames: Role[] = ["planner", "implementer", "reviewer", "architect"];
 const states = new Map<string, State>();
@@ -31,7 +35,9 @@ function stateFor(context: WorkspacePanelContext): State {
   let state = states.get(key);
   if (!state) {
     state = { workflows: [], status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
-      detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" } };
+      detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
+      interventionMode: "workflow",
+      interventionDraft: "After the next QC, ask Astra and Claude Opus to independently investigate the root cause and alternatives; let Sol synthesize before Luna resumes." };
     states.set(key, state);
   }
   return state;
@@ -56,6 +62,7 @@ const plugin: PiWebPlugin = {
         state.workflows = result as WorkflowInstance[];
         const id = workflowId ?? state.selected?.definition.id ?? state.workflows[0]?.definition.id;
         if (id) state.selected = await send(context, "get", id) as WorkflowInstance;
+        if (state.selectedTaskId && !state.selected?.tasks[state.selectedTaskId]) state.selectedTaskId = undefined;
         state.loaded = true;
         state.status = `${state.workflows.length} saved workflow(s).`;
       } catch (error) { state.status = String(error); }
@@ -86,6 +93,81 @@ const plugin: PiWebPlugin = {
       } catch (error) { state.status = String(error); }
       finally { state.busy = false; if (!disposed) context.host.requestRender(); }
     }
+
+    function selectTask(context: WorkspacePanelContext, taskId: string) {
+      const state = stateFor(context);
+      state.selectedTaskId = taskId;
+      state.interventionMode = "workflow";
+      context.host.requestRender();
+    }
+    function taskLens(context: WorkspacePanelContext, w: WorkflowInstance) {
+      const state = stateFor(context);
+      const task = state.selectedTaskId ? w.tasks[state.selectedTaskId] : undefined;
+      if (!task) return html`<section class="mm-lens" aria-label="Task Lens">
+        <strong>Task Lens</strong>
+        <p>Choose a task in Cockpit, DAG, or Kanban. Its identity is attached automatically.</p>
+      </section>`;
+      const pending = w.amendments.find(a => a.targetTaskId === task.spec.id &&
+        ["planning", "armed", "activated"].includes(a.status));
+      const canHold = task.spec.kind === "implementation" &&
+        ["ready", "running", "awaiting_qc"].includes(task.status) && !pending;
+      return html`<section class="mm-lens" aria-label="Task Lens">
+        <div class="mm-lens-head"><div><strong>Task Lens · ${task.spec.title}</strong>
+          <p>Target: ${w.definition.id} / ${task.spec.id} · ${task.status} · QC ${task.qcRounds}/${w.definition.maxQcRounds}</p>
+        </div><button @click=${() => { state.selectedTaskId = undefined; context.host.requestRender(); }}>Close</button></div>
+        <div class="mm-modes" role="group" aria-label="Intervention target">
+          ${(["workflow", "implementer", "qc"] as const).map(mode => html`<button
+            class=${state.interventionMode === mode ? "selected" : ""}
+            aria-pressed=${state.interventionMode === mode}
+            @click=${() => { state.interventionMode = mode; context.host.requestRender(); }}>
+            ${mode === "workflow" ? "Change workflow (Sol)" : mode === "implementer" ? "Steer implementer" : "Steer QC"}
+          </button>`)}
+        </div>
+        ${state.interventionMode === "workflow" ? html`<div class="mm-lens-content">
+          <p>Reserve the next post-QC transition now. Sol prepares a typed plan; only the engine can apply its DAG changes.
+            Other tasks are unaffected.</p>
+          <label for="mm-intervention-text">Instruction to Sol (task target is automatic)</label>
+          <textarea id="mm-intervention-text" rows="3" maxlength="4000" .value=${state.interventionDraft}
+            ?disabled=${state.busy || !!pending}
+            @input=${(e: Event) => { state.interventionDraft = (e.target as HTMLTextAreaElement).value; context.host.requestRender(); }}></textarea>
+          <div class="mm-actions">
+            <button ?disabled=${state.busy || !canHold || !state.interventionDraft.trim()}
+              @click=${() => { void change(context, {
+                type: "request_intervention",
+                interventionId: "human-" + crypto.randomUUID().replace(/-/g, "").slice(0, 18),
+                targetTaskId: task.spec.id, afterQcRunId: "next",
+                instruction: state.interventionDraft.trim(),
+              }); }}>Reserve next QC barrier</button>
+            ${pending && (pending.status === "planning" || pending.status === "armed") ? html`<button
+              ?disabled=${state.busy}
+              @click=${() => { void change(context, { type: "cancel_amendment", amendmentId: pending.id }); }}>
+              Cancel pending intervention</button>` : null}
+            ${pending?.status === "planning" ? html`<button ?disabled=${state.busy}
+              @click=${() => { void change(context, {
+                type: "plan_intervention", interventionId: pending.id,
+                rationale: "SIMULATION ONLY: independent root-cause and alternative analysis",
+                agents: [
+                  { id: "astra", title: "Root cause investigation", role: "architect", model: "configured-astra-model" },
+                  { id: "opus", title: "Alternative design investigation", role: "architect", model: "configured-opus-model" },
+                ],
+              }); }}>Simulate Sol plan (Astra + Opus)</button>` : null}
+          </div>
+          ${pending ? html`<div class="mm-intervention-state" role="status">
+            <strong>Intervention ${pending.id}: ${pending.status}</strong>
+            <p>${pending.instruction ?? "Typed diagnostic plan"} · after QC: ${pending.afterQcRunId}</p>
+            ${pending.status === "planning" ? html`<p>Barrier is durable. Sol planner connection is NOT implemented;
+              this task will remain held if QC finishes before planning.</p>` : null}
+            ${pending.planRationale ? html`<p>Plan: ${pending.planRationale}</p>` : null}
+          </div>` : null}
+        </div>` : html`<div class="mm-lens-content">
+          <p>Direct ${state.interventionMode === "qc" ? "QC" : "implementer"} steer will target
+            the Pi Session bound to task ${task.spec.id} without routing through Sol.</p>
+          <p role="status">Unavailable in this simulator: real Pi Session bindings and native steer
+            are not connected. No message is sent.</p>
+          <button disabled>Send directly (requires Pi bridge)</button>
+        </div>`}
+      </section>`;
+    }
     const actionsFor = (context: WorkspacePanelContext, t: TaskState, w: WorkflowInstance) => {
       const act = (action: WorkflowAction) => { void change(context, action); };
       const buttons = [];
@@ -95,13 +177,6 @@ const plugin: PiWebPlugin = {
             headSha: `simulation-${t.attempts}`, criteriaRevision: 0, testsPassed: true })}>Simulate tests pass</button>`
         : html`<button @click=${() => act({ type: "complete", taskId: t.spec.id })}>Simulate complete</button>`);
       if (t.status === "awaiting_qc") {
-        if (!w.amendments.some(a => a.targetTaskId === t.spec.id && a.status === "armed")) {
-          buttons.push(html`<button @click=${() => act({ type: "arm_diagnosis", amendmentId: `diag-${t.spec.id}-${t.qcRounds + 1}`,
-            targetTaskId: t.spec.id, afterQcRunId: "next", agents: [
-              { id: "astra", title: "Root cause analysis", role: "architect", model: "configured-astra-model" },
-              { id: "opus", title: "Alternative solution analysis", role: "architect", model: "configured-opus-model" },
-            ] })}>Arm Astra + Opus after QC</button>`);
-        }
         for (const verdict of ["pass", "fail"] as const) buttons.push(html`<button @click=${() => act({ type: "qc_finalized", taskId: t.spec.id,
           runId: `qc-${t.spec.id}-${t.qcRounds + 1}`, headSha: t.pendingWork?.headSha ?? "", criteriaRevision: t.pendingWork?.criteriaRevision ?? 0,
           attempt: t.pendingWork?.attempt ?? 0, verdict })}>Simulate QC ${verdict}</button>`);
@@ -151,20 +226,22 @@ const plugin: PiWebPlugin = {
               `)}</nav>
               ${!w ? html`<p>Create a demo DAG or load a saved workflow.</p>` : html`
                 <p>Workflow ${w.definition.id} · revision ${w.revision} · QC max ${w.definition.maxQcRounds}</p>
+                ${taskLens(context, w)}
                 ${state.view === "cockpit" ? html`
                   <div class="mm-toggles">${roleNames.map(role => html`<label>${role}<select .value=${state.detailByRole[role]}
                      @change=${(e: Event) => { state.detailByRole[role] = (e.target as HTMLSelectElement).value as Detail; context.host.requestRender(); }}>
                     <option value="compact">Compact</option><option value="expanded">Expanded</option></select></label>`)}</div>
-                  <div class="mm-grid">${tasks.map(t => html`<article class="mm-card"><h3>${t.spec.title}</h3><small>${t.spec.role} · ${t.status} · attempt ${t.attempts}</small>
+                  <div class="mm-grid">${tasks.map(t => html`<article class="mm-card ${state.selectedTaskId === t.spec.id ? "mm-task-selected" : ""}"><h3>${t.spec.title}</h3><small>${t.spec.role} · ${t.status} · attempt ${t.attempts}</small>
+                     <button class="mm-intervene" @click=${() => selectTask(context, t.spec.id)}>Intervene in this task</button>
                     ${state.detailByRole[t.spec.role] === "expanded" ? html`<p>Task ${t.spec.id}. Depends on ${t.spec.dependsOn.map(d => `${d.taskId}(${d.gate})`).join(", ") || "nothing"}. QC ${t.qcRounds}/${w.definition.maxQcRounds}.</p>
                     <div class="mm-actions">${actionsFor(context, t, w)}</div>` : null}
                   </article>`)}</div>` : null}
                 ${state.view === "dag" ? (() => { const graph = layout(w); return html`<div class="mm-scroll"><svg width=${graph.width} height=${graph.height} viewBox=${`0 0 ${graph.width} ${graph.height}`} role="img" aria-label="Workflow DAG">
                   ${tasks.flatMap(t => t.spec.dependsOn.map(d => { const from = graph.coords.get(d.taskId)!; const to = graph.coords.get(t.spec.id)!; return html`<line x1=${from.x+170} y1=${from.y+28} x2=${to.x} y2=${to.y+28} stroke="currentColor" stroke-opacity=".45" stroke-width="1.6" />`; }))}
-                  ${tasks.map(t => { const p = graph.coords.get(t.spec.id)!; return html`<g><rect x=${p.x} y=${p.y} rx="8" width="170" height="55" fill="var(--pi-surface)" stroke="var(--pi-border-muted)" /><text x=${p.x+9} y=${p.y+21} fill="currentColor" font-size="11">${t.spec.title.slice(0,23)}</text><text x=${p.x+9} y=${p.y+39} fill="var(--pi-muted)" font-size="10">${t.status}</text></g>`; })}
+                  ${tasks.map(t => { const p = graph.coords.get(t.spec.id)!; return html`<g role="button" tabindex="0" aria-label=${"Intervene in " + t.spec.title} @click=${() => selectTask(context,t.spec.id)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectTask(context,t.spec.id); } }}><rect x=${p.x} y=${p.y} rx="8" width="170" height="55" fill="var(--pi-surface)" stroke="var(--pi-border-muted)" /><text x=${p.x+9} y=${p.y+21} fill="currentColor" font-size="11">${t.spec.title.slice(0,23)}</text><text x=${p.x+9} y=${p.y+39} fill="var(--pi-muted)" font-size="10">${t.status}</text></g>`; })}
                 </svg></div>`; })() : null}
                 ${state.view === "kanban" ? html`<div class="mm-kanban">${(["blocked", "ready", "running", "awaiting_qc", "held", "passed", "done", "integrated", "needs_human"] as const).map(status => html`
-                  <section><strong>${status}</strong>${tasks.filter(t=>t.status===status).map(t=>html`<div class="mm-pill">${t.spec.title}</div>`)}</section>`)}</div>` : null}
+                  <section><strong>${status}</strong>${tasks.filter(t=>t.status===status).map(t=>html`<button class="mm-pill" @click=${() => selectTask(context,t.spec.id)}>${t.spec.title}</button>`)}</section>`)}</div>` : null}
                 ${state.view === "journal" ? html`<div class="mm-events">${[...w.events].reverse().map(e=>html`<article><time>${e.at}</time><p><strong>${e.type}</strong> · ${e.message}</p></article>`)}</div>` : null}
               `}
             </section>`;
@@ -200,5 +277,20 @@ const styles = `
   .mm-pill {background:var(--pi-surface);border-radius:6px;padding:6px;margin-top:7px;font-size:12px;}
   .mm-events article {border-bottom:1px solid var(--pi-border-muted);padding:7px 0;font-size:12px;}
   .mm-events p {margin:0;}
+  .mm-task-selected { outline: 2px solid var(--pi-accent-border); }
+  .mm-intervene { font-size: 11px !important; margin-top: 6px; }
+  .mm-lens { border: 1px solid var(--pi-accent-border); border-radius: 9px; padding: 12px; margin: 12px 0; background: var(--pi-surface); }
+  .mm-lens-head { display:flex; justify-content:space-between; align-items:start; gap:8px; }
+  .mm-lens-head p,.mm-lens-content p { margin:5px 0 9px; font-size:12px; color:var(--pi-muted); }
+  .mm-modes { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+  .mm-modes .selected { border-color:var(--pi-accent-border); color:var(--pi-accent); }
+  .mm-lens-content label { display:block; font-size:12px; margin:9px 0 4px; }
+  .mm-lens-content textarea { font:inherit; box-sizing:border-box; width:100%; min-height:70px; resize:vertical; padding:8px; background:var(--pi-surface); color:inherit; border:1px solid var(--pi-border-muted); border-radius:6px; }
+  .mm-lens-content textarea:disabled { opacity:.55; }
+  .mm-intervention-state { margin-top:12px; padding:10px; border:1px solid var(--pi-border-muted); border-radius:6px; }
+  .mm-kanban .mm-pill { display:block; width:100%; text-align:left; cursor:pointer; }
+  .mm-scroll svg g[role="button"] { cursor:pointer; }
+  .mm-scroll svg g[role="button"]:focus-visible { outline:2px solid var(--pi-accent); }
+
 `;
 export default plugin;
