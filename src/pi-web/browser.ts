@@ -34,7 +34,7 @@ interface State {
   autopilotConfigFor?:string;
   workflowDraft:string;
   goalText:string;goalProvider:string;goalModel:string;goalEffort:string;
-  goalStatus:string;goalProposalText:string;
+  goalStatus:string;goalProposalText:string;goalProposalReady:boolean;
   goalRef?:{draftWorkflowId:string;runId:string};
 }
 const roleNames: Role[] = ["planner", "implementer", "reviewer", "architect"];
@@ -66,7 +66,7 @@ function stateFor(context: WorkspacePanelContext): State {
       autopilotStatus:"Not configured",autopilotEnabled:false,autopilotConfigured:false,
       goalText:"",goalProvider:"",goalModel:"",goalEffort:"",
       goalStatus:goalRef?"A prior goal proposal can be checked":"No proposal in progress",
-      goalProposalText:"",
+      goalProposalText:"",goalProposalReady:false,
       ...(goalRef?{goalRef}:{}),
       workflowDraft:JSON.stringify({
         id:"custom-feature",title:"Custom development workflow",maxQcRounds:5,
@@ -156,7 +156,7 @@ const plugin: PiWebPlugin = {
         }) as {draftWorkflowId:string;runId:string;status:string};
         const ref={draftWorkflowId:result.draftWorkflowId,runId:result.runId};
         state.goalRef=ref;saveGoalRef(context,ref);
-        state.goalProposalText="";state.goalStatus=result.status;
+        state.goalProposalText="";state.goalProposalReady=false;state.goalStatus=result.status;
       }catch(error){state.goalStatus="Goal planning failed: "+String(error);}
       finally{state.busy=false;context.host.requestRender();}
     }
@@ -166,10 +166,12 @@ const plugin: PiWebPlugin = {
       state.busy=true;context.host.requestRender();
       try{
         const result=await send(context,"auto.proposal",ref) as
-          {phase:string;proposal:WorkflowDefinition|null;summary:string|null;notice?:string};
+          {phase:string;proposal:WorkflowDefinition|null;summary:string|null;canAccept:boolean;notice?:string};
         if(result.proposal){
           state.goalProposalText=JSON.stringify(result.proposal,null,2);
-          state.goalStatus="Sol proposal ready for your review: "+
+          state.goalProposalReady=result.canAccept;
+          state.goalStatus=(result.canAccept?"Review before approval: ":
+            "Sol submitted a proposal; wait for Run settlement: ")+
             (result.summary??"Validated Task DAG");
         }else state.goalStatus=result.notice??("Proposal phase: "+result.phase+
           ". Wait for the real Pi Session to finish, then check again.");
@@ -178,7 +180,7 @@ const plugin: PiWebPlugin = {
     }
     async function acceptGoal(context:WorkspacePanelContext){
       const state=stateFor(context),ref=state.goalRef;
-      if(state.busy||!ref||!state.goalProposalText)return;
+      if(state.busy||!ref||!state.goalProposalText||!state.goalProposalReady)return;
       state.busy=true;context.host.requestRender();
       try{
         const created=await send(context,"auto.acceptProposal",ref) as WorkflowInstance;
@@ -189,7 +191,7 @@ const plugin: PiWebPlugin = {
         delete state.autopilotConfigFor;
         state.goalStatus="Approved "+created.definition.id+
           ". Configure exact models, tests and linked worktrees before starting Autopilot.";
-        delete state.goalRef;saveGoalRef(context,undefined);
+        delete state.goalRef;state.goalProposalReady=false;saveGoalRef(context,undefined);
         state.workflows=state.workflows.filter(x=>x.definition.id!==created.definition.id).concat(created);
       }catch(error){state.goalStatus="Proposal acceptance failed: "+String(error);}
       finally{state.busy=false;context.host.requestRender();}
@@ -432,7 +434,7 @@ const plugin: PiWebPlugin = {
                   <textarea id="mm-goal-preview" rows="12" readonly spellcheck="false"
                     .value=${state.goalProposalText}></textarea>
                   <div class="mm-actions">
-                    <button ?disabled=${state.busy} @click=${()=>void acceptGoal(context)}>
+                    <button ?disabled=${state.busy||!state.goalProposalReady} @click=${()=>void acceptGoal(context)}>
                       Approve and save exact proposal</button>
                     <button ?disabled=${state.busy} @click=${()=>{
                       state.workflowDraft=state.goalProposalText;
