@@ -22,6 +22,8 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 
 **Runtime adapter now implemented experimentally (not E2E-verified):** public PI WEB session creation in an existing resolved workspace, Pi companion model/effort handshake, direct steer/abort and activity projection, per-Run registry, dynamic Live Runs/History panel. These are manual operations and do not imply unattended task dispatch.
 
+**Orchestra canvas (new):** The Live Runs panel has become a floating, connected PI WEB-styled canvas. Each node represents a **real active or pending Pi Run**, not a permanent/fictional role. Dotted links show orchestra membership; solid accent links only appear for explicit Task DAG dependencies between currently visible Runs. The Orchestrator dock reports actual Run activity; its chat input is enabled **only when a live, connected planner Pi Session exists**. This does not add automatic Sol dispatch.
+
 **NOT YET implemented:** automatic Workflow-to-Pi dispatch, automatic worktree provisioning, full transcript history replay, verified QC output/evidence and automatic sealing, safe native Pi Session/Worktree cleanup, real Sol planner dispatch, image evidence, ADR publication, Android-specific UX or TTS. The original DAG demonstration remains a simulator.
 
 ## Architecture and ADRs
@@ -47,6 +49,18 @@ For integration testing, install the built package locally through **PI WEB → 
 The package's PI WEB plugin declaration is in `package.json`; `src/pi-web/browser.ts` implements Browser API v4 and `src/pi-web/server.ts` owns one SQLite database under PI WEB's plugin-provided `dataDirectory`. The plain orchestration engine in `src/core/` has **no Pi imports** so future runtime adapters can be swapped.
 
 The example DAG is at [`examples/auth.workflow.json`](examples/auth.workflow.json). It is **our schema**, not a built-in PI WEB configuration format.
+
+## Orchestra canvas controls
+
+Open the **Orchestra** PI WEB workspace tab (its stable internal panel ID remains `live-runs`). Run windows appear automatically from `agents.list` and live `agents.events` as one-shot Pi Sessions are launched via the experimental manual workflow below. The canvas is contained in the PI WEB tab; narrow views scroll horizontally, not via a PI WEB host DOM override. Up to 12 active/pending Runs are shown on a page, with previous/next navigation.
+
+- Click an Agent to inspect it; click empty canvas to de-emphasize nodes without hiding their status. Click an Agent again to restore full opacity.
+- Drag a node **header** to move the window and attached links. Keyboard users can focus its header and use arrow keys (Shift+arrow for larger steps). Positions are workspace-local UI state, not durable Workflow mutations.
+- Each node has its own per-Run draft and exact direct Pi Session target. Configured new Runs show **Start**; running ones offer **Steer** or **Follow-up**. Unconnected, held/uncertain and finished Sessions cannot be messaged from these controls. Acknowledge receipts do not claim task completion.
+- The Orchestrator console is an observation surface until a real planner Run is present; then its composer sends **directly** to that planner Pi Session. A planner is not automatically spawned. Task-scoped workflow amendments remain in the separate **Micromanager → Task Lens** prototype.
+- Dashed lines mean Run membership in this workspace. Solid lines represent Task DAG dependencies only if both linked Tasks have visible live Runs. These lines do **not** claim to visualize hidden model reasoning or implicit communication between Agents.
+
+No fake Agents, automatic dispatch, synthesized chats, or permanent Session reuse are introduced by this UI.
 
 ## Boundaries and safety
 
