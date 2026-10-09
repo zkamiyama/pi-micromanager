@@ -82,6 +82,12 @@ Example configuration (replace IDs and all provider/model values with your real 
 
 Models may optionally specify a supported `effort`. Use actual **Task IDs** from the imported DAG, not the placeholders above. A QC reviewer defaults to the implementation Worktree as a read-only snapshot unless `reviewWorkspaces` provides a separately linked workspace whose HEAD already matches the implementation SHA. Independent diagnoses run against that same frozen snapshot. Worktrees must remain clean; a dirty checkout or unsupported exact model causes a safe stop.
 
+**Important:** A dependency gate such as `qc_passed` does not itself bring the
+parent's code into another Task worktree. Before a dependent implementation Run,
+Autopilot verifies that its worktree HEAD actually contains the parent's
+QC-passed commit. If not, it pauses so you can explicitly integrate upstream
+changes; it never auto-cherry-picks, merges, or silently skips dependencies.
+
 The scheduler runs in the PI WEB server-plugin lifetime (not as a separate operating-system service). It restores active Run identity on restart from persisted companion turn entries where possible; uncertain delivery remains blocked until reconciled. Real-provider/auth/GUI integration testing is deferred. See [ADR-0007](docs/adr/0007-opt-in-autopilot.md) for recovery and trust boundaries.
 
 ## Orchestra canvas controls
