@@ -16,6 +16,7 @@ import { AutopilotLedger, parseAutopilotConfig } from "../automation/ledger.js";
 import { AutopilotEngine } from "../automation/engine.js";
 import { createHostExecutor } from "../automation/host-port.js";
 import { IntegrationVerifier } from "../automation/integration.js";
+import { ManagedWorktreeProvisioner } from "../automation/worktree-provisioner.js";
 import { classifyRecoveredRun } from "../automation/recovery.js";
 import type { AutopilotRecord } from "../automation/ledger.js";
 
@@ -54,6 +55,10 @@ const plugin:PiWebServerPlugin={
   const store=new WorkflowStore(join(host.dataDirectory,"workflows.sqlite"));
   const agents=new AgentRegistry(join(host.dataDirectory,"agents.sqlite"));
   const ledger=new AutopilotLedger(join(host.dataDirectory,"autopilot.sqlite"));
+  const provisioner=new ManagedWorktreeProvisioner({
+    path:join(host.dataDirectory,"worktree-provisions.sqlite"),
+    dataDirectory:host.dataDirectory,host,workflows:store,ledger,
+  });
   const integration=new IntegrationVerifier({
     path:join(host.dataDirectory,"integration.sqlite"),
     host,workflows:store,agents,ledger,workspaces:()=>workspaces,
@@ -424,6 +429,23 @@ const plugin:PiWebServerPlugin={
             }
             return j(created);
           }
+          case "auto.worktree.preview":{
+            const input=object(ctx.input),workflowId=id(input.workflowId),taskId=id(input.taskId);
+            if(!workspaces)throw new Error("PI WEB workspace authority missing");
+            const resolved=await workspaces.resolve({projectId:p,workspaceId:o});
+            if(resolved.project.id!==p||resolved.workspace.id!==o||
+              resolved.workspace.projectId!==p)
+              throw new Error("Orchestra Workspace authority changed");
+            return j(await provisioner.preview(p,o,workflowId,taskId,ctx.project.path));
+          }
+          case "auto.worktree.create":{
+            const input=object(ctx.input);
+            return j(await provisioner.create(p,o,id(input.planId)));
+          }
+          case "auto.worktree.inspect":{
+            const input=object(ctx.input);
+            return j(await provisioner.inspect(p,o,id(input.planId)));
+          }
           case "auto.integration.preview":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             if(ledger.get(p,o,workflowId)?.enabled)
@@ -662,7 +684,7 @@ const plugin:PiWebServerPlugin={
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       for(const bridge of live.values())bridge.stop();
-      live.clear();viewers.clear();integration.close();ledger.close();agents.close();store.close();
+      live.clear();viewers.clear();provisioner.close();integration.close();ledger.close();agents.close();store.close();
     },
   };
  },
