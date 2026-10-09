@@ -79,6 +79,7 @@ function harness(def,settings=configFor(def.tasks)){
  ledger.save("p","o",def.id,settings);
  ledger.setStatus("p","o",def.id,true,"test-running");
  const launches=[];
+ let commandSerial=0;
  const verify=(binding)=>({
    headSha:sha(binding.taskId,Number(binding.runId.split("-").at(-1))),
    clean:true,testsPassed:true,details:"strict fake SHA and test checks",
@@ -105,7 +106,7 @@ function harness(def,settings=configFor(def.tasks)){
  const jobs=()=>registry.list("p","o","all").filter(b=>b.workflowId===def.id);
  const status=()=>ledger.get("p","o",def.id);
  const act=(a,key)=>store.act("p","o",def.id,wf().revision,
-   key??"test-"+Math.random().toString(36).slice(2),a);
+   key??"test-"+(++commandSerial),a);
  const settle=(id,kind="implementation",verdict="pass")=>{
    const b=run(id);
    if(!b||b.phase!=="running")throw Error("Cannot settle non-running "+id);
@@ -175,11 +176,19 @@ async function execute(seed,taskCount,capacity){
      assert.equal(new Set(imp.map(b=>b.workspaceId)).size,imp.length,
        "Concurrent modifying Pi Sessions cannot share a Worktree");
      const running=bindings.filter(b=>b.phase==="running");
-     // Deterministically permute turn-completion order. Delayed tasks should
-     // never reduce the number of available independent work slots.
-     const subset=running.filter(()=>rand()<0.17);
-     if(subset.length===0&&tick%13===0&&running.length)
-       subset.push(running[Math.floor(rand()*running.length)]);
+     // First force both resource pools to their declared limits, rather
+     // than randomly completing a Task before saturation can be observed.
+     // Then freely permute completion order with a deterministic PRNG.
+     let subset;
+     if(peakImpl<Math.min(capacity.implementer,taskCount)){
+       subset=[];
+     }else if(peakQc<Math.min(capacity.reviewer,taskCount)){
+       subset=running.filter(b=>b.seat==="implementer");
+     }else{
+       subset=running.filter(()=>rand()<0.17);
+       if(subset.length===0&&tick%13===0&&running.length)
+         subset.push(running[Math.floor(rand()*running.length)]);
+     }
      for(const b of subset){
        if(b.phase!=="running")continue;
        const attempt=Number(b.runId.split("-").at(-1));
@@ -215,4 +224,24 @@ test("32 independent DAG branches saturate 8 implementation and 4 QC seats, desp
 test("Reproducible stress: eight seeded interleavings, isolated Worktrees and bounded fresh QC retries",async()=>{
  for(let seed=1;seed<=8;seed++)
    await execute(seed*7919,16,{implementer:4,reviewer:2,architect:2,planner:1});
+});
+
+test("Workflow import rejects task kind/role combinations that bypass seat accounting",()=>{
+ const bad=[
+   {kind:"implementation",role:"reviewer"},
+   {kind:"implementation",role:"planner"},
+   {kind:"diagnosis",role:"implementer"},
+   {kind:"synthesis",role:"architect"},
+ ];
+ for(const combination of bad){
+   const input=defOf([{...impl("bad"),...combination}]);
+   assert.throws(()=>newWorkflow(input,NOW),
+     e=>e.code==="invalid_role",JSON.stringify(combination));
+ }
+ const valid=defOf([
+  impl("worker"),
+  {id:"diagnose",title:"Review",kind:"diagnosis",role:"reviewer",dependsOn:[]},
+  {id:"synthesize",title:"Summary",kind:"synthesis",role:"planner",dependsOn:[]},
+ ]);
+ assert.doesNotThrow(()=>newWorkflow(valid,NOW));
 });
