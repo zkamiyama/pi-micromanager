@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { REPORT_CHANNEL, parseRunReport, type RunReport } from "../automation/report.js";
+import {directPublicationCommand} from "./publication-guard.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   CONTROL_CHANNEL, RECEIPT_CHANNEL, ACTIVITY_CHANNEL, parseRuntimeControl,
@@ -247,6 +248,13 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
   pi.on("tool_call",event=>{
     if(job&&job.kind!=="implementation"&&!safeReadTools.has(event.toolName))
       return {block:true,reason:"This automated "+job.kind+" Session is read-only"};
+    // A Pi coding Run may edit/test/commit in its isolated Worktree, but must
+    // leave publishing to the host, after independent QC and Workflow policy.
+    // Tool guards alone are NOT sufficient isolation against arbitrary shell
+    // binaries; credential/network isolation remains an operator requirement.
+    if(job?.kind==="implementation"&&
+      directPublicationCommand(event.toolName,event.input))
+      return {block:true,reason:"Publishing is handled by the Orchestrator after sealed QC and the exact Workflow permission gate"};
     return;
   });
 
