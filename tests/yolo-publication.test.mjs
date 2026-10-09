@@ -40,6 +40,7 @@ function fixture(policy){
   const evidence=ledger.sealEvidence(b,"qc","PASS at "+SHA);
   agents.seal("p","o","qc-session",evidence.ref);
   ledger.save("p","o","workflow",config);
+  ledger.setStatus("p","o","workflow",true,"running");
   const approvals=new PermissionLedger(join(dir,"perms.sqlite"),wf,ledger);
   let remoteSha=null,pr=null,pushes=0,creates=0,pushUncertain=false,prUncertain=false;
   let headSha=SHA,worktreeDirty=false;
