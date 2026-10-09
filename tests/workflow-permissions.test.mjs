@@ -50,6 +50,7 @@ test("Default Workflow is YOLO; merge and deploy still start behind an approval 
   assert.equal(permissionDecision(undefined,"deploy.production"),"ask");
   assert.equal(permissionDecision({default:"deny",actions:{"git.push":"ask"}},"git.push"),"ask");
   assert.equal(permissionDecision({default:"deny"},"git.commit"),"deny");
+  assert.equal(permissionDecision({default:"deny"},"github.pr.merge"),"deny");
 });
 test("Workflow policy rejects unknown keys, invalid actions and invalid decisions",()=>{
   for(const policy of [
