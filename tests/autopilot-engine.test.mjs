@@ -385,3 +385,39 @@ test("Shutdown waits for in-flight verification and cannot commit a Task after s
     assert.equal(x.wf().tasks.api.status,"running","Stopped runner rejects further ticks");
   }finally{x.close();}
 });
+
+test("Human QC intervention arriving during async host verification wins over stale automatic CAS",async()=>{
+  const x=setup();
+  try{
+    await x.tick();await x.tick();
+    x.settled("impl-api-1");
+    let release;
+    const pending=new Promise(resolve=>{release=resolve;});
+    x.setVerification(pending);
+    const checking=x.tick(); // host verification now suspends on the unsettled Promise
+    await new Promise(resolve=>setImmediate(resolve));
+    const before=x.wf();
+    x.store.act("project","orchestra","wf",before.revision,"racing-human-hold",{
+      type:"request_intervention",interventionId:"racing-hold",targetTaskId:"api",
+      afterQcRunId:"next",instruction:"Investigate after the next independent QC",
+    });
+    release({headSha:sha,clean:true,testsPassed:true,details:"host checked snapshot"});
+    await checking;
+    assert.equal(x.status().enabled,true,"Revision conflict is retried rather than bypassing the human hold");
+    assert.equal(x.wf().tasks.api.status,"running");
+    x.setVerification({headSha:sha,clean:true,testsPassed:true,details:"host checked snapshot"});
+    for(let i=0;i<8&&x.wf().tasks.api.status!=="awaiting_qc";i++)await x.tick();
+    assert.equal(x.wf().tasks.api.status,"awaiting_qc");
+    for(let i=0;i<8&&!x.run("qc-api-1");i++)await x.tick();
+    const qc=x.settled("qc-api-1");
+    x.ledger.recordReport(qc,{kind:"qc",runId:"qc-api-1",verdict:"pass",
+      summary:"Actual code passed independent checks",at:Date.now()});
+    for(let i=0;i<6&&x.wf().tasks.api.status!=="held";i++)await x.tick();
+    assert.equal(x.wf().tasks.api.status,"held");
+    assert.equal(x.wf().amendments[0].status,"planning");
+    assert.equal(x.wf().tasks.api.lastQc.verdict,"pass");
+    assert.equal(x.wf().tasks.api.qcRounds,1);
+    assert.ok(x.launches.some(j=>j.kind==="planning"),
+      "Sol planning may continue but cannot void the held QC evidence");
+  }finally{x.close();}
+});

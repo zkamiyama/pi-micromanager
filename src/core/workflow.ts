@@ -130,6 +130,12 @@ export function validateDefinition(def: WorkflowDefinition): void {
           typeof x==="string"&&!!x.trim()&&x.length<=500),
         "invalid_acceptance","Acceptance criteria must be 1..20 nonempty lines <=500 characters");
     invariant(roles.includes(task.role) && ["implementation", "diagnosis", "synthesis"].includes(task.kind), "invalid_task", `Invalid kind or role for ${task.id}`);
+    // The host's session identity and modifying Worktree admission depend on
+    // exact kind/role pairs; malformed imported DAGs must not switch seats.
+    invariant(task.kind==="implementation"?task.role==="implementer":
+      task.kind==="diagnosis"?task.role==="reviewer"||task.role==="architect":
+      task.role==="planner","invalid_role",
+      `Unsupported Task kind/role combination for ${task.id}`);
     invariant(Array.isArray(task.dependsOn), "invalid_dependencies", `dependsOn required for ${task.id}`);
     if (task.model !== undefined) invariant(typeof task.model === "string" && task.model.length <= 160, "invalid_model", "Invalid model ID");
     tasks.set(task.id, task);
