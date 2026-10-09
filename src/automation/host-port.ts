@@ -31,6 +31,7 @@ export interface HostPortOptions {
 }
 export function createHostExecutor(options:HostPortOptions):ExecutorPort {
   const {host,workflows,agents,probe,notify}=options;
+  const assertActive=()=>host.lifetimeSignal.throwIfAborted();
   async function workspace(projectId:string,workspaceId:string){
     const api=options.getWorkspaces();
     if(!api)throw new Error("PI WEB workspaces capability unavailable");
@@ -64,6 +65,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
   return {
     recoverReport:options.replaySettledReport,
     async launch(job:LaunchJob){
+      assertActive();
       const sessions=options.getSessions();
       if(!sessions)throw new Error("Pi sessions capability unavailable");
       if(job.kind==="implementation"||job.kind==="qc"||job.kind==="diagnosis"){
@@ -84,6 +86,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
           }
         }
       }else await workspace(job.projectId,job.workspaceId);
+      assertActive();
       const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
       const task=current.tasks[job.taskId];
       if(!task)throw new Error("Unknown Task");
@@ -101,14 +104,21 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       };
       if(agents.getRun(job.projectId,job.orchestraWorkspaceId,job.workflowId,job.runId))
         throw new Error("Already reserved: never create the same one-shot Run twice");
+      assertActive();
       notify(agents.reserve(reservation));
       // Any uncertain sessions.create response intentionally leaves this durable
       // reservation untouched; operator reconciliation is required.
+      assertActive();
       const created=await sessions.create({projectId:job.projectId,workspaceId:job.workspaceId});
+      // Preserve the exact Session identity even if the plugin was revoked
+      // during the non-atomic host creation response. Never send a new prompt
+      // when shutdown is already in progress.
       let binding=agents.assign(reservation,created.sessionId);
       notify(binding);
+      assertActive();
       const checked=await probe(binding);
       binding=agents.get(job.projectId,job.orchestraWorkspaceId,created.sessionId);
+      assertActive();
       if(checked.status!=="ok")throw new Error("Pi companion did not acknowledge its probe");
       const configured=await checked.bridge.send({
         type:"configure",requestId:randomUUID(),provider:job.model.provider,
@@ -126,6 +136,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       binding=agents.update(binding,"configured",{provider:job.model.provider,model:job.model.model,
         ...(job.model.effort?{effort:job.model.effort}:{})});
       notify(binding);
+      assertActive();
       const started=await checked.bridge.send({
         type:"message",requestId:randomUUID(),text:job.prompt,delivery:"newTurn",
       },10000);
