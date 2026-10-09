@@ -17,6 +17,8 @@ import { AutopilotEngine } from "../automation/engine.js";
 import { createHostExecutor } from "../automation/host-port.js";
 import { IntegrationVerifier } from "../automation/integration.js";
 import { ManagedWorktreeProvisioner } from "../automation/worktree-provisioner.js";
+import { ActivityRetention } from "../automation/retention.js";
+import { buildJournal } from "../automation/journal.js";
 import { classifyRecoveredRun } from "../automation/recovery.js";
 import type { AutopilotRecord } from "../automation/ledger.js";
 
@@ -55,6 +57,10 @@ const plugin:PiWebServerPlugin={
   const store=new WorkflowStore(join(host.dataDirectory,"workflows.sqlite"));
   const agents=new AgentRegistry(join(host.dataDirectory,"agents.sqlite"));
   const ledger=new AutopilotLedger(join(host.dataDirectory,"autopilot.sqlite"));
+  const retention=new ActivityRetention({
+    path:join(host.dataDirectory,"activity-retention.sqlite"),
+    workflows:store,agents,ledger,
+  });
   const provisioner=new ManagedWorktreeProvisioner({
     path:join(host.dataDirectory,"worktree-provisions.sqlite"),
     dataDirectory:host.dataDirectory,host,workflows:store,ledger,
@@ -429,6 +435,22 @@ const plugin:PiWebServerPlugin={
             }
             return j(created);
           }
+          case "auto.journal":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            const current=store.get(p,o,workflowId);
+            return j(buildJournal(current,agents.list(p,o,"all"),ledger));
+          }
+          case "auto.retention.preview":{
+            const input=ctx.input===null?{}:object(ctx.input);
+            const days=input.days===undefined?30:input.days;
+            if(typeof days!=="number"||!Number.isSafeInteger(days))
+              throw new Error("Retention days must be an integer");
+            return j(retention.preview(p,o,days));
+          }
+          case "auto.retention.confirm":{
+            const input=object(ctx.input);
+            return j(retention.confirm(p,o,id(input.previewId)));
+          }
           case "auto.worktree.status":{
             const input=object(ctx.input);
             return j(provisioner.find(p,o,id(input.workflowId),id(input.taskId)));
@@ -688,7 +710,7 @@ const plugin:PiWebServerPlugin={
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       for(const bridge of live.values())bridge.stop();
-      live.clear();viewers.clear();provisioner.close();integration.close();ledger.close();agents.close();store.close();
+      live.clear();viewers.clear();retention.close();provisioner.close();integration.close();ledger.close();agents.close();store.close();
     },
   };
  },
