@@ -25,3 +25,9 @@ test("runtime receipts and public activity projections have finite size", () => 
   assert.equal(parseRuntimeActivity({kind:"thinking",at:1700000000000,sequence:1,text:"secret"}),undefined);
   assert.equal(parseRuntimeActivity({kind:"message_delta",at:1700000000000,sequence:1,text:"x".repeat(513)}),undefined);
 });
+
+test("probe freshness is typed, never inferred from session-id or idle alone",()=>{
+  assert.deepEqual(parseRuntimeReceipt({requestId:"probe1",status:"ok",idle:true,fresh:false}),
+    {requestId:"probe1",status:"ok",idle:true,fresh:false});
+  assert.equal(parseRuntimeReceipt({requestId:"probe1",status:"ok",fresh:"yes"}),undefined);
+});

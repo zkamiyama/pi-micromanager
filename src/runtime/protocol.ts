@@ -18,6 +18,8 @@ export interface RuntimeReceipt {
   model?: string;
   effort?: string;
   idle?: boolean;
+  /** True only if the current Pi Session has no prior conversational messages. */
+  fresh?: boolean;
 }
 
 export const activityKinds = [
@@ -72,6 +74,10 @@ export function parseRuntimeReceipt(input: unknown): RuntimeReceipt | undefined 
   if (input.idle !== undefined) {
     if (typeof input.idle !== "boolean") return;
     result.idle = input.idle;
+  }
+  if (input.fresh !== undefined) {
+    if (typeof input.fresh !== "boolean") return;
+    result.fresh = input.fresh;
   }
   return result;
 }

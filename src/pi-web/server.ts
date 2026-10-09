@@ -108,8 +108,11 @@ const plugin:PiWebServerPlugin={
   async function probe(binding:AgentBinding):Promise<{bridge:PiSessionBridge;status:string}> {
     const bridge=await connect(binding);
     const reply=await bridge.send({type:"probe",requestId:randomUUID()},7000);
+    // A live probe cannot prove whether an earlier unacknowledged command ran.
+    // Keep uncertain runs fenced until an explicit reconciliation protocol exists.
     agents.update(binding,reply.status==="ok"?
-      (binding.phase==="configured"||binding.phase==="running"?binding.phase:"connected"):"uncertain");
+      (binding.phase==="uncertain"?"uncertain":
+        binding.phase==="configured"||binding.phase==="running"?binding.phase:"connected"):"uncertain");
     return {bridge,status:reply.status};
   }
   return {
@@ -179,18 +182,17 @@ const plugin:PiWebServerPlugin={
             const run=await reservation(ctx,input);
             const sessionId=id(input.sessionId);
             const existing=agents.getRun(p,o,run.workflowId,run.runId);
-            if(existing){
-              if(existing.requestId!==run.requestId||existing.sessionId!==sessionId)
-                throw new Error("This run belongs to a different Pi Session");
-              return j({...existing,note:"Existing attachment returned"});
-            }
+            if(!existing||existing.phase!=="reserved"||existing.sessionId!==null||
+              existing.requestId!==run.requestId||existing.workspaceId!==run.workspaceId)
+              throw new Error("Attach is only for reconciling an unassigned, already reserved run. Do not reuse prior Sessions.");
             if(!sessionEvents)throw new Error("PI WEB session-events capability missing");
             const conn=await sessionEvents.connect({
               projectId:p,workspaceId:run.workspaceId,sessionId});
             const tmp=new PiSessionBridge(conn,()=>{});
             const receipt=await tmp.send({type:"probe",requestId:randomUUID()},7000);
             tmp.stop();
-            if(receipt.status!=="ok")throw new Error("Companion unavailable in the selected Pi Session");
+            if(receipt.status!=="ok"||receipt.fresh!==true)
+              throw new Error("Reconciliation requires an idle Pi Session without prior conversation history");
             agents.reserve(run);
             agents.assign(run,sessionId);
             let binding=agents.get(p,o,sessionId);
@@ -207,8 +209,9 @@ const plugin:PiWebServerPlugin={
           case "agents.configure":{
             const input=object(ctx.input);
             let binding=registered(ctx,id(input.sessionId));
-            if(binding.phase==="running"||binding.phase==="settled"||binding.phase==="sealed")
-              throw new Error("Cannot reconfigure a running or completed execution");
+            if(binding.phase==="running"||binding.phase==="settled"||binding.phase==="sealed"||
+              binding.phase==="uncertain"||binding.phase==="failed")
+              throw new Error("Cannot configure a running, completed or uncertain execution");
             const bridge=live.get(bridgeKey(binding));
             if(!bridge?.connected)throw new Error("Reconnect this Pi Session first");
             const provider=nonempty(input.provider,120),model=nonempty(input.model);
@@ -223,8 +226,9 @@ const plugin:PiWebServerPlugin={
           case "agents.command":{
             const input=object(ctx.input);
             const binding=registered(ctx,id(input.sessionId));
-            if(binding.phase==="settled"||binding.phase==="sealed"||binding.phase==="failed")
-              throw new Error("This execution has ended; create a new run instead of reusing its Session");
+            if(binding.phase==="settled"||binding.phase==="sealed"||binding.phase==="failed"||
+              binding.phase==="uncertain"||binding.phase==="blocked")
+              throw new Error("This run has ended or needs reconciliation. Do not retry uncertain sends.");
             const bridge=live.get(bridgeKey(binding));
             if(!bridge?.connected)throw new Error("Reconnect before sending a command");
             const action=input.action;

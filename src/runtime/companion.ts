@@ -121,6 +121,7 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
     };
     if (command.type === "probe") {
       respond({ requestId: command.requestId, status: "ok", idle: context.isIdle(),
+        fresh: !context.sessionManager.getEntries().some(e => e.type === "message"),
         ...(context.model ? { provider: context.model.provider, model: context.model.id } : {}),
         effort: pi.getThinkingLevel() });
       return;
