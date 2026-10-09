@@ -276,3 +276,21 @@ test('Previously ready QC-dependent tasks are visibly reblocked by later human h
   w = advance(w, { type: 'cancel_amendment', amendmentId: 'human-change' });
   assert.equal(w.tasks.api.status, 'ready');
 });
+
+test("task-specific descriptions and acceptance criteria are validated and preserved",()=>{
+  const input=definition();
+  input.tasks[0].description="Migrate token storage without breaking older clients";
+  input.tasks[0].acceptanceCriteria=[
+    "Existing credentials remain valid until refresh",
+    "Migration tests pass without dropping active sessions",
+  ];
+  const parsed=parseDefinition(input);
+  assert.equal(parsed.tasks[0].description,input.tasks[0].description);
+  assert.deepEqual(parsed.tasks[0].acceptanceCriteria,input.tasks[0].acceptanceCriteria);
+  const empty=structuredClone(input);empty.tasks[0].acceptanceCriteria=[];
+  expectCode(()=>parseDefinition(empty),"invalid_acceptance");
+  const long=structuredClone(input);long.tasks[0].description="x".repeat(4001);
+  expectCode(()=>parseDefinition(long),"invalid_description");
+  const unbounded=structuredClone(input);unbounded.tasks[0].acceptanceCriteria=["x".repeat(501)];
+  expectCode(()=>parseDefinition(unbounded),"invalid_acceptance");
+});
