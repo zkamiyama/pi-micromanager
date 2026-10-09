@@ -37,7 +37,7 @@ function fixture(){
       else if(verb.startsWith("show-ref --verify --quiet")){
         exitCode=[...registered.values()].some(x=>"refs/heads/"+x.branch===args[3])?0:1;
       }else if(verb.startsWith("worktree add")){
-        const path=args[args.length-2],sha=args[args.length-1],branch=args[3];
+        const path=args[args.length-2],sha=args[args.length-1],branch=args[4];
         if(failCreate){exitCode=1;stderr="uncertain mock create";}else registered.set(path,{sha,branch});
       }else if(verb.startsWith("worktree list --porcelain")){
         stdout=[...registered].map(([path,r])=>
