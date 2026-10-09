@@ -41,6 +41,10 @@ function setup(){
       return registry.get("project","orchestra","session-"+job.runId);
     },
     async verify(){return verifyResult;},
+    async checkSnapshot(_binding,expectedSha){
+      if(verifyResult.headSha!==expectedSha||!verifyResult.clean)
+        throw new Error("Frozen QC snapshot changed");
+    },
   });
   const status=()=>ledger.get("project","orchestra","wf");
   const wf=()=>store.get("project","orchestra","wf");
@@ -189,5 +193,90 @@ test("Manual Run is never silently adopted by Autopilot",async()=>{
     assert.equal(x.status().enabled,false);
     assert.match(x.status().status,/manually owned Run/);
     assert.equal(x.launches.length,0);
+  }finally{x.close();}
+});
+
+test("Sol typed planning → parallel independent diagnoses → synthesis never auto-resumes held Task",async()=>{
+  const x=setup();
+  try{
+    await x.tick(); // Admit implementation Task (no Pi Session yet)
+    let workflow=x.wf();
+    x.store.act("project","orchestra","wf",workflow.revision,"human-request",{
+      type:"request_intervention",interventionId:"human-hold",
+      targetTaskId:"api",afterQcRunId:"next",
+      instruction:"After next QC, run independent failure diagnoses",
+    });
+    await x.tick();
+    assert.equal(x.launches[0].kind,"planning");
+    const planner=x.settled("plan-human-hold");
+    x.ledger.recordReport(planner,{kind:"plan",runId:"plan-human-hold",
+      summary:"Independently inspect the API failure",
+      agents:[
+        {id:"astra",title:"Root cause",role:"architect",model:"test-provider/test-model"},
+        {id:"opus",title:"Alternative approach",role:"reviewer",model:"test-provider/test-model"},
+      ],at:Date.now()});
+    await x.tick();
+    assert.equal(x.wf().amendments[0].status,"armed");
+    assert.equal(x.run("plan-human-hold").phase,"sealed");
+    await x.tick();
+    assert.ok(x.run("impl-api-1"));
+    x.settled("impl-api-1");
+    await x.tick();await x.tick();
+    const qc=x.settled("qc-api-1");
+    x.ledger.recordReport(qc,{kind:"qc",runId:"qc-api-1",verdict:"fail",
+      summary:"API contract mismatch",at:Date.now()});
+    await x.tick();
+    assert.equal(x.wf().tasks.api.status,"held");
+    assert.equal(x.wf().amendments[0].status,"activated");
+    assert.equal(x.wf().tasks["diag-human-hold-astra"].status,"ready");
+    assert.equal(x.wf().tasks["diag-human-hold-opus"].status,"ready");
+    for(let i=0;i<6&&(!x.run("task-diag-human-hold-astra-1")||
+        !x.run("task-diag-human-hold-opus-1"));i++)await x.tick();
+    assert.ok(x.run("task-diag-human-hold-astra-1"));
+    assert.ok(x.run("task-diag-human-hold-opus-1"));
+    assert.equal(x.launches.find(j=>j.taskId==="diag-human-hold-astra").workspaceId,"linked-wt-api");
+    assert.equal(x.launches.find(j=>j.taskId==="diag-human-hold-opus").headSha,sha);
+    for(const [runId,summary] of [
+      ["task-diag-human-hold-astra-1","Root cause: contract typo"],
+      ["task-diag-human-hold-opus-1","Use a compatibility adapter"],
+    ]){
+      const binding=x.settled(runId);
+      x.ledger.recordReport(binding,{kind:"task",runId,summary,at:Date.now()});
+      await x.tick();
+    }
+    for(let i=0;i<5&&!x.run("task-synthesis-human-hold-1");i++)await x.tick();
+    assert.ok(x.run("task-synthesis-human-hold-1"));
+    const synthesisJob=x.launches.find(j=>j.kind==="synthesis");
+    assert.match(synthesisJob.prompt,/Root cause: contract typo/);
+    assert.match(synthesisJob.prompt,/compatibility adapter/);
+    const synthesis=x.settled("task-synthesis-human-hold-1");
+    x.ledger.recordReport(synthesis,{kind:"task",runId:synthesis.runId,
+      summary:"Use the compatibility adapter",at:Date.now()});
+    await x.tick();await x.tick();
+    assert.equal(x.wf().tasks.api.status,"held");
+    assert.equal(x.status().enabled,false);
+    assert.match(x.status().status,/Awaiting human resume/);
+  }finally{x.close();}
+});
+test("Unconfigured Sol plan models fail closed without creating diagnosis Tasks",async()=>{
+  const x=setup();
+  try{
+    await x.tick();
+    const workflow=x.wf();
+    x.store.act("project","orchestra","wf",workflow.revision,"human-request",{
+      type:"request_intervention",interventionId:"human-hold",targetTaskId:"api",
+      afterQcRunId:"next",instruction:"Compare approaches",
+    });
+    await x.tick();
+    const planner=x.settled("plan-human-hold");
+    x.ledger.recordReport(planner,{kind:"plan",runId:planner.runId,
+      summary:"Try an unsupported diagnosis model",
+      agents:[{id:"unsupported",title:"Unknown model",role:"architect",model:"other/unapproved"}],
+      at:Date.now()});
+    await x.tick();
+    assert.equal(x.status().enabled,false);
+    assert.match(x.status().status,/unconfigured diagnosis model/);
+    assert.equal(x.wf().amendments[0].status,"planning");
+    assert.equal(x.wf().definition.tasks.length,1);
   }finally{x.close();}
 });
