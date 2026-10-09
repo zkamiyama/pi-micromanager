@@ -1,5 +1,11 @@
 # Quick start: test the full DAG → Pi → GitHub merge path
 
+After installing Micromanager, the shortest alternative to importing a DAG
+manually is **Tell Sol what to build → Plan & run**, which plans and
+automatically starts using a reusable project profile. See
+[One-command launch](ONE_COMMAND.md). The manual DAG route below remains
+useful for a first, step-by-step acceptance test.
+
 This guide is for the **opt-in experimental** `pi-micromanager` integration
 with Pi and PI WEB. The first trial uses a disposable repository, not your
 production code. Nothing runs autonomously until you approve the Workflow,

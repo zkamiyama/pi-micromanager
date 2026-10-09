@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
-import {join} from "node:path";
+import {join,resolve} from "node:path";
+import {readFileSync} from "node:fs";
 import {QuickLaunchLedger,parseQuickProfile} from "../dist/automation/quick-launch.js";
 
 const id1="c66c2bb2-91ba-43bf-9e58-047197b147aa";
@@ -70,4 +71,15 @@ test("Request IDs and stage transitions cannot silently widen permissions or res
    assert.throws(()=>ledger.phase("p","o",id1,"starting","Again"),/cannot restart/);
    assert.equal(ledger.begin("p","o","Another",id2).phase,"reserved");
  }finally{ledger.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("Copyable one-command trial setup uses safe reviewed defaults",()=>{
+ const path=resolve("examples/trial.one-command.json");
+ const template=JSON.parse(readFileSync(path,"utf8"));
+ const parsed=parseQuickProfile(template);
+ assert.equal(parsed.config.managedWorktrees,true);
+ assert.equal(parsed.config.finalization.workspaceId,"auto");
+ assert.equal(parsed.config.finalization.autoMerge,true);
+ assert.equal(parsed.permissions.actions["github.pr.merge"],"ask");
+ assert.equal(parsed.permissions.actions["deploy.production"],"deny");
 });
