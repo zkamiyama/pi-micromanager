@@ -20,7 +20,9 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - **PI WEB Browser API v4 / Server API v3 plugin** with a **simulation-only** four-view panel: Cockpit, DAG, Kanban, Journal. The demo never launches an agent; all visible actions are explicitly labeled simulation. A Task Lens is accessible from Cockpit, DAG and Kanban. It persists a selected-Task intervention and shows a simulated Sol plan; native direct-agent steer is deliberately disabled.
 - Native `node:test` coverage for state-machine safety and persistence.
 
-**NOT YET implemented:** actual Pi/PI WEB agent execution, **real Sol planner dispatch**, model/effort handshake, parallel worktrees, live transcript aggregation, direct native steer, photographic evidence, automatic storage cleanup, ADR publication, Android-specific UX, or TTS. The simulator is intentionally honest rather than faking agent status.
+**Runtime adapter now implemented experimentally (not E2E-verified):** public PI WEB session creation in an existing resolved workspace, Pi companion model/effort handshake, direct steer/abort and activity projection, per-Run registry, dynamic Live Runs/History panel. These are manual operations and do not imply unattended task dispatch.
+
+**NOT YET implemented:** automatic Workflow-to-Pi dispatch, automatic worktree provisioning, full transcript history replay, verified QC output/evidence and automatic sealing, safe native Pi Session/Worktree cleanup, real Sol planner dispatch, image evidence, ADR publication, Android-specific UX or TTS. The original DAG demonstration remains a simulator.
 
 ## Architecture and ADRs
 
@@ -29,6 +31,7 @@ The orchestration layer is code, not another personality prompt: a validated Tas
 - [ADR-0003 — Evidence, Live Journal, retention, knowledge promotion](docs/adr/0003-evidence-journal-retention-and-knowledge.md)
 - [ADR-0004 — Cockpit, provider adapters, implementation order](docs/adr/0004-cockpit-provider-adapters-and-delivery-order.md)
 - [ADR-0005 — Task-scoped interventions and Sol planner boundary](docs/adr/0005-task-scoped-interventions.md)
+- [ADR-0006 — Ephemeral execution runs and dynamic live grid](docs/adr/0006-ephemeral-execution-runs.md)
 
 ## Development
 
@@ -56,3 +59,9 @@ The example DAG is at [`examples/auth.workflow.json`](examples/auth.workflow.jso
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+## Per-attempt fresh Pi Sessions
+
+Each Luna attempt and every QC Run creates a fresh Pi Session. The same model may be reused, but the old session context is **never** the next run. The dynamic **Live Runs** PI WEB panel shows running/pending sessions; settled runs move to History (no steer). The Workflow Task, not the Agent role, remains the durable object. Evidence must be sealed before a modifying worktree can be released. See [ADR-0006](docs/adr/0006-ephemeral-execution-runs.md).
+
+The manual one-shot Pi creation form is experimental: it requires an admitted Task run, an existing linked worktree for a modifying Luna, a target PI WEB Workspace ID, and a configured provider/model. There is no automatic worktree allocation, background scheduler or real-provider E2E proof yet. The earlier DAG demo and its transition buttons remain simulation-only.
