@@ -4,7 +4,7 @@ export const RECEIPT_CHANNEL = "pi-micromanager:receipt:v1";
 export const ACTIVITY_CHANNEL = "pi-micromanager:activity:v1";
 
 export interface RunJobContext {
-  kind:"implementation"|"qc"|"diagnosis"|"synthesis";
+  kind:"implementation"|"qc"|"diagnosis"|"synthesis"|"planning";
   runId:string;
 }
 export type RuntimeControl =
