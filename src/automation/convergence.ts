@@ -153,7 +153,7 @@ export class AutomaticIntegrator {
   }
   /** One deterministic action per scheduler tick. No Git merge except ff-only. */
   async step(record:AutopilotRecord,workflow:WorkflowInstance):
-    Promise<"acted"|"waiting"|"none">{
+    Promise<"acted"|"waiting"|"denied"|"none">{
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     for(const source of Object.values(workflow.tasks)){
       if(source.status!=="passed"||source.spec.kind!=="implementation")continue;
@@ -193,7 +193,8 @@ export class AutomaticIntegrator {
         }
         const approval=this.opt.permissions.ensureIntegration(p,o,w,
           source.spec.id,qc.runId,qc.headSha,target.spec.id,workspaceId,head);
-        if(approval.decision!=="allow")return "waiting";
+        if(approval.decision==="deny")return "denied";
+        if(approval.decision==="ask")return "waiting";
         if(head===qc.headSha){
           const row=this.reserve(p,o,w,{workflowId:w,
             sourceTaskId:source.spec.id,targetTaskId:target.spec.id,
