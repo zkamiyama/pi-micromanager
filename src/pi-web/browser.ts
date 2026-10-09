@@ -21,6 +21,10 @@ type InterventionMode = "workflow" | "implementer" | "qc";
 interface State {
   workflows: WorkflowInstance[];
   journal?:WorkflowJournal;
+  screenshotRunId:string;
+  screenshotPath:string;
+  screenshotStatus:string;
+  screenshotPreview?:{id:string;dataUrl:string|null;sha256:string;mime:string};
   retentionDays:number;
   retentionPreview?:RetentionPreview;
   retentionStatus:string;
@@ -73,7 +77,8 @@ function stateFor(context: WorkspacePanelContext): State {
         "runId" in value&&typeof value.runId==="string")
         goalRef={draftWorkflowId:value.draftWorkflowId,runId:value.runId};
     }catch{/* Browser storage may be blocked. */}
-    state = { workflows: [], retentionDays:30,retentionStatus:"", status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
+    state = { workflows: [], screenshotRunId:"",screenshotPath:"screenshots/qc.png",
+      screenshotStatus:"",retentionDays:30,retentionStatus:"", status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
       detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
       autopilotDraft:JSON.stringify({
         workspaces:{},
@@ -125,6 +130,8 @@ const plugin: PiWebPlugin = {
         if (id) {
           if (state.selected?.definition.id !== id){
             delete state.journal;delete state.retentionPreview;
+            delete state.screenshotPreview;
+            state.screenshotRunId="";state.screenshotStatus="";
             delete state.selectedTaskId;delete state.worktreePlan;
             state.worktreeTaskId="";state.worktreeStatus="";
           }
@@ -253,6 +260,42 @@ const plugin: PiWebPlugin = {
 
 
 
+
+    async function captureScreenshot(context:WorkspacePanelContext){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(state.busy||!workflowId||!state.screenshotRunId||
+        !state.screenshotPath.trim())return;
+      state.busy=true;state.screenshotStatus="Validating actual QC Git commit and screenshot bytes…";
+      context.host.requestRender();
+      try{
+        const record=await send(context,"auto.screenshot.capture",{
+          workflowId,runId:state.screenshotRunId,relativePath:state.screenshotPath.trim(),
+        }) as {id:string;sha256:string;bytes:number};
+        state.screenshotStatus="Captured verified file bytes as immutable screenshot "+
+          record.sha256.slice(0,16)+" ("+record.bytes+" bytes).";
+        state.journal=await send(context,"auto.journal",{workflowId}) as WorkflowJournal;
+        delete state.screenshotPreview;
+      }catch(error){state.screenshotStatus="Screenshot capture refused: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
+    async function showScreenshot(context:WorkspacePanelContext,id:string){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(state.busy||!workflowId)return;
+      state.busy=true;context.host.requestRender();
+      try{
+        const result=await send(context,"auto.screenshot.preview",{
+          workflowId,artifactId:id,
+        }) as {artifact:{id:string;sha256:string;mime:string};
+          dataUrl:string|null;inlineLimit:number};
+        state.screenshotPreview={id:result.artifact.id,
+          dataUrl:result.dataUrl,sha256:result.artifact.sha256,mime:result.artifact.mime};
+        state.screenshotStatus=result.dataUrl?
+          "Displaying immutable image bytes stored privately in this PI WEB host.":
+          "Stored screenshot exceeds inline preview limit "+result.inlineLimit+
+          " bytes; metadata remains available. No image contents were sent to a model.";
+      }catch(error){state.screenshotStatus="Screenshot unavailable: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
     async function loadEvidenceJournal(context:WorkspacePanelContext){
       const s=stateFor(context),workflowId=s.selected?.definition.id;
       if(s.busy||!workflowId)return;
@@ -736,6 +779,50 @@ const plugin: PiWebPlugin = {
                           · Run ${t.lastQc.runId}
                           · Git <code>${t.lastQc.headSha}</code></p>`:null}
                       </article>`)}
+
+                      <h3>Actual QC screenshot evidence</h3>
+                      <p>Only explicit, already committed screenshots inside a sealed QC Run's
+                        <code>screenshots/</code> directory may be captured. Images can contain
+                        secrets: inspect them before selecting Capture. This does not certify QC by itself.</p>
+                      <div class="mm-screenshot-capture">
+                        <label>Sealed QC Run
+                          <select .value=${state.screenshotRunId} ?disabled=${state.busy}
+                            @change=${(e:Event)=>{
+                              state.screenshotRunId=(e.target as HTMLSelectElement).value;
+                              context.host.requestRender();
+                            }}>
+                            <option value="">Choose a sealed QC Run</option>
+                            ${state.journal.runs.filter(r=>r.seat==="qc"&&r.phase==="sealed")
+                              .map(r=>html`<option value=${r.runId}>${r.runId}</option>`)}
+                          </select>
+                        </label>
+                        <label>Path relative to that QC Worktree
+                          <input maxlength="180" spellcheck="false" .value=${state.screenshotPath}
+                            placeholder="screenshots/qc.png" ?disabled=${state.busy}
+                            @input=${(e:Event)=>{
+                              state.screenshotPath=(e.target as HTMLInputElement).value;
+                              context.host.requestRender();
+                            }}/></label>
+                        <button ?disabled=${state.busy||!state.screenshotRunId||
+                          !state.screenshotPath.trim()}
+                          @click=${()=>void captureScreenshot(context)}>
+                          Capture verified screenshot bytes</button>
+                      </div>
+                      ${state.journal.screenshots.map(shot=>html`
+                        <article class="mm-journal-run">
+                          <strong>${shot.relativePath}</strong>
+                          <p>QC ${shot.runId} · Git <code>${shot.sourceSha}</code></p>
+                          <p>sha256:<code>${shot.sha256}</code> · ${shot.bytes} bytes</p>
+                          <button ?disabled=${state.busy}
+                            @click=${()=>void showScreenshot(context,shot.id)}>Verify / view image</button>
+                          ${state.screenshotPreview?.id===shot.id?
+                            (state.screenshotPreview.dataUrl?html`
+                              <img class="mm-screenshot-preview"
+                                src=${state.screenshotPreview.dataUrl}
+                                alt=${"QC screenshot file "+shot.relativePath}/>`:
+                              html`<p>File too large for inline image preview.</p>`):null}
+                        </article>`)}
+                      <p role="status">${state.screenshotStatus}</p>
                       <h3>One-shot Pi Runs (up to 120)</h3>
                       ${state.journal.runs.map(run=>html`<article class="mm-journal-run">
                         <strong>${run.seat} · ${run.runId}</strong>
@@ -814,6 +901,13 @@ const styles = `
   .mm-kanban section {border:1px solid var(--pi-border-muted);padding:8px;border-radius:8px;min-height:76px;}
   .mm-pill {background:var(--pi-surface);border-radius:6px;padding:6px;margin-top:7px;font-size:12px;}
 
+  .mm-screenshot-capture{display:flex;flex-wrap:wrap;gap:8px;align-items:end;}
+  .mm-screenshot-capture label{display:grid;gap:4px;font-size:12px;}
+  .mm-screenshot-capture input,.mm-screenshot-capture select{
+    min-width:170px;max-width:100%;padding:6px;color:inherit;
+    border:1px solid var(--pi-border-muted);border-radius:6px;background:var(--pi-surface);}
+  .mm-screenshot-preview{display:block;max-width:100%;max-height:380px;
+    object-fit:contain;border:1px solid var(--pi-border-muted);border-radius:6px;margin-top:8px;}
   .mm-journal h3{font-size:13px;margin:16px 0 6px;}
   .mm-journal-task,.mm-journal-run{border:1px solid var(--pi-border-muted);
     border-radius:8px;padding:9px;margin:7px 0;font-size:12px;overflow-wrap:anywhere;}
