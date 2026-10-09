@@ -319,13 +319,29 @@ const plugin:PiWebServerPlugin={
           case "auto.proposal":{
             const input=object(ctx.input),draftWorkflowId=id(input.draftWorkflowId);
             const runId=id(input.runId);
-            const binding=agents.getRun(p,o,draftWorkflowId,runId);
+            let binding=agents.getRun(p,o,draftWorkflowId,runId);
             if(!binding||binding.taskId!=="goal"||!binding.requestId.startsWith("auto:goal:"))
               throw new Error("Goal proposal Run not found");
+            let notice="";
+            if(binding.phase==="running"&&binding.sessionId){
+              try{
+                const bridge=await connect(binding);
+                const receipt=await bridge.send({type:"inspect",requestId:randomUUID()},7000);
+                const outcome=classifyRecoveredRun(runId,receipt);
+                if(outcome==="settled"||outcome==="aborted"){
+                  agents.record(binding,{kind:"agent_settled",sequence:1,at:Date.now(),
+                    text:outcome==="aborted"?"Agent interrupted":"Agent settled"});
+                  binding=agents.get(p,o,binding.sessionId);
+                  notifyRun(binding);
+                }else if(outcome==="uncertain")
+                  notice="Planner Session state could not be proved; no automatic replay";
+              }catch(error){notice="Proposal inspection unavailable: "+String(error).slice(0,250);}
+            }
             const report=ledger.report(binding);
             return j({phase:binding.phase,runId,draftWorkflowId,
               proposal:report?.kind==="workflow_plan"?report.definition:null,
-              summary:report?.kind==="workflow_plan"?report.summary:null});
+              summary:report?.kind==="workflow_plan"?report.summary:null,
+              ...(notice?{notice}:{})});
           }
           case "auto.acceptProposal":{
             const input=object(ctx.input),draftWorkflowId=id(input.draftWorkflowId);
