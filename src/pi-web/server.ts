@@ -248,6 +248,105 @@ const plugin:PiWebServerPlugin={
             return j(next);
           }
 
+
+          case "auto.propose":{
+            const input=object(ctx.input),goal=nonempty(input.goal,4000);
+            if(goal.includes("\0"))throw new Error("Invalid goal input");
+            const provider=nonempty(input.provider,120),model=nonempty(input.model,160);
+            const effort=input.effort===undefined?undefined:nonempty(input.effort,32);
+            if(!sessions||!workspaces)throw new Error("Pi Session/Workspace provider unavailable");
+            const available=agents.list(p,o,"active").filter(b=>b.taskId==="goal"&&
+              b.requestId.startsWith("auto:goal:"));
+            if(available.length>=3)throw new Error("Resolve or accept previous goal proposals first");
+            const authorized=await workspaces.resolve({projectId:p,workspaceId:o});
+            if(authorized.project.id!==p||authorized.workspace.id!==o)
+              throw new Error("Current PI WEB Workspace authority changed");
+            const token=randomUUID().replace(/-/g,"").slice(0,16);
+            const draftWorkflowId="draft-"+token,runId="goal-"+token;
+            const reservation:Reservation={
+              projectId:p,orchestraWorkspaceId:o,workspaceId:o,workflowId:draftWorkflowId,
+              taskId:"goal",runId,seat:"planner",requestId:"auto:goal:"+token,
+            };
+            notifyRun(agents.reserve(reservation));
+            // Exactly-once native Session creation is protected by the
+            // durable reservation; uncertain outcomes are not retried.
+            const created=await sessions.create({projectId:p,workspaceId:o});
+            let binding=agents.assign(reservation,created.sessionId);
+            notifyRun(binding);
+            const checked=await probe(binding);
+            binding=agents.get(p,o,created.sessionId);
+            if(checked.status!=="ok")throw new Error("Pi planner companion unavailable");
+            const receipt=await checked.bridge.send({
+              type:"configure",requestId:randomUUID(),provider,model,
+              ...(effort?{effort}:{}),
+              job:{runId,kind:"workflow_plan"},
+              sessionName:"Goal proposal "+draftWorkflowId,
+            });
+            if(receipt.status!=="ok"||receipt.provider!==provider||receipt.model!==model||
+              (effort!==undefined&&receipt.effort!==effort)){
+              binding=agents.update(binding,receipt.status==="uncertain"?"uncertain":"blocked");
+              notifyRun(binding);
+              throw new Error("Pi did not confirm exact Sol model configuration");
+            }
+            binding=agents.update(binding,"configured",{provider,model,...(effort?{effort}:{})});
+            notifyRun(binding);
+            const prompt="You are Sol, an independent READ-ONLY workflow planner. User goal:\n"+
+              goal+"\nPropose a precise, acyclic Task DAG with 1..16 implementation Tasks. "+
+              "Each Task MUST contain bounded detailed requirements and independently testable "+
+              "acceptance criteria. Prefer qc_passed dependency gates; use integrated only "+
+              "where explicit upstream Git integration is required. "+
+              "Use lowercase kebab-case Task/workflow IDs. "+
+              "Call mm_workflow_proposal exactly once. Do not edit source files, "+
+              "create Pi Sessions, execute shell commands, or start implementation. "+
+              "A human will review the proposal and separately configure Worktrees/models.";
+            const started=await checked.bridge.send({type:"message",requestId:randomUUID(),
+              text:prompt,delivery:"newTurn"},10000);
+            const current=agents.get(p,o,created.sessionId);
+            if(started.status!=="ok"){
+              if(!["settled","sealed"].includes(current.phase)){
+                binding=agents.update(current,started.status==="uncertain"?"uncertain":"blocked");
+                notifyRun(binding);
+              }
+              throw new Error("Sol did not acknowledge proposal request ("+started.status+")");
+            }
+            if(current.phase!=="settled"&&current.phase!=="running"){
+              binding=agents.update(current,"running");
+              notifyRun(binding);
+            }
+            return j({draftWorkflowId,runId,sessionId:created.sessionId,
+              status:"Sol is preparing a read-only, human-reviewed DAG proposal"});
+          }
+          case "auto.proposal":{
+            const input=object(ctx.input),draftWorkflowId=id(input.draftWorkflowId);
+            const runId=id(input.runId);
+            const binding=agents.getRun(p,o,draftWorkflowId,runId);
+            if(!binding||binding.taskId!=="goal"||!binding.requestId.startsWith("auto:goal:"))
+              throw new Error("Goal proposal Run not found");
+            const report=ledger.report(binding);
+            return j({phase:binding.phase,runId,draftWorkflowId,
+              proposal:report?.kind==="workflow_plan"?report.definition:null,
+              summary:report?.kind==="workflow_plan"?report.summary:null});
+          }
+          case "auto.acceptProposal":{
+            const input=object(ctx.input),draftWorkflowId=id(input.draftWorkflowId);
+            const runId=id(input.runId);
+            const binding=agents.getRun(p,o,draftWorkflowId,runId);
+            if(!binding||binding.taskId!=="goal"||!binding.requestId.startsWith("auto:goal:")||
+              (binding.phase!=="settled"&&binding.phase!=="sealed"))
+              throw new Error("A completed, registered Sol proposal is required");
+            const report=ledger.report(binding);
+            if(!report||report.kind!=="workflow_plan")
+              throw new Error("Sol did not submit a valid typed Workflow proposal");
+            const created=store.create(p,o,report.definition);
+            if(binding.phase==="settled"){
+              const evidence=ledger.sealEvidence(binding,"workflow-proposal",
+                ("Approved "+created.definition.id+" ("+created.definition.tasks.length+
+                  " Tasks): "+report.summary).slice(0,3500));
+              const sealed=agents.seal(p,o,binding.sessionId!,evidence.ref);
+              notifyRun(sealed);
+            }
+            return j(created);
+          }
           case "auto.status":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             store.get(p,o,workflowId);
