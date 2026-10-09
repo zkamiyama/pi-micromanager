@@ -22,7 +22,7 @@ interface ApprovalRow extends ApprovalRequest {scope:string;fingerprint:string}
 const ROWS="id,scope,workflow_id AS workflowId,task_id AS taskId,"+
   "action,run_id AS runId,head_sha AS headSha,target,state,fingerprint,"+
   "created_at AS createdAt,updated_at AS updatedAt";
-const supported=new Set<PermissionAction>(["git.push","github.pr.create"]);
+const supported=new Set<PermissionAction>(["git.push","github.pr.create","github.pr.merge"]);
 function commitSubject(taskId:string,runId:string,revision:number,workspaceId:string):string{
   return createHash("sha256").update(JSON.stringify([
     "git.commit",taskId,runId,revision,workspaceId])).digest("hex");
