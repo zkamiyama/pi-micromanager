@@ -341,6 +341,8 @@ test("Public Worktree API creates one reviewed linked Git branch without startin
     await host.request("create",definition);
     const preview=await host.request("auto.worktree.preview",{workflowId:"wf",taskId:"api"});
     assert.equal(preview.stage,"prepared");
+    const persisted=await host.request("auto.worktree.status",{workflowId:"wf",taskId:"api"});
+    assert.equal(persisted.id,preview.id);
     assert.equal(host.createdWorktrees.size,0);
     const created=await host.request("auto.worktree.create",{planId:preview.id});
     assert.equal(created.stage,"created");
