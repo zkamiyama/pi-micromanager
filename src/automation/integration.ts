@@ -68,8 +68,10 @@ export class IntegrationVerifier {
     workflowId:string,taskId:string,targetWorkspaceId:string,source:AgentBinding,
     sourceSha:string,expectedHead?:string):Promise<string>{
     if(!targetWorkspaceId||targetWorkspaceId.length>512)throw new Error("Missing target Workspace ID");
-    if(source.workspaceId===targetWorkspaceId)
-      throw new Error("Source Worktree is not proof of integration into another Workspace");
+    const implementerWorkspace=this.options.ledger.get(projectId,orchestraWorkspaceId,
+      workflowId)?.config.workspaces[taskId];
+    if(source.workspaceId===targetWorkspaceId||implementerWorkspace===targetWorkspaceId)
+      throw new Error("Source implementation/QC Worktree is not proof of integration into another Workspace");
     const provider=this.options.workspaces();
     if(!provider)throw new Error("Public PI WEB Workspaces capability is not ready");
     const authority=await provider.resolve({projectId,workspaceId:targetWorkspaceId});
