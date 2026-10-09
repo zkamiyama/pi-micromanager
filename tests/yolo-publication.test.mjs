@@ -201,3 +201,34 @@ test("Publisher rejects dirty, stale or non QC-passed Git snapshots",async()=>{
     assert.equal(x.pushes,0);
   }finally{x.close();}
 });
+
+test("PR publication denied by Workflow policy does not call GitHub even after allowed Push",async()=>{
+  const x=fixture({actions:{"github.pr.create":"deny"}});
+  try{
+    assert.equal(await x.tick(),"acted");
+    assert.equal(x.pushes,1);
+    assert.equal(await x.tick(),"none");
+    assert.equal(x.creates,0);
+    assert.equal(x.service.list("p","o","workflow").length,1);
+  }finally{x.close();}
+});
+test("Remote divergence refuses non-force YOLO Push and never makes a PR",async()=>{
+  const x=fixture(undefined);
+  try{
+    x.setRemote("d".repeat(40));
+    await assert.rejects(x.tick(),/different commit/);
+    assert.equal(x.pushes,0);
+    assert.equal(x.creates,0);
+    assert.equal(x.service.list("p","o","workflow").length,0);
+  }finally{x.close();}
+});
+test("Paused Autopilot forbids any new external side effect",async()=>{
+  const x=fixture(undefined);
+  try{
+    x.ledger.setStatus("p","o","workflow",false,"Operator paused");
+    await assert.rejects(x.tick(),/paused/);
+    assert.equal(x.pushes,0);
+    assert.equal(x.creates,0);
+    assert.equal(x.service.list("p","o","workflow").length,0);
+  }finally{x.close();}
+});
