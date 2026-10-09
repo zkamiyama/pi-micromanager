@@ -76,6 +76,15 @@ export class ActivityRetention {
     if(!Number.isSafeInteger(days)||days<30||days>365||
       !Number.isSafeInteger(now)||now<DAY*365)
       throw new Error("Retention minimum 30 days and maximum 365 days");
+    const scope=automationScope(p,o);
+    // Retention receipts are finite, while recent committed/unresolved proofs
+    // remain available for crash reconciliation and explicit reinspection.
+    this.db.prepare("DELETE FROM retention_previews WHERE expires_at<?")
+      .run(now-30*DAY);
+    const active=this.db.prepare("SELECT COUNT(*) AS count FROM retention_previews "+
+      "WHERE scope=? AND state='prepared' AND expires_at>=?")
+      .get(scope,now) as {count:number};
+    if(active.count>=8)throw new Error("Too many active retention previews; wait for expiry");
     const beforeAt=now-days*DAY;
     const beforeIso=new Date(beforeAt).toISOString();
     const candidates=this.candidates(p,o,beforeAt,beforeIso);
