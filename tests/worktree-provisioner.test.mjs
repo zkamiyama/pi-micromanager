@@ -136,3 +136,30 @@ test("A Git worktree checkout swapped for a symlink is never treated as owned",a
       /not a real owned directory/);
   }finally{x.close();}
 });
+
+test("Automatic opt-in provisions a distinct final Worktree before its Task exists",async()=>{
+  const x=fixture();
+  try{
+    const profile={provider:"mock",model:"mock"};
+    x.ledger.save("project","orchestra","flow",{
+      managedWorktrees:true,workspaces:{},
+      finalization:{workspaceId:"auto",autoMerge:true},
+      publication:{remote:"origin",baseBranch:"main",draft:true},
+      models:{implementer:profile,qc:profile,architect:profile,planner:profile},
+      test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
+    });
+    const first=await x.manager.ensure("project","orchestra","flow","api","/repo");
+    const final=await x.manager.ensure("project","orchestra","flow","mm-final-integration","/repo");
+    assert.equal(first.stage,"created");
+    assert.equal(final.stage,"created");
+    assert.notEqual(first.branch,final.branch);
+    assert.notEqual(first.path,final.path);
+    assert.equal(x.registered.size,2);
+    x.manager.close();
+    x.manager=new ManagedWorktreeProvisioner(x.options);
+    const resumed=await x.manager.ensure("project","orchestra","flow","mm-final-integration","/repo");
+    assert.equal(resumed.id,final.id);
+    assert.equal(x.invocations.filter(c=>c.args.includes("add")).length,2,
+      "Re-entered auto-provisioner must not create a second worktree");
+  }finally{x.close();}
+});
