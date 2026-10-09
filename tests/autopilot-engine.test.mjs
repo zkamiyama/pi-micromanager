@@ -280,3 +280,40 @@ test("Unconfigured Sol plan models fail closed without creating diagnosis Tasks"
     assert.equal(x.wf().definition.tasks.length,1);
   }finally{x.close();}
 });
+
+test("A failed QC becomes bounded evidence in a fresh implementation attempt",async()=>{
+  const x=setup();
+  try{
+    await x.tick();await x.tick();
+    x.settled("impl-api-1");await x.tick();await x.tick();
+    const qc=x.settled("qc-api-1");
+    x.ledger.recordReport(qc,{kind:"qc",runId:qc.runId,verdict:"fail",
+      summary:"Contract header missing in response",at:Date.now()});
+    await x.tick();
+    assert.equal(x.wf().tasks.api.status,"ready");
+    await x.tick();await x.tick();
+    const rerun=x.launches.find(j=>j.runId==="impl-api-2");
+    assert.ok(rerun,"New Pi session starts with next attempt identity");
+    assert.match(rerun.prompt,/Contract header missing in response/);
+    assert.match(rerun.prompt,/Prior evidence\/QC feedback/);
+  }finally{x.close();}
+});
+test("The configured reviewer capacity also limits auto QC Sessions",()=>{
+  const x=setup();
+  try{
+    const wf=structuredClone(x.wf());
+    const task=structuredClone(wf.tasks.api);
+    task.spec.id="other";task.spec.title="Another independent Task";
+    wf.tasks.other=task;
+    wf.definition.tasks.push(task.spec);
+    for(const current of [wf.tasks.api,wf.tasks.other]){
+      current.status="awaiting_qc";
+      current.attempts=1;
+      current.pendingWork={headSha:sha,criteriaRevision:0,attempt:1};
+    }
+    wf.definition.maxParallelByRole.reviewer=1;
+    const busy=[{seat:"qc",workflowId:"wf",runId:"qc-api-1",phase:"running"}];
+    assert.equal(planNext(wf,busy,{...config,workspaces:{...config.workspaces,other:"wt-other"}}),
+      undefined);
+  }finally{x.close();}
+});
