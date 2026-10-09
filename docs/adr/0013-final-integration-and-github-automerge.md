@@ -85,11 +85,14 @@ enabling `managedWorktrees` alone never enables GitHub auto-merge.
    `allow`; `ask` creates an exact final QC Run/SHA/remote/base-bound
    approval, and `deny` leaves the PR as a Draft for human review.
    No Ready/merge action occurs before an explicit `ask` approval.
-8. The host marks the PR **Ready**, then requests
-   `gh pr merge --auto --merge`. This uses GitHub's own required
-   status checks and branch protection (no admin override or
-   forced merge). The host tracks `autoMergeRequest` as a
-   *scheduled* receipt; this is **not** proof of a completed merge.
+8. The host marks the PR **Ready**, polls `gh pr checks --json name,bucket`
+   and refuses to merge if checks are absent, pending, failed, cancelled or
+   otherwise uncertain. This adds a host check even if no GitHub branch rule
+   requires CI. After CI PASS the host requests
+   `gh pr merge --auto --merge --match-head-commit <final-qc-sha>`.
+   GitHub's required reviews, status checks and branch protection remain
+   authoritative (no admin override or forced merge). The host tracks
+   `autoMergeRequest` as a *scheduled* receipt, **not** a completed merge.
 9. Only when the API confirms the exact PR's state `MERGED`
    with the final QC-approved source SHA does the deterministic
    `final_merge_confirmed` action atomically mark **all** original

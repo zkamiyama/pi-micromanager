@@ -305,13 +305,13 @@ export class PublicationManager {
       await requireCleanGit(this.options.host,path)!==sha||
       await this.remoteSha(path,pub,branch)!==sha)
       throw new Error("Final PR source was modified before scheduling merge");
-    // The host has proven all PR checks pass; GitHub independently enforces
-    // its branch protection and review requirements. Unlike --auto, this
-    // works when the repository disables the optional Allow auto-merge flag.
-    // --match-head-commit rejects a changed PR even after our preflight.
-    // Never --admin, --delete-branch, or force.
+    // Host verifies actual passing PR checks before requesting native GitHub
+    // auto-merge, including on repos with no required-status-check rule.
+    // --auto may either merge immediately or remain scheduled for required
+    // reviewer approvals; only API-confirmed MERGED completes the workflow.
+    // --match-head-commit protects against stale source SHA. No --admin/force.
     await this.gh(path,["pr","merge",String(number),"--repo",repo,
-      "--merge","--match-head-commit",sha]);
+      "--auto","--merge","--match-head-commit",sha]);
     const after=await this.finalPrState(path,repo,number);
     if(after.headRefOid!==sha||after.baseRefName!==pub.baseBranch)
       throw new Error("Final PR moved during automatic merge");

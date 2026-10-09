@@ -59,6 +59,7 @@ function fixture(override={}){
    workflows,ledger);
  let remoteSha=null,pr=null;
  let pushes=0,creates=0,readyCount=0,mergeCount=0,loseMerge=false;
+ let mergePending=false;
  let commit=FINAL,dirty=false,ancestry=true,ciState="pass";
  const commands=[];
  const output=(stdout="",exitCode=0)=>({stdout,exitCode,signal:null,
@@ -105,13 +106,16 @@ function fixture(override={}){
        }
        if(command==="pr merge"){
          mergeCount++;if(!pr||pr.isDraft)throw Error("Cannot merge draft");
-         if(!args.includes("--match-head-commit")||
+         if(!args.includes("--auto")||!args.includes("--merge")||
+           !args.includes("--match-head-commit")||
            args[args.indexOf("--match-head-commit")+1]!==FINAL||
-           args.includes("--admin")||args.includes("--auto"))
+           args.includes("--admin")||args.includes("--delete-branch"))
            throw Error("Unsafe GitHub merge options");
-         pr.state="MERGED";
+         if(mergePending)pr.autoMergeRequest={enabledAt:new Date().toISOString()};
+         else pr.state="MERGED";
          if(loseMerge){loseMerge=false;throw Error("Lost GitHub merge response");}
-         return output("GitHub merged verified commit\n");
+         return output(mergePending?"GitHub scheduled native auto-merge\n":
+           "GitHub merged verified commit\n");
        }
        throw new Error("Unexpected gh "+args.join(" "));
      }
@@ -134,6 +138,7 @@ function fixture(override={}){
    setDirty(v){dirty=v;},setCommit(v){commit=v;},setAncestry(v){ancestry=v;},
    markMerged(){pr.state="MERGED";pr.autoMergeRequest=null;},
    setCi(v){ciState=v;},
+   setMergePending(v){mergePending=v;},
    loseMerge(){loseMerge=true;},
    reopen(){publisher.close();publisher=new PublicationManager(options);},
    tick(){return publisher.step(ledger.get("p","o","all-done"),
@@ -249,5 +254,24 @@ test("Failing GitHub CI prevents merging even with host QC PASS",async()=>{
    await assert.rejects(x.tick(),/checks failed/);
    assert.equal(x.mergeCount,0);
    assert.equal(x.pr.state,"OPEN");
+ }finally{x.close();}
+});
+
+test("Passing host CI can still schedule native GitHub auto-merge until review completes",async()=>{
+ const x=fixture();
+ try{
+   await x.tick();await x.tick();await x.tick();
+   x.setMergePending(true);
+   assert.equal(await x.tick(),"scheduled");
+   assert.equal(x.pr.state,"OPEN");
+   assert.ok(x.pr.autoMergeRequest);
+   assert.equal(await x.tick(),"scheduled");
+   assert.equal(x.mergeCount,1);
+   x.markMerged();
+   assert.equal(await x.tick(),"acted");
+   assert.equal(await x.tick(),"none");
+   assert.equal(x.mergeCount,1);
+   const state=x.workflows.get("p","o","all-done");
+   assert.equal(state.tasks.api.status,"integrated");
  }finally{x.close();}
 });

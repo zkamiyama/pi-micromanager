@@ -214,9 +214,9 @@ function fakePluginHost(shared,options={}) {
         if(args[0]==="pr"&&args[1]==="checks")
           return result(JSON.stringify([{name:"build-and-test",bucket:"pass"}]));
         if(args[0]==="pr"&&args[1]==="merge"){
-          if(!args.includes("--match-head-commit")||args.includes("--auto")||
+          if(!args.includes("--match-head-commit")||!args.includes("--auto")||
             args.includes("--admin"))
-            throw new Error("Merge should be CI-gated and SHA-bound");
+            throw new Error("Merge should be CI-gated, auto-scheduled and SHA-bound");
           publication.mergeCount++;
           publication.pr.state="MERGED";
           return result("GitHub merged verified final SHA\n");

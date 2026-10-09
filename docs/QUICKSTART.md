@@ -23,9 +23,10 @@ save configuration **and explicitly Start Autopilot**.
   push and ordinary merges.
 - A project with a clean checked-out `main` and an `origin` GitHub remote.
   Its GitHub Actions PR workflow must run and pass; otherwise automatic
-  merging waits. **Repository-level "Allow auto-merge" need not be enabled**:
-  the host checks actual PR CI itself before calling the normal SHA-bound
-  GitHub merge command. Required reviews/branch protections still apply.
+  merging waits. Enable GitHub repository setting **Allow auto-merge** for
+  this trial. The host verifies real PR CI and then requests GitHub-native
+  SHA-bound auto-merge; GitHub itself waits for required approvals/checks
+  if configured. Required reviews/branch protections still apply.
 
 For the first run, use a dedicated machine/user with narrowly scoped GitHub
 permissions and no production secrets: the Pi coding worker can invoke shell
@@ -129,8 +130,9 @@ register Task Worktrees manually.
    creates a Draft PR. Workflow `github.pr.merge` permission gates
    Draft→Ready. The host polls **real GitHub PR checks**. An absent,
    pending or failed check cannot trigger merge. With successful checks,
-   it requests an ordinary `gh pr merge --merge --match-head-commit`.
-   GitHub's required reviews and branch protections are never bypassed.
+   it requests GitHub-native `gh pr merge --auto --merge --match-head-commit`.
+   GitHub may complete immediately or schedule the merge until required
+   reviews pass. The host records `integrated` only after exact `MERGED`.
    Only GitHub's confirmed **MERGED** state changes the DAG to
    `integrated`.
 
