@@ -136,6 +136,7 @@ test("Cancel before or after QC safely releases barriers without overwriting fro
    assert.equal(w.tasks.root.qcRounds,1);
    denied(()=>doAction(w,plan("cancel-early")),"invalid_transition");
   }
+ }
 });
 
 test("Rejects stale/incorrect QC IDs and unauthorized releases without changing DAG revision",()=>{
