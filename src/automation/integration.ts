@@ -130,6 +130,8 @@ export class IntegrationVerifier {
         row.workflowId,commandId))throw new Error("Integration receipt is inconsistent");
       return this.options.workflows.get(projectId,orchestraWorkspaceId,row.workflowId);
     }
+    if(this.options.ledger.get(projectId,orchestraWorkspaceId,row.workflowId)?.enabled)
+      throw new Error("Pause Autopilot before confirming Git integration");
     if(Date.now()>row.expiresAt)throw new Error("Integration preview expired; request a new preview");
     const {workflow,qc,evidence}=this.source(projectId,orchestraWorkspaceId,
       row.workflowId,row.taskId);
