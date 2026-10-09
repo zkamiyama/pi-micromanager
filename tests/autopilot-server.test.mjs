@@ -486,3 +486,24 @@ test("PI WEB git.commit ask defers Session creation until human grants that exac
     assert.equal(host.sessions.size,1);
   }finally{await host.cleanup();}
 });
+
+test("PI WEB git.commit deny leaves the Task untouched and admits zero modifying Sessions",async()=>{
+  const host=fakePluginHost();
+  try{
+    await host.activate();
+    await host.request("create",{...definition,id:"commit-denied",
+      permissions:{actions:{"git.commit":"deny"}}});
+    await host.request("auto.configure",{workflowId:"commit-denied",config});
+    await host.request("auto.start",{workflowId:"commit-denied"});
+    const final=await eventually(async()=>{
+      const status=await host.request("auto.status",{workflowId:"commit-denied"});
+      return status?.enabled===false?status:null;
+    });
+    assert.match(final.status,/permission denied/);
+    assert.equal(host.sessions.size,0);
+    assert.equal((await host.request("get","commit-denied")).tasks.api.status,"ready");
+    assert.equal((await host.request("auto.permissions",{
+      workflowId:"commit-denied"})).approvals.length,0,
+      "Deny is a Workflow policy decision, not a pending human prompt");
+  }finally{await host.cleanup();}
+});
