@@ -174,6 +174,10 @@ export class AutomaticIntegrator {
       if(source.status!=="passed"||source.spec.kind!=="implementation")continue;
       const targets=Object.values(workflow.tasks).filter(task=>
         task.spec.kind==="implementation"&&
+        // A final integration Run must deliberately combine independent
+        // branch histories and solve conflicts, not be preemptively mutated
+        // by the safe-only dependent fast-forward service.
+        task.spec.systemPurpose!=="final-integration"&&
         task.spec.dependsOn.some(dep=>dep.taskId===source.spec.id));
       if(!targets.length)continue;
       const binding=this.source(record,workflow,source);
