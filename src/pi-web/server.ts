@@ -615,7 +615,12 @@ const plugin:PiWebServerPlugin={
 
 
           case "auto.quick.status":{
-            return j({profile:quick.profile(p,o),goals:quick.list(p,o)});
+            const goals=quick.list(p,o).map(goal=>{
+              if(goal.phase!=="running")return goal;
+              const current=ledger.get(p,o,goal.workflowId);
+              return {...goal,message:current?.status??goal.message};
+            });
+            return j({profile:quick.profile(p,o),goals});
           }
           case "auto.quick.configure":{
             const profile=quick.saveProfile(p,o,object(ctx.input));
