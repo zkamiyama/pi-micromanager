@@ -167,10 +167,13 @@ export class ManagedWorktreeProvisioner {
     this.db.prepare("UPDATE worktree_plans SET stage='created' WHERE id=?").run(id);
     return {...row,stage:"created"};
   }
-  async create(projectId:string,orchestraWorkspaceId:string,id:string):Promise<WorktreePlan>{
+  async create(projectId:string,orchestraWorkspaceId:string,id:string,
+    currentProjectRoot?:string):Promise<WorktreePlan>{
     const row=this.load(id);
     if(row.scope!==automationScope(projectId,orchestraWorkspaceId))
       throw new Error("Worktree plan belongs to another Orchestra");
+    if(currentProjectRoot&&resolve(currentProjectRoot)!==resolve(row.repoRoot))
+      throw new Error("Registered project path changed since Worktree preview");
     if(row.stage!=="prepared")return this.inspect(projectId,orchestraWorkspaceId,id);
     if(Date.now()>row.expiresAt)throw new Error("Worktree preview expired");
     const workflow=this.validateTask(projectId,orchestraWorkspaceId,row.workflowId,row.taskId);
