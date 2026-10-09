@@ -444,7 +444,7 @@ const plugin:PiWebServerPlugin={
           }
           case "auto.worktree.create":{
             const input=object(ctx.input);
-            return j(await provisioner.create(p,o,id(input.planId)));
+            return j(await provisioner.create(p,o,id(input.planId),ctx.project.path));
           }
           case "auto.worktree.inspect":{
             const input=object(ctx.input);
