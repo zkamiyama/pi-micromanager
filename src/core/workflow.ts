@@ -118,6 +118,8 @@ export function validateDefinition(def: WorkflowDefinition): void {
   const tasks = new Map<string, TaskSpec>();
   for (const task of def.tasks) {
     invariant(task !== null && validId(task.id) && !tasks.has(task.id), "duplicate_task", "Task IDs must be unique lowercase kebab-case");
+    invariant(task.id !== "mm-final-integration", "reserved_task_id",
+      "mm-final-integration is reserved for the internal final Task");
     invariant(typeof task.title === "string" && !!task.title.trim() && task.title.length <= 200,
       "invalid_task", `Title must be 1..200 characters for ${task.id}`);
     if(task.description!==undefined)
@@ -143,6 +145,10 @@ export function validateDefinition(def: WorkflowDefinition): void {
   for (const task of def.tasks) for (const dep of task.dependsOn) {
     invariant(dep !== null && validId(dep.taskId) && tasks.has(dep.taskId), "unknown_dependency", `${task.id} depends on missing task ${dep?.taskId}`);
     invariant(gates.includes(dep.gate), "invalid_gate", `${task.id}: invalid dependency gate`);
+    const parent=tasks.get(dep.taskId)!;
+    invariant(parent.kind==="implementation" ||
+      (dep.gate==="completed"),"unreachable_gate",
+      `${task.id}: ${dep.gate} cannot be reached by ${parent.kind} Task ${dep.taskId}`);
     invariant(dep.taskId !== task.id, "cycle", `${task.id} depends on itself`);
   }
   const visited = new Set<string>();
