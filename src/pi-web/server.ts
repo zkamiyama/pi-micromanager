@@ -740,6 +740,14 @@ const plugin:PiWebServerPlugin={
             const input=object(ctx.input);
             return j(await adr.stage(p,o,id(input.draftId)));
           }
+          case "auto.adr.publish":{
+            const input=object(ctx.input);
+            return j(await adr.publish(p,o,id(input.draftId)));
+          }
+          case "auto.adr.publication":{
+            const input=object(ctx.input);
+            return j(adr.publication(p,o,id(input.draftId)));
+          }
           case "auto.screenshot.list":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             store.get(p,o,workflowId);
