@@ -19,3 +19,14 @@ Pin CI actions to verified upstream full SHAs, do not persist checkout credentia
 Existing unsafe/YOLO profiles and old unproved input inventories require explicit migration. Production tools have a bounded subset of repository functionality; native arbitrary extensions, network-dependent tool setup, executable Git filters, and unrestricted Git commands are not supported there. Intentional refusal is preferable to a hidden privileged fallback.
 
 Kernel/host compromise, same-UID malicious processes, authentication/TLS outside this plugin, hard machine-resource quotas, exact provider billing, external-state restore, and independent review remain deployment obligations. Git commit brokers and the publisher are trusted code and must stay small and separately tested. Ordinary state-machine core semantics are unchanged.
+
+## Continuation status: release still blocked
+
+The state-owner lock is now retained by the daemon's own open file descriptor;
+a disposable child only establishes it. Offline snapshot creation and trusted-digest
+verification are implemented, with external Git/provider/native-session dependencies
+recorded explicitly. Restore and external-state reconciliation are not implemented.
+New canonical path, production-mode, last-hop admission-fence and Durable-lifetime
+components have regression coverage but are not fully connected at the public
+server boundary. See [the continuation matrix](../PRODUCTION_REMEDIATION_PROGRESS.md).
+Issues #79, #80, #81 and #75 remain open; component tests do not authorize a production release.

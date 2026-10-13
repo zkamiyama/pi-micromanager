@@ -3,7 +3,7 @@
 import {createHash} from "node:crypto";
 import {mkdirSync,realpathSync,existsSync,lstatSync,chmodSync} from "node:fs";
 import {join,resolve,isAbsolute} from "node:path";
-import {BACKGROUND_CONTEXT} from "@earendil-works/chord/context";
+import {BACKGROUND_CONTEXT,withAbortSignal} from "@earendil-works/chord/context";
 import {Type} from "@earendil-works/pi-ai";
 import {ModelRuntime} from "@earendil-works/pi-coding-agent";
 import type {Models} from "@earendil-works/pi-ai/models";
@@ -38,6 +38,7 @@ interface DurableCallbacks {
   finalContracts?(binding:AgentBinding):FinalQcContract[];
   models?:Models;
   limits?:RunLimits;
+  lifetimeSignal?:AbortSignal;
   activity(binding:AgentBinding,event:RuntimeActivity):void;
   changed(binding:AgentBinding):void;
   report(binding:AgentBinding,report:RunReport):void;
@@ -86,9 +87,31 @@ export class DurableRunHost {
   private readonly opening=new Map<string,Promise<Active>>();
   private readonly safety:RunSafetyLedger;
   private closing=false;
+  private readonly stopSignal=new AbortController();
+  private readonly onLifetimeAbort=()=>{
+    // Persist an uncertain interrupted outcome before closing watchers; a new
+    // daemon must not replay an input whose previous owner lost authority.
+    for(const live of this.active.values()){
+      try{
+        const current=this.current(live.binding),key=sessionHash(this.reservation(live.binding));
+        if(!current||["settled","sealed","failed"].includes(current.phase)||!this.safety.inputs(key).length)continue;
+        if(!this.safety.get(key)?.outcome)this.safety.finish(key,"uncertain");
+        const stopped=this.options.agents.requestAbort(current);
+        this.options.changed(this.options.agents.update(stopped,"uncertain"));
+      }catch{/* Closing must still cancel every active executor. */}
+    }
+    void this.close().catch(()=>{});
+  };
   private closeFlight:Promise<void>|undefined;
   constructor(private readonly options:DurableCallbacks){
     this.safety=new RunSafetyLedger(join(options.dataDirectory,"run-safety.sqlite"));
+    if(options.lifetimeSignal?.aborted)this.onLifetimeAbort();
+    else options.lifetimeSignal?.addEventListener("abort",this.onLifetimeAbort,{once:true});
+  }
+  private assertLive():void{
+    this.options.lifetimeSignal?.throwIfAborted();
+    this.stopSignal.signal.throwIfAborted();
+    if(this.closing)throw new Error("Durable host shutting down");
   }
   connected(id:string):boolean{return this.active.get(id)?.closed===false;}
   private configuredModels():Promise<Models>{
@@ -127,7 +150,7 @@ export class DurableRunHost {
     return this.options.agents.getRun(b.projectId,b.orchestraWorkspaceId,b.workflowId,b.runId);
   }
   private async open(binding:AgentBinding,cwd:string,kind:DurableKind,model:ModelProfile):Promise<Active>{
-    if(this.closing)throw new Error("Durable host shutting down");
+    this.assertLive();
     const r=this.reservation(binding),sid=identity(r),key=sessionHash(r);
     if(binding.sessionId!==null&&binding.sessionId!==sid)throw new Error("Durable session ID does not match its scoped Run");
     if(!cwd||!isAbsolute(cwd))throw new Error("Durable requires an absolute trusted Worktree");
@@ -183,8 +206,10 @@ export class DurableRunHost {
       // swallowed by the public SDK's observational hook dispatcher.
       const budgetedTools=(tools:readonly ToolRegistration[])=>tools.map(tool=>({
         ...tool,async execute(args:never,api:never,context:never){
-          thisHost.safety.consume(key,"tool");
-          return tool.execute(args,api,context);
+          thisHost.assertLive();thisHost.safety.consume(key,"tool");
+          const original=(context as {abortSignal?:AbortSignal}|undefined)?.abortSignal;
+          const signal=original?AbortSignal.any([original,thisHost.stopSignal.signal]):thisHost.stopSignal.signal;
+          return tool.execute(args,api,withAbortSignal(signal,context));
         },
       })) as ToolRegistration[];
       const thisHost=this;
@@ -192,7 +217,7 @@ export class DurableRunHost {
       registry.install(defineExtension({name:"micromanager-durable-reports",
         tools:budgetedTools([provided,...(contractTool?[contractTool]:[]),...discovery])}));
       const harness=await Harness.open(await openNodeSqliteStorage(this.path(r)),{
-        models:withModelBudget(models,()=>this.safety.consume(key,"model")),registry,settings:{toolExecution:"sequential",compaction:{enabled:false},
+        models:withModelBudget(models,()=>{this.assertLive();this.safety.consume(key,"model");}),registry,settings:{toolExecution:"sequential",compaction:{enabled:false},
           stream:{maxRetries:0,timeoutMs:120_000},retry:{maxRetries:2},
           progress:{partialIntervalMs:100,outputIntervalMs:100}},
         env:({cwd})=>{
@@ -290,6 +315,7 @@ export class DurableRunHost {
     return live.completion;
   }
   async launch(spec:DurableLaunch):Promise<AgentBinding>{
+    this.assertLive();
     const r=spec.reservation,key=sessionHash(r);
     if(this.closing)throw new Error("Durable host shutting down");
     if(this.options.agents.getRun(r.projectId,r.orchestraWorkspaceId,r.workflowId,r.runId))
@@ -302,10 +328,10 @@ export class DurableRunHost {
     const production=productionPolicy(this.options.dataDirectory);
     if(production){
       inspectSandboxWorkspace(spec.cwd,production.maxWorkspaceBytes);
-      const probe=await sandboxExec(spec.cwd,["/bin/true"],true,production);
+      const probe=await sandboxExec(spec.cwd,["/bin/true"],true,production,this.stopSignal.signal);
       if(probe.exitCode!==0)throw new Error("Production sandbox preflight failed");
     }
-    spec.assertAdmitted?.();
+    this.assertLive();spec.assertAdmitted?.();
     const startedAt=Date.now();
     this.safety.reserve(key,hash(JSON.stringify([spec.kind,realpathSync(spec.cwd),spec.model])),
       production?.limits??this.options.limits??DEFAULT_LIMITS,startedAt);
@@ -316,7 +342,7 @@ export class DurableRunHost {
     let current=this.options.agents.assign(r,identity(r));this.options.changed(current);
     current=this.options.agents.update(current,"configured",spec.model);
     active.binding=current;this.options.changed(current);
-    spec.assertAdmitted?.();
+    this.assertLive();spec.assertAdmitted?.();
     this.safety.trackInput(key,"mm:"+key);
     const accepted=await active.root.submit({type:"input",content:spec.prompt,requestId:"mm:"+key,whenBusy:"reject"},BACKGROUND_CONTEXT);
     if(!accepted.id)throw new Error("Durable did not commit the exact Run input");
@@ -326,7 +352,7 @@ export class DurableRunHost {
     return this.options.agents.get(r.projectId,r.orchestraWorkspaceId,identity(r));
   }
   async resumeUnstarted(binding:AgentBinding,spec:DurableLaunch):Promise<AgentBinding>{
-    spec.assertAdmitted?.();
+    this.assertLive();spec.assertAdmitted?.();
     if(!isDurableSession(binding.sessionId)||binding.abortRequested===1||!["created","connected","configured"].includes(binding.phase))
       throw new Error("Only an attached, proved-unstarted Durable Run can be recovered");
     if(!existsSync(this.path(this.reservation(binding))))throw new Error("Original Durable storage is missing");
@@ -339,7 +365,7 @@ export class DurableRunHost {
       const inspection=await live.harness.inspect(BACKGROUND_CONTEXT);
       if(entries.items.length||inspection.tasks.length||inspection.submissions.length||live.verified)
         throw new Error("Durable Session has accepted input/work; zero-input continuation refused");
-      spec.assertAdmitted?.();this.safety.assertActive(key);
+      this.assertLive();spec.assertAdmitted?.();this.safety.assertActive(key);
       this.options.changed(this.options.agents.update(binding,"configured",spec.model));
       this.safety.trackInput(key,"mm:"+key);
       const accepted=await live.root.submit({type:"input",content:spec.prompt,requestId:"mm:"+key,whenBusy:"reject"},BACKGROUND_CONTEXT);
@@ -350,6 +376,7 @@ export class DurableRunHost {
     }catch(error){await this.stopRun(binding).catch(()=>{});throw error;}
   }
   async reconnect(binding:AgentBinding,cwd:string,kind:DurableKind):Promise<"running"|"settled"|"uncertain">{
+    this.assertLive();
     if(!isDurableSession(binding.sessionId))throw new Error("Not a Pi Durable Run");
     if(this.connected(binding.sessionId!)){
       const active=this.active.get(binding.sessionId!)!;
@@ -383,10 +410,12 @@ export class DurableRunHost {
     }catch(error){await this.stopRun(binding).catch(()=>{});throw error;}
   }
   async command(binding:AgentBinding,cwd:string,kind:DurableKind,action:"steer"|"followUp"|"abort",requestId:string,text?:string){
+    this.assertLive();
     if(binding.phase!=="running")throw new Error("Only running Durable conversations accept live intervention");
     let live=this.active.get(binding.sessionId!);
     if(!live||live.closed){await this.reconnect(binding,cwd,kind);live=this.active.get(binding.sessionId!);}
     if(!live||live.closed)throw new Error("Durable conversation is not connected");
+    this.assertLive();
     if(live.finishing)throw new Error("Run is settling; no further input can be admitted");
     if(action==="abort"){
       this.options.changed(this.options.agents.requestAbort(binding));live.abortRequested=true;
@@ -407,6 +436,8 @@ export class DurableRunHost {
   close():Promise<void>{
     if(this.closeFlight)return this.closeFlight;
     this.closing=true;
+    this.options.lifetimeSignal?.removeEventListener("abort",this.onLifetimeAbort);
+    this.stopSignal.abort(new Error("Durable host shutting down"));
     this.closeFlight=(async()=>{
       await Promise.allSettled([...this.opening.values()]);
       const closing=[...this.active.values()];
