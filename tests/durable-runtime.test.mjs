@@ -186,3 +186,14 @@ test("Default Durable Models load stored Pi provider auth through the public SDK
    assert.ok(auth.source,"Auth resolution has provenance, without exposing it to logs");
  }finally{await x.close();}
 });
+
+test("Audit F12: unsupported thinking effort fails before immutable reservation",async()=>{
+ const x=fixture();
+ try{
+   await assert.rejects(x.durable.launch({...x.launch,model:{
+     ...x.launch.model,effort:"unsupported-thinking-level"
+   }}),/Unsupported Pi Durable thinking level/);
+   assert.equal(x.current(),undefined,"No stranded reserved Run may be persisted");
+   assert.equal(x.faux.state.callCount,0);
+ }finally{await x.close();}
+});
