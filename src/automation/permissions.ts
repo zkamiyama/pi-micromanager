@@ -34,7 +34,7 @@ function integrationSubject(sourceId:string,runId:string,sha:string,
     .digest("hex");
 }
 function subject(action:PermissionAction,taskId:string,runId:string,
-  sha:string,pub:PublicationConfig):string{
+  sha:string,pub:PublicationConfig,repo="",branch=""):string{
   return createHash("sha256").update(JSON.stringify([
     action,taskId,runId,sha,pub.remote,pub.baseBranch,pub.draft])).digest("hex");
 }
@@ -140,7 +140,7 @@ export class PermissionLedger {
   }
   ensure(p:string,o:string,workflowId:string,taskId:string,
     action:PermissionAction,runId:string,headSha:string,
-    publication:PublicationConfig):PermissionOutcome{
+    publication:PublicationConfig,repo="",branch=""):PermissionOutcome{
     if(!supported.has(action))throw new Error("Unsupported autonomously gated operation");
     const workflow=this.workflows.get(p,o,workflowId);
     const task=workflow.tasks[taskId];
@@ -151,14 +151,14 @@ export class PermissionLedger {
       throw new Error("Approval subject must be the currently QC-passed Task commit");
     const decision=permissionDecision(workflow.definition.permissions,action);
     if(decision!=="ask")return {decision};
-    const scope=automationScope(p,o),fingerprint=subject(action,taskId,runId,headSha,publication);
+    const scope=automationScope(p,o),fingerprint=subject(action,taskId,runId,headSha,publication,repo,branch);
     const existing=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
       " WHERE scope=? AND workflow_id=? AND task_id=? AND action=? AND fingerprint=?")
       .get(scope,workflowId,taskId,action,fingerprint) as ApprovalRow|undefined;
     if(existing)return {decision:existing.state==="approved"?"allow":
       existing.state==="rejected"?"deny":"ask",approval:existing};
     const id=randomUUID(),at=new Date().toISOString();
-    const target=publication.remote+":"+publication.baseBranch;
+    const target=JSON.stringify([publication.remote,publication.baseBranch,repo,branch]);
     this.db.prepare(`INSERT INTO workflow_approvals(
       id,scope,workflow_id,task_id,action,run_id,head_sha,target,
       fingerprint,state,created_at,updated_at)
@@ -213,7 +213,13 @@ export class PermissionLedger {
       const pub=config.publication;
       if(!pub||!task||!["passed","integrated"].includes(task.status)||
         task.lastQc?.runId!==row.runId||task.lastQc.headSha!==row.headSha||
-        subject(row.action,row.taskId,row.runId,row.headSha,pub)!==row.fingerprint)
+        !(()=>{let target:unknown;try{target=JSON.parse(row.target);}catch{return false;}
+          if(!Array.isArray(target)||target.length!==4||
+            target.some(v=>typeof v!=="string")||
+            target[0]!==pub.remote||target[1]!==pub.baseBranch)return false;
+          return subject(row.action,row.taskId,row.runId,row.headSha,pub,
+            target[2],target[3])===row.fingerprint;
+        })())
         throw new Error("Approval no longer matches the exact Workflow QC commit and publication target");
     }
     if(permissionDecision(workflow.definition.permissions,row.action)!=="ask")
