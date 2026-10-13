@@ -19,8 +19,8 @@ const [provider,model]=process.argv.slice(2);
 if(!provider||!model||process.argv.length!==4||
    !/^[a-z0-9][a-z0-9._-]*$/i.test(provider)||
    !/^[a-z0-9][a-z0-9._-]*$/i.test(model)){
-  console.error("Usage: npm run smoke:durable-auth -- <provider> <model>");
-  console.error("Example: npm run smoke:durable-auth -- openai gpt-5.5");
+  console.error("Usage: node scripts/durable-auth-smoke.mjs <provider> <model>");
+  console.error("Example: node scripts/durable-auth-smoke.mjs openai gpt-5.5");
   console.error("This performs one authenticated model/tool call (usage may be billed).");
   process.exit(2);
 }
