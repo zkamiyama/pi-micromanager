@@ -168,6 +168,8 @@ function fakePluginHost(shared,options={}) {
             (args[1]==="/repo/final"?"feature/final":"feature/api"))+"\n");
         if(command==="remote get-url origin")
           return result("https://github.com/acme/repo.git\n");
+        if(command==="remote get-url --push --all origin")
+          return result("https://github.com/acme/repo.git\n");
         if(command.startsWith("ls-remote --heads origin refs/heads/")){
           const branch=command.split(" ").at(-1);
           return result(publication.remoteSha?
