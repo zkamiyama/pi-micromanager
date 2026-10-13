@@ -781,6 +781,14 @@ const plugin:PiWebServerPlugin={
             const input=object(ctx.input),workflowId=id(input.workflowId);
             return j(screenshots.preview(p,o,workflowId,id(input.artifactId)));
           }
+          case "auto.screenshot.gc.preview":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            return j(screenshots.orphanPreview(p,o,workflowId));
+          }
+          case "auto.screenshot.gc.confirm":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            return j(screenshots.orphanConfirm(p,o,workflowId,id(input.previewId)));
+          }
           case "auto.journal":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             const current=store.get(p,o,workflowId);
