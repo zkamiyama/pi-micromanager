@@ -1,5 +1,6 @@
 /** Immutable, content-addressed QC screenshot evidence from an exact clean Git SHA.
- * Only explicit operator-requested local captures; never pretend to take a screenshot.
+ * Explicit operator capture or opt-in import of already tracked files;
+ * never pretend to capture a new browser screenshot.
  * Original bytes are private to the plugin host and are NOT sent to a model. */
 import {createHash,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
@@ -197,6 +198,46 @@ export class ScreenshotEvidence {
       .run(record.id,scope,workflowId,runId,binding.sessionId,relativePath,
         mime,sha256,blob.length,head,path,record.createdAt);
     return record;
+  }
+  /** Import a small, explicitly opt-in set of existing screenshots
+   * tracked by the QC-evaluated Git SHA. Never take a screenshot, never
+   * run browser capture APIs, and never accept untracked/ignored images. */
+  async captureTracked(projectId:string,orchestraWorkspaceId:string,
+    workflowId:string,runId:string):Promise<ScreenshotArtifact[]>{
+    const wf=this.options.workflows.get(projectId,orchestraWorkspaceId,workflowId);
+    const binding=this.options.agents.getRun(projectId,orchestraWorkspaceId,workflowId,runId);
+    const task=binding?wf.tasks[binding.taskId]:undefined;
+    if(!binding||binding.seat!=="qc"||binding.phase!=="sealed"||
+      !binding.requestId.startsWith("auto:")||!task||
+      task.spec.kind!=="implementation"||task.lastQc?.runId!==runId)
+      throw new Error("Automatic import needs current sealed QC evidence");
+    const provider=this.options.workspaces();
+    if(!provider)throw new Error("PI WEB Workspace capability unavailable");
+    const resolved=await provider.resolve({projectId,workspaceId:binding.workspaceId});
+    if(resolved.project.id!==projectId||
+      resolved.workspace.id!==binding.workspaceId||
+      resolved.workspace.projectId!==projectId||
+      resolved.workspace.isMain||
+      resolved.workspace.provider?.metadata?.isGitWorktree!==true)
+      throw new Error("QC screenshot Worktree authority mismatch");
+    const head=await requireCleanGit(this.options.host,resolved.workspace.path);
+    if(head!==task.lastQc.headSha)
+      throw new Error("QC screenshot auto-import requires exact verified Git HEAD");
+    const listed=await gitValue(this.options.host,resolved.workspace.path,[
+      "ls-tree","-r","--name-only",head,"--","screenshots/"]);
+    const paths=listed?listed.split("\n").filter(Boolean):[];
+    if(paths.length>64)
+      throw new Error("Too many screenshot files; inspect and import selectively");
+    const accepted=paths.filter(path=>PATH_PATTERN.test(path));
+    if(accepted.length>8)
+      throw new Error("Automatic QC screenshot import permits at most eight images per Run");
+    const records:ScreenshotArtifact[]=[];
+    for(const path of accepted){
+      this.options.host.lifetimeSignal.throwIfAborted();
+      records.push(await this.capture(projectId,orchestraWorkspaceId,
+        workflowId,runId,path));
+    }
+    return records;
   }
   preview(projectId:string,orchestraWorkspaceId:string,
     workflowId:string,id:string):ScreenshotPreview{
