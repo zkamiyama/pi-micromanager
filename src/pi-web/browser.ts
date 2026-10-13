@@ -107,7 +107,8 @@ function stateFor(context: WorkspacePanelContext): State {
       quickRemote:"origin",quickBase:"main",quickMerge:"ask",
       quickRuntime:"durable",quickAdvanced:false,
       quickSetupDraft:JSON.stringify({
-        config:{runtime:"durable",managedWorktrees:true,workspaces:{},
+        config:{runtime:"durable",managedWorktrees:true,convergenceMode:"linearized",
+          maxConcurrentRuns:8,maxManagedWorktrees:32,workspaces:{},
           finalization:{workspaceId:"auto",autoMerge:true},
           publication:{remote:"origin",baseBranch:"main",draft:true},
           models:Object.fromEntries(["planner","implementer","qc","architect"]

@@ -24,6 +24,7 @@ import type {AgentRegistry,AgentBinding,Reservation} from "./registry.js";
 import type {RuntimeActivity} from "./protocol.js";
 import type {AutopilotLedger,ModelProfile} from "../automation/ledger.js";
 import {parseRunReport,type RunReport} from "../automation/report.js";
+import {readonlyDiscoveryTools} from "./repository-discovery.js";
 
 export type DurableKind="implementation"|"qc"|"diagnosis"|"synthesis"|
   "planning"|"workflow_plan";
@@ -31,8 +32,14 @@ export interface DurableLaunch {
   reservation:Reservation;model:ModelProfile;cwd:string;
   kind:DurableKind;prompt:string;
 }
+export interface FinalQcContract {
+  taskId:string;title:string;description?:string;
+  acceptanceCriteria?:string[];qcSha:string;
+}
 interface DurableCallbacks{
   dataDirectory:string;agents:AgentRegistry;ledger:AutopilotLedger;
+  /** Bound to the exact final Run; never authored by the model. */
+  finalContracts?(binding:AgentBinding):FinalQcContract[];
   /** Test hook for the real Durable Harness with a deterministic faux provider. */
   models?:Models;
   activity(binding:AgentBinding,event:RuntimeActivity):void;
@@ -104,7 +111,7 @@ export function durableActivity(event:AgentEvent,text:string,sequence:number):
   return;
 }
 function reportTools(kind:DurableKind,runId:string,emit:(report:RunReport)=>void,
-  at:number){
+  at:number,canPassFinalQc?:()=>boolean){
   let submitted=false;
   function record(value:unknown){
     const r=parseRunReport(value);
@@ -120,6 +127,8 @@ function reportTools(kind:DurableKind,runId:string,emit:(report:RunReport)=>void
       Type.Literal("pass"),Type.Literal("fail"),Type.Literal("inconclusive")]),
       summary}),replay:"safe",
     async execute(args){if(kind!=="qc")throw new Error("Not a QC Run");
+      if(args.verdict==="pass"&&canPassFinalQc&&!canPassFinalQc())
+        throw new Error("All final QC source contracts must be retrieved before PASS");
       return record({kind:"qc",runId,verdict:args.verdict,summary:args.summary,at});},
   });
   const task=defineTool({name:"mm_task_report",
@@ -252,13 +261,29 @@ export class DurableRunHost {
       if(this.closing)throw new Error("Durable host shutting down during open");
       const rootPath=this.path(reservation);
       const registry=createRegistry();
+      const finalQc=kind==="qc"&&binding.taskId==="mm-final-integration";
+      const contracts=finalQc?this.options.finalContracts?.(binding):undefined;
+      if(finalQc&&(!contracts||contracts.length===0||contracts.length>64))
+        throw new Error("Final QC needs 1..64 host-verified source contracts");
+      const seenContracts=new Set<number>();
+      const contractTool=contracts?defineTool({name:"mm_final_qc_contract",
+        description:"Return the full immutable acceptance contract for the requested original source Task.",
+        parameters:Type.Object({index:Type.Integer({minimum:0,maximum:63})}),replay:"safe",
+        async execute(args){
+          if(!Number.isSafeInteger(args.index)||args.index>=contracts.length)
+            throw new Error("Final QC source contract index out of bounds");
+          seenContracts.add(args.index);
+          return {output:[{type:"text" as const,text:JSON.stringify(contracts[args.index])}]};
+        },
+      }):undefined;
+      const discovery=readonlyDiscoveryTools(canonical);
       const reports=reportTools(kind,binding.runId,r=>{
         const current=this.options.agents.getRun(binding.projectId,
           binding.orchestraWorkspaceId,binding.workflowId,binding.runId);
         if(!current?.sessionId||current.sessionId!==sessionId)
           throw new Error("Durable report not authorized by exact Run reservation");
         this.options.report(current,r);
-      },Date.parse(binding.createdAt));
+      },Date.parse(binding.createdAt),contracts?()=>seenContracts.size===contracts.length:undefined);
       const provided=kind==="qc"?reports.qc:
         kind==="planning"?reports.plan:kind==="workflow_plan"?reports.proposal:reports.task;
       const coding=(CodingTools.tools??[]).map(tool=>{
@@ -274,7 +299,8 @@ export class DurableRunHost {
         }};
       }) as ToolRegistration[];
       registry.install(defineExtension({name:"micromanager-coding-tools",tools:coding}));
-      registry.install(defineExtension({name:"micromanager-durable-reports",tools:[provided]}));
+      registry.install(defineExtension({name:"micromanager-durable-reports",
+        tools:[provided,...(contractTool?[contractTool]:[]),...discovery]}));
       const harness=await Harness.open(await openNodeSqliteStorage(rootPath),
         {models,registry,settings:{toolExecution:"sequential",
           progress:{partialIntervalMs:100,outputIntervalMs:100}},
@@ -292,7 +318,8 @@ export class DurableRunHost {
         // TypeBox-specific registrations share the durable ToolRegistration
         // interface but inferred schema unions are not homogeneous arrays.
         const tools:ToolRegistration[]=(kind==="implementation"?
-          original:[read,provided]) as ToolRegistration[];
+          original:[read,...discovery,
+            ...(contractTool?[contractTool]:[]),provided]) as ToolRegistration[];
         const effort=model.effort;
         const levels=new Set<string>(["off","minimal","low","medium","high","xhigh","max"]);
         if(effort!==undefined&&!levels.has(effort))

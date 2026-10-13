@@ -40,6 +40,8 @@ test("Host test evidence records output hashes and exit code, not raw potentiall
     validateRun:()=>"",
     replaySettledReport:async()=>{},notify(){},
   });
+  const previousTestKey=process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY="synthetic-test-placeholder";
   const result=await port.verify({projectId:"p",workspaceId:"wt-1"},{
     test:{file:"node",args:["--test"],timeoutMs:5000},
   },SHA);
@@ -55,4 +57,7 @@ test("Host test evidence records output hashes and exit code, not raw potentiall
   assert.ok(!result.details.includes("stdout contains"));
   assert.ok(invocations.filter(c=>c.file==="git").every(c=>
     c.unsetEnv.includes("GIT_DIR")&&c.unsetEnv.includes("GIT_WORK_TREE")));
+  assert.ok(invocations.find(c=>c.file==="node")?.unsetEnv.includes("OPENAI_API_KEY"));
+  if(previousTestKey===undefined)delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY=previousTestKey;
 });

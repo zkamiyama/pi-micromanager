@@ -1,0 +1,38 @@
+# Deliberately MANUAL; must never run unreviewed PR code with provider credentials.
+name: Authenticated Durable E2E
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Pi provider available on the preauthenticated runner
+        required: true
+        type: string
+      model:
+        description: Exact Pi model ID
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  smoke:
+    # Set up a restricted runner dedicated to testing; do not give it push credentials.
+    runs-on: [self-hosted, linux, pi-authenticated]
+    environment: authenticated-pi-e2e
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - name: Real Pi authenticated tool turn plus durable restore
+        env:
+          PI_PROVIDER: ${{ inputs.provider }}
+          PI_MODEL: ${{ inputs.model }}
+        run: node scripts/durable-auth-smoke.mjs "$PI_PROVIDER" "$PI_MODEL"
+      - name: Disposable Git worktree implementation then independent QC
+        env:
+          PI_PROVIDER: ${{ inputs.provider }}
+          PI_MODEL: ${{ inputs.model }}
+        run: node scripts/real-durable-autopilot-smoke.mjs

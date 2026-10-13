@@ -58,7 +58,7 @@ function boundedPrompt(value:string):string {
   return value;
 }
 export function buildJobPrompt(workflow:WorkflowInstance,task:TaskState,kind:JobKind,
-  reportSnippets:readonly string[]=[]):string {
+  reportSnippets:readonly string[]=[],pagedFinalContracts=false):string {
   const depends=task.spec.dependsOn.map(d=>d.taskId+" ("+d.gate+")").join(", ")||"none";
   const qcSource=task.parentTaskId?workflow.tasks[task.parentTaskId]?.lastQc:undefined;
   const criteria=task.spec.acceptanceCriteria?.map((line,index)=>
@@ -99,7 +99,7 @@ export function buildJobPrompt(workflow:WorkflowInstance,task:TaskState,kind:Job
     // Final QC must see the original source contracts, not just system-level
     // Git ancestry gates it cannot independently prove with its read-only tool.
     // The host proves exact ancestry, cleanliness and tests separately.
-    const sources=final?Object.values(workflow.tasks)
+    const sources=final&&!pagedFinalContracts?Object.values(workflow.tasks)
       .filter(t=>t.spec.kind==="implementation"&&
         t.spec.systemPurpose!=="final-integration")
       .map(t=>"Source Task "+t.spec.id+": "+t.spec.title+
@@ -111,7 +111,10 @@ export function buildJobPrompt(workflow:WorkflowInstance,task:TaskState,kind:Job
       ". Inspect actual source and tests in the selected checkout using the read tool "+
       "before deciding; do not infer that files are absent without attempting a read. "+
       (final?"Review the combined implementation against these original source contracts:\n"+
-        sources+"\nThe host independently proves the source Git SHA ancestry, clean HEAD "+
+        (pagedFinalContracts ? "Fetch EVERY original acceptance contract with mm_final_qc_contract, index 0 through "+
+          (Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation"&&t.spec.systemPurpose!=="final-integration").length-1)+
+          ". A PASS report requires all pages to be read.\n" : sources)+
+        "\nThe host independently proves the source Git SHA ancestry, clean HEAD "+
         "and configured test execution. Do not mark inconclusive merely because your "+
         "read-only role cannot execute Git or run host tests. Judge code behavior and "+
         "acceptance criteria from inspected files. ":"")+
@@ -162,7 +165,14 @@ function plannerSlots(workflow:WorkflowInstance,agents:readonly AgentBinding[]):
 }
 export function planNext(workflow:WorkflowInstance,agents:readonly AgentBinding[],config:AutopilotConfig):
   {action:"start";taskId:string}|{action:"launch";taskId:string;runId:string;seat:Seat;kind:JobKind}|undefined {
+  const running=Object.values(workflow.tasks).filter(t=>t.status==="running").length;
+  const qcActive=agents.filter(a=>a.workflowId===workflow.definition.id&&a.seat==="qc"&&
+    !["settled","sealed","failed"].includes(a.phase)&&
+    workflow.tasks[a.taskId]?.spec.kind==="implementation").length;
+  const full=config.maxConcurrentRuns!==undefined&&
+    running+qcActive>=config.maxConcurrentRuns;
   for(const task of Object.values(workflow.tasks)){
+    if(full)break;
     if(task.status!=="ready")continue;
     if(task.spec.kind==="implementation"&&task.attempts>=config.maxAttempts)continue;
     const active=Object.values(workflow.tasks).filter(t=>t.status==="running"&&
@@ -181,6 +191,7 @@ export function planNext(workflow:WorkflowInstance,agents:readonly AgentBinding[
     const seat=kind==="qc"?"qc":roles[task.spec.role];
     const runId=expectedRunId(task);
     if(agents.some(a=>a.workflowId===workflow.definition.id&&a.runId===runId))continue;
+    if(kind==="qc"&&full)continue;
     if(kind==="qc"&&
       reviewerSlots(workflow,agents)>=workflow.definition.maxParallelByRole.reviewer)continue;
     if(task.spec.kind==="implementation"&&kind==="implementation"&&!implementationWorkspace(task,config))continue;
@@ -429,7 +440,9 @@ export class AutopilotEngine {
           return cut>0?{...record.config.models[next.seat],provider:raw.slice(0,cut),
             model:raw.slice(cut+1)}:{...record.config.models[next.seat],model:raw};
         })():record.config.models[next.seat],
-        prompt:buildJobPrompt(current,task,next.kind,sources),
+        prompt:buildJobPrompt(current,task,next.kind,sources,
+          next.kind==="qc"&&task.spec.systemPurpose==="final-integration"&&
+          record.config.runtime==="durable"),
         ...(next.kind==="qc"&&task.pendingWork?{headSha:task.pendingWork.headSha}:{}),
         ...(next.kind==="diagnosis"&&task.parentTaskId&&
           current.tasks[task.parentTaskId]?.lastQc?

@@ -54,7 +54,7 @@ const definition={
  description:'Add multiply(a,b) export in src/math.mjs without removing add. Add node:test cases for 2*3, -2*3, and 0*7, run tests, and commit on the current feature branch.',
  acceptanceCriteria:['multiply(2,3) is 6','multiply(-2,3) is -6','multiply(0,7) is 0','existing add test still passes','commit changes'],dependsOn:[]}]
 };
-const model={provider:'openai',model:'gpt-5.5'};
+const model={provider:process.env.PI_PROVIDER??'openai',model:process.env.PI_MODEL??'gpt-5.5'};
 const config={runtime:'durable',workspaces:{math:'wt-math'},models:{implementer:model,qc:model,architect:model,planner:model},test:{file:'node',args:['--test'],timeoutMs:15000},maxAttempts:2};
 let backend, lastStatus='';
 const request=async(operation,input)=>backend.peer.request({...sessionCtx,operation,input});

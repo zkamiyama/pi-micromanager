@@ -26,6 +26,8 @@ export interface AutopilotConfig {
   /** Newly admitted Workflows use Pi Durable unless native Pi is selected.
    * Legacy persisted records are migrated as pi-web, not silently switched. */
   runtime:AgentRuntime;
+  /** Explicitly serialize implementation DAGs to avoid divergent pre-QC fan-in merges. */
+  convergenceMode?:"linearized";
   /** No final Git integration for legacy configurations unless set explicitly. */
   finalization?:FinalizationConfig;
   /** Explicit permission to create missing linked Worktrees when Autopilot starts. */
@@ -33,6 +35,10 @@ export interface AutopilotConfig {
   /** Configured publication target enables YOLO push + Draft PR creation.
    * Legacy saved configurations without this field never acquire new network effects. */
   publication?:PublicationConfig;
+  /** Workflow-local admission budget; running and QC sessions share it. */
+  maxConcurrentRuns?:number;
+  /** Cap opt-in managed Worktree creation before any Git mutation. */
+  maxManagedWorktrees?:number;
   /** Existing PI WEB linked, isolated worktree per implementation Task. */
   workspaces:Record<string,string>;
   /** An optional independent prelinked read-only QC snapshot workspace, per Task. */
@@ -77,6 +83,16 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   const runtime=raw.runtime===undefined?"durable":raw.runtime;
   if(runtime!=="durable"&&runtime!=="pi-web")
     throw new Error("Agent runtime must be durable or pi-web");
+  if(raw.convergenceMode!==undefined&&raw.convergenceMode!=="linearized")
+    throw new Error("Convergence mode must be linearized if configured");
+  if(raw.maxConcurrentRuns!==undefined&&
+    (!Number.isSafeInteger(raw.maxConcurrentRuns)||(raw.maxConcurrentRuns as number)<1||
+      (raw.maxConcurrentRuns as number)>32))
+    throw new Error("maxConcurrentRuns must be 1..32");
+  if(raw.maxManagedWorktrees!==undefined&&
+    (!Number.isSafeInteger(raw.maxManagedWorktrees)||(raw.maxManagedWorktrees as number)<1||
+      (raw.maxManagedWorktrees as number)>64))
+    throw new Error("maxManagedWorktrees must be 1..64");
   const models=Object.create(null) as Record<Seat,ModelProfile>;
   for(const seat of seats){
     const p=object(profiles[seat]);
@@ -134,7 +150,11 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   }
   if(finalization&&!publication)
     throw new Error("Final integration requires a configured GitHub publication destination");
-  return {runtime,workspaces, ...(managedWorktrees?{managedWorktrees:true as const}:{}),
+  return {runtime,workspaces,
+    ...(raw.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:raw.maxConcurrentRuns as number}),
+    ...(raw.maxManagedWorktrees===undefined?{}:{maxManagedWorktrees:raw.maxManagedWorktrees as number}),
+    ...(raw.convergenceMode==="linearized"?{convergenceMode:"linearized" as const}:{}),
+    ...(managedWorktrees?{managedWorktrees:true as const}:{}),
     ...(finalization?{finalization}:{}),
     ...(raw.reviewWorkspaces===undefined?{}:{
     reviewWorkspaces:workspaceMap(raw.reviewWorkspaces)}),
