@@ -64,13 +64,20 @@ export class RunSafetyLedger {
   }
   consume(key:string,kind:"model"|"tool",now=Date.now()):void{
     this.db.exec("BEGIN IMMEDIATE");
+    let exhausted=false;
     try{
       const r=this.assertActive(key,now),column=kind==="model"?"requests":"tools";
       const max=kind==="model"?r.limits.maxModelRequests:r.limits.maxToolCalls;
-      if(r[column]>=max)throw new Error("Run "+kind+" budget exhausted");
-      this.db.prepare("UPDATE safety_runs SET "+column+"="+column+"+1 WHERE key=?").run(key);
+      exhausted=r[column]>=max;
+      if(exhausted){
+        // A rejected tool can be followed by a nominally successful model
+        // response. Latch failure before returning the error to the SDK so a
+        // provisional report cannot become authoritative after exhaustion.
+        this.db.prepare("UPDATE safety_runs SET outcome='failed' WHERE key=? AND outcome IS NULL").run(key);
+      }else this.db.prepare("UPDATE safety_runs SET "+column+"="+column+"+1 WHERE key=?").run(key);
       this.db.exec("COMMIT");
     }catch(error){this.db.exec("ROLLBACK");throw error;}
+    if(exhausted)throw new Error("Run "+kind+" budget exhausted");
   }
   trackInput(key:string,requestId:string):void{
     this.assertActive(key);

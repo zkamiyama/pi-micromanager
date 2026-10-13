@@ -45,3 +45,24 @@ test('S01 real Harness: proved normal completion still settles once and reconnec
  await x.host.launch(x.launch);await x.wait(()=>x.current()?.phase==='settled');assert.equal(x.faux.state.callCount,2);await x.reopen();assert.equal(await x.host.reconnect(x.current(),x.launch.cwd,'qc'),'settled');assert.equal(x.faux.state.callCount,2);
  }finally{await x.close();}
 });
+
+test('S03 real Harness: tool budget exhaustion invalidates an earlier QC PASS across restart',async()=>{
+ const x=fixture({...DEFAULT_LIMITS,maxToolCalls:1});
+ try{
+  x.faux.setResponses([
+   fauxAssistantMessage([
+    fauxToolCall('mm_qc_report',{verdict:'pass',summary:'Provisional before exhaustion'},{id:'early-report'}),
+    fauxToolCall('read',{path:join(x.launch.cwd,'source.txt')},{id:'over-budget'}),
+   ],{stopReason:'toolUse'}),
+   fauxAssistantMessage('Must not rescue an exhausted run'),
+  ]);
+  await x.host.launch(x.launch);
+  await x.wait(()=>x.current()?.phase==='uncertain');
+  assert.equal(x.ledger.report(x.current()).verdict,'pass');
+  assert.equal(x.faux.state.callCount,1,'No later provider request after the failed budget latch');
+  assert.equal(x.events.some(e=>e.kind==='agent_settled'&&e.text==='Agent settled'),false);
+  await x.reopen();
+  await assert.rejects(x.host.reconnect(x.current(),x.launch.cwd,'qc'),/not successful/);
+  assert.equal(x.faux.state.callCount,1);
+ }finally{await x.close();}
+});
