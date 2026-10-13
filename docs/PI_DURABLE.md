@@ -133,6 +133,25 @@ to be verified.
 
 ## Test and acceptance
 
+For a direct, **opt-in authenticated smoke test** on the intended PI WEB
+daemon OS account, first verify `pi auth check --provider openai`, then run:
+
+```sh
+npm install --no-audit --no-fund
+node scripts/durable-auth-smoke.mjs openai gpt-5.5
+```
+
+Replace the provider/model IDs with exact entries from `pi --list-models`.
+This performs a real model request using the daemon user's Pi OAuth/API
+key. It gives the model **only one inert test reporting tool**: no
+shell, repo, edit, filesystem or GitHub tools. It then closes/reopens a
+disposable SQLite database and verifies the Conversation ID is unchanged
+and the tool executed once. The temporary database is deleted, and
+no credentials are logged or stored in Micromanager's state.
+It does **not** exercise the PI WEB browser, Worktrees, Git publication or
+host service restart; those still require the separately documented
+disposable-repository acceptance trial.
+
 Run `npm run check`. The suite uses the **actual Durable 1.2.0**
 Harness, SQLite-backed Conversations, `fauxProvider` replies and
 host registry/ledger evidence, in addition to the native PI WEB mock
