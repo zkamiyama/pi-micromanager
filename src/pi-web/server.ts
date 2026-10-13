@@ -740,16 +740,30 @@ const plugin:PiWebServerPlugin={
             let notice="";
             if(binding.phase==="running"&&binding.sessionId){
               try{
-                const bridge=await connect(binding);
-                const receipt=await bridge.send({type:"inspect",requestId:randomUUID()},7000);
-                const outcome=classifyRecoveredRun(runId,receipt);
-                if(outcome==="settled"||outcome==="aborted"){
-                  agents.record(binding,{kind:"agent_settled",sequence:1,at:Date.now(),
-                    text:outcome==="aborted"?"Agent interrupted":"Agent settled"});
-                  binding=agents.get(p,o,binding.sessionId);
-                  notifyRun(binding);
-                }else if(outcome==="uncertain")
-                  notice="Planner Session state could not be proved; no automatic replay";
+                if(isDurableSession(binding.sessionId)){
+                  // Goal proposals are Durable Conversations by default, not
+                  // host-native Pi Sessions. Reconnect to their own SQLite
+                  // Harness; never pass a durable:<hash> to session-events.
+                  const outcome=await durable.reconnect(binding,
+                    await durablePath(binding),"workflow_plan");
+                  if(outcome==="settled"){
+                    agents.record(binding,{kind:"agent_settled",sequence:1,
+                      at:Date.now(),text:"Agent settled"});
+                    binding=agents.get(p,o,binding.sessionId);
+                    notifyRun(binding);
+                  }
+                }else{
+                  const bridge=await connect(binding);
+                  const receipt=await bridge.send({type:"inspect",requestId:randomUUID()},7000);
+                  const outcome=classifyRecoveredRun(runId,receipt);
+                  if(outcome==="settled"||outcome==="aborted"){
+                    agents.record(binding,{kind:"agent_settled",sequence:1,at:Date.now(),
+                      text:outcome==="aborted"?"Agent interrupted":"Agent settled"});
+                    binding=agents.get(p,o,binding.sessionId);
+                    notifyRun(binding);
+                  }else if(outcome==="uncertain")
+                    notice="Planner Session state could not be proved; no automatic replay";
+                }
               }catch(error){notice="Proposal inspection unavailable: "+String(error).slice(0,250);}
             }
             if(binding.phase==="settled"&&!ledger.report(binding)){
