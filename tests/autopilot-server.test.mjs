@@ -969,3 +969,61 @@ test("One-command refuses a competing Workflow already running in the same Works
    assert.equal((await host.request("auto.quick.status",null)).goals.length,0);
  }finally{await host.cleanup();}
 });
+
+test("Four parallel authenticated-protocol mock Pi Runs have distinct Worktrees and direct human steer",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   const tasks=["auth","api","ui","tests"].map(id=>({
+     id,title:"Independent "+id,kind:"implementation",role:"implementer",
+     description:"Implement "+id,acceptanceCriteria:["Verified "+id],dependsOn:[],
+   }));
+   const wf={...definition,id:"live-four",tasks,
+     maxParallelByRole:{implementer:4,reviewer:2,architect:2,planner:1}};
+   await host.request("create",wf);
+   await host.request("auto.configure",{workflowId:wf.id,config:{
+     ...config,managedWorktrees:true,workspaces:{},
+   }});
+   const started=await host.request("auto.start",{workflowId:wf.id});
+   assert.equal(started.enabled,true);
+   const pi=await eventually(async()=>{
+     const bindings=await host.request("agents.list",{view:"active"});
+     const coding=bindings.filter(b=>b.workflowId===wf.id&&b.seat==="implementer"&&
+       b.phase==="running");
+     return coding.length===4?coding:null;
+   },20000);
+   assert.equal(new Set(pi.map(b=>b.workspaceId)).size,4);
+   assert.equal(new Set(pi.map(b=>b.sessionId)).size,4);
+   assert.equal(host.createdWorktrees.size,4);
+   for(const b of pi){
+     const s=host.sessions.get(b.sessionId);
+     assert.ok(s.commands.some(cmd=>cmd.type==="configure"&&
+       cmd.provider===profile.provider&&cmd.model===profile.model));
+     assert.ok(s.commands.some(cmd=>cmd.type==="message"&&cmd.delivery==="newTurn"));
+   }
+   const target=pi.find(b=>b.taskId==="ui");
+   assert.ok(target);
+   const reply=await host.request("agents.command",{
+     sessionId:target.sessionId,action:"steer",requestId:"human-steer-live-four",
+     text:"Please preserve existing API compatibility",
+   });
+   assert.equal(reply.status,"ok");
+   assert.ok(host.sessions.get(target.sessionId).commands.some(cmd=>
+     cmd.type==="message"&&cmd.delivery==="steer"&&
+     cmd.text.includes("preserve existing API")));
+   const qc=pi.find(b=>b.taskId==="auth");
+   host.sessions.get(qc.sessionId).finish();
+   const reviewer=await eventually(async()=>{
+     const bindings=await host.request("agents.list",{view:"active"});
+     return bindings.find(b=>b.workflowId===wf.id&&b.seat==="qc"&&
+       b.taskId==="auth"&&b.phase==="running");
+   },16000);
+   const follow=await host.request("agents.command",{
+     sessionId:reviewer.sessionId,action:"followUp",requestId:"human-qc-followup",
+     text:"Check the acceptance criteria and report exact evidence",
+   });
+   assert.equal(follow.status,"ok");
+   assert.ok(host.sessions.get(reviewer.sessionId).commands.some(cmd=>
+     cmd.type==="message"&&cmd.delivery==="followUp"));
+ }finally{await host.cleanup();}
+});
