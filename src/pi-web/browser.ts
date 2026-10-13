@@ -30,6 +30,7 @@ interface State {
   quickSimpleProvider:string;quickSimpleModel:string;
   quickTestFile:string;quickTestArgs:string;
   quickRemote:string;quickBase:string;quickMerge:"allow"|"ask"|"deny";
+  quickCaptureQc:boolean;quickDiagnose:boolean;quickDiagAfter:number;
   quickAdvanced:boolean;
   workflows: WorkflowInstance[];
   journal?:WorkflowJournal;
@@ -105,6 +106,7 @@ function stateFor(context: WorkspacePanelContext): State {
       quickSimpleProvider:"",quickSimpleModel:"",
       quickTestFile:"node",quickTestArgs:"--test",
       quickRemote:"origin",quickBase:"main",quickMerge:"ask",quickAdvanced:false,
+      quickCaptureQc:false,quickDiagnose:false,quickDiagAfter:2,
       quickSetupDraft:JSON.stringify({
         config:{managedWorktrees:true,workspaces:{},
           finalization:{workspaceId:"auto",autoMerge:true},
@@ -231,6 +233,9 @@ const plugin: PiWebPlugin = {
       state.quickBase=profile.config.publication?.baseBranch??"main";
       state.quickMerge=profile.permissions.actions?.["github.pr.merge"]??
         profile.permissions.default??"ask";
+      state.quickCaptureQc=profile.config.captureQcScreenshots===true;
+      state.quickDiagnose=!!profile.config.diagnosticEscalation;
+      state.quickDiagAfter=profile.config.diagnosticEscalation?.afterFailures??2;
     }
     function simpleSetup(state:State):unknown{
       if(state.quickAdvanced)return JSON.parse(state.quickSetupDraft) as unknown;
@@ -251,7 +256,11 @@ const plugin: PiWebPlugin = {
       return {...raw,config:{...raw.config,managedWorktrees:true,workspaces:{},
         models,test:{file,args,timeoutMs:60000},
         publication:{remote,baseBranch,draft:true},
-        finalization:{workspaceId:"auto",autoMerge:true}},
+        finalization:{workspaceId:"auto",autoMerge:true},
+        ...(state.quickCaptureQc?{captureQcScreenshots:true}:{captureQcScreenshots:undefined}),
+        ...(state.quickDiagnose?{diagnosticEscalation:{
+          afterFailures:state.quickDiagAfter,maxPerTask:1}}:{
+          diagnosticEscalation:undefined})},
         permissions:{...raw.permissions,
           actions:{...raw.permissions.actions,
             "github.pr.merge":state.quickMerge,"deploy.production":"deny"}}};
@@ -1040,6 +1049,27 @@ const plugin: PiWebPlugin = {
                         <option value="allow">Auto-merge after QC + CI</option>
                         <option value="deny">Draft PR only</option>
                       </select></label>
+                    <label class="mm-quick-check">
+                      <input type="checkbox" .checked=${state.quickCaptureQc}
+                        ?disabled=${state.busy||state.quickAdvanced}
+                        @change=${(e:Event)=>{state.quickCaptureQc=
+                          (e.target as HTMLInputElement).checked;}}/>
+                      Automatically import committed QC screenshots
+                    </label>
+                    <label class="mm-quick-check">
+                      <input type="checkbox" .checked=${state.quickDiagnose}
+                        ?disabled=${state.busy||state.quickAdvanced}
+                        @change=${(e:Event)=>{state.quickDiagnose=
+                          (e.target as HTMLInputElement).checked;
+                          context.host.requestRender();}}/>
+                      Escalate failed QC to independent diagnosis
+                    </label>
+                    ${state.quickDiagnose?html`<label>Escalate after failed QC round
+                      <input type="number" min="1" max="3"
+                        .value=${String(state.quickDiagAfter)}
+                        ?disabled=${state.busy||state.quickAdvanced}
+                        @change=${(e:Event)=>{state.quickDiagAfter=
+                          Number((e.target as HTMLInputElement).value);}}/></label>`:null}
                   </div>
                   ${state.quickMerge==="allow"&&!state.quickAdvanced?html`
                     <p role="note">Automatic merge is enabled. Verify the GitHub target before saving.</p>`:null}
@@ -1520,6 +1550,8 @@ const styles = `
     padding:7px;border:1px solid var(--pi-border-muted);border-radius:6px;
     background:var(--pi-surface);color:inherit;font:inherit;}
   .mm-quick-advanced-toggle{display:flex!important;align-items:center;gap:6px;}
+  .mm-quick-check{display:flex!important;align-items:center;gap:6px;}
+  .mm-quick-check input{width:auto!important;}
 
 
   .mm .mm-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; }
