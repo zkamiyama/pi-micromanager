@@ -227,8 +227,13 @@ function fakePluginHost(shared,options={}) {
   });
   function result(stdout){return {exitCode:0,signal:null,stdout,stderr:"",
     stdoutTruncated:false,stderrTruncated:false};}
+  const declared=new Set(serverPlugin.requires.map(capability=>
+    JSON.stringify([capability.pluginId,capability.id,capability.version])));
   const capabilities={
     resolve(capability){
+      if(!declared.has(JSON.stringify([capability.pluginId,
+        capability.id,capability.version])))
+        throw new Error("PI WEB v3 requires declaring a capability before resolve");
       if(capability.id==="pi-sessions")
         return {version:1,create:async()=>({sessionId:createSession().id})};
       if(capability.id==="pi-session-events")
