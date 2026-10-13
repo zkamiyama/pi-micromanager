@@ -4,6 +4,7 @@ import type { PiWebPlugin, WorkspacePanelContext } from "@jmfederico/pi-web/plug
 import type { WorkflowAction, WorkflowDefinition, WorkflowInstance, TaskState, Role } from "../core/workflow.js";
 import type { WorkflowJournal } from "../automation/journal.js";
 import type { RetentionPreview } from "../automation/retention.js";
+import type { ScreenshotOrphanPreview } from "../automation/screenshots.js";
 import type { ApprovalRequest } from "../automation/permissions.js";
 import type { PublishedOperation } from "../automation/publication.js";
 import type { ConvergenceReceipt } from "../automation/convergence.js";
@@ -46,6 +47,8 @@ interface State {
   retentionDays:number;
   retentionPreview?:RetentionPreview;
   retentionStatus:string;
+  orphanPreview?:ScreenshotOrphanPreview;
+  orphanStatus:string;
   selected?: WorkflowInstance;
   status: string;
   busy: boolean;
@@ -121,7 +124,8 @@ function stateFor(context: WorkspacePanelContext): State {
       adrFields:{filename:"0010-record-decision.md",title:"Architectural decision",
         context:"",options:"",decision:"",consequences:""},
       screenshotRunId:"",screenshotPath:"screenshots/qc.png",
-      screenshotStatus:"",retentionDays:30,retentionStatus:"", status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
+      screenshotStatus:"",retentionDays:30,retentionStatus:"",
+      orphanStatus:"",status: "Load workflows to begin.", busy: false, loaded: false, view: "cockpit",
       detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
       finalWorktreeWorkspaceId:"",
       autopilotDraft:JSON.stringify({
@@ -188,6 +192,7 @@ const plugin: PiWebPlugin = {
         if (id) {
           if (state.selected?.definition.id !== id){
             delete state.journal;delete state.retentionPreview;
+            delete state.orphanPreview;state.orphanStatus="";
              state.approvalRequests=[];state.publishedOperations=[];state.convergenceReceipts=[];
              state.permissionStatus="Select Load permissions to review current requests";
             delete state.screenshotPreview;
@@ -565,6 +570,27 @@ const plugin: PiWebPlugin = {
         s.status="Loaded verified journal revision "+value.revision+".";
       }catch(error){s.status="Journal unavailable: "+String(error);}
       finally{s.busy=false;context.host.requestRender();}
+    }
+    async function orphanCleanupCommand(context:WorkspacePanelContext,
+      kind:"preview"|"confirm"){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(!workflowId||state.busy)return;
+      state.busy=true;
+      state.orphanStatus=kind==="preview"?
+        "Inspecting plugin-owned screenshot objects without deleting data…":
+        "Confirming the exact reviewed unreferenced screenshot bytes…";
+      context.host.requestRender();
+      try{
+        const input=kind==="preview"?{workflowId}:
+          {workflowId,previewId:state.orphanPreview?.id};
+        const result=await send(context,"auto.screenshot.gc."+kind,input) as
+          ScreenshotOrphanPreview;
+        state.orphanPreview=result;
+        state.orphanStatus=result.state==="completed"?
+          "Orphan cleanup complete; referenced QC screenshots and Pi Sessions were untouched.":
+          "Preview saved. Confirm only after reviewing the private orphan byte count.";
+      }catch(error){state.orphanStatus="Cleanup refused safely: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
     }
     async function retentionCommand(context:WorkspacePanelContext,kind:"preview"|"confirm"){
       const s=stateFor(context);
@@ -1373,7 +1399,7 @@ const plugin: PiWebPlugin = {
                             @click=${()=>void showScreenshot(context,shot.id)}>Verify / view image</button>
                           ${state.screenshotPreview?.id===shot.id?
                             (state.screenshotPreview.dataUrl?html`
-                              <img class="mm-screenshot-preview"
+                              <img class="mm-screenshot-preview" loading="lazy" decoding="async"
                                 src=${state.screenshotPreview.dataUrl}
                                 alt=${"QC screenshot file "+shot.relativePath}/>`:
                               html`<p>File too large for inline image preview.</p>`):null}
@@ -1495,6 +1521,23 @@ const plugin: PiWebPlugin = {
                           @click=${()=>void retentionCommand(context,"confirm")}>
                           Confirm pruning public activity only</button>`:null}
                       <p role="status">${state.retentionStatus}</p>
+                      <h3>Orphan screenshot cleanup</h3>
+                      <p>Only plugin-owned image blobs at least 24 hours old,
+                        in a completed inactive Workflow and not referenced by QC
+                        evidence may be removed. Pi Sessions, Worktrees, tracked
+                        screenshots and journal evidence are never deleted.</p>
+                      <button ?disabled=${state.busy}
+                        @click=${()=>void orphanCleanupCommand(context,"preview")}>
+                        Preview private orphan images (dry-run)</button>
+                      ${state.orphanPreview?html`<p>
+                        ${state.orphanPreview.files} unreferenced image file(s) ·
+                        ${state.orphanPreview.bytes} bytes reclaimable.
+                        Preview expires ${new Date(state.orphanPreview.expiresAt).toLocaleTimeString()}.
+                        ${state.orphanPreview.state==="prepared"?html`<button
+                          ?disabled=${state.busy}
+                          @click=${()=>void orphanCleanupCommand(context,"confirm")}>
+                          Confirm cleanup of exact preview</button>`:null}</p>`:null}
+                      <p role="status">${state.orphanStatus}</p>
                     </details>
                   </section>` : null}
               `}
