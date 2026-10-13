@@ -200,6 +200,18 @@ export class AutopilotLedger {
         enabled:row.enabled===1,status:row.status,updatedAt:row.updated_at};
     });
   }
+  /** Scheduler query: never truncate enabled workflows behind inactive history. */
+  listEnabled():AutopilotRecord[]{
+    const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at
+      FROM autopilots WHERE enabled=1 ORDER BY updated_at DESC`).all() as
+      {scope:string;workflow_id:string;config_json:string;enabled:number;status:string;updated_at:string}[];
+    return rows.map(row=>{
+      const [projectId,orchestraWorkspaceId]=JSON.parse(row.scope) as [string,string];
+      return {projectId,orchestraWorkspaceId,workflowId:row.workflow_id,
+        config:this.persisted(JSON.parse(row.config_json)),
+        enabled:true,status:row.status,updatedAt:row.updated_at};
+    });
+  }
   setStatus(projectId:string,workspaceId:string,workflowId:string,enabled:boolean,status:string):void {
     str(status,1000);
     const result=this.db.prepare(`UPDATE autopilots SET enabled=?,status=?,updated_at=?
