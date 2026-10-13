@@ -7,7 +7,7 @@
  */
 import {createHash} from "node:crypto";
 import {mkdirSync,realpathSync,existsSync} from "node:fs";
-import {join,resolve} from "node:path";
+import {join,resolve,isAbsolute} from "node:path";
 import {BACKGROUND_CONTEXT} from "@earendil-works/chord/context";
 import {Type} from "@earendil-works/pi-ai";
 import {builtinModels} from "@earendil-works/pi-ai/providers/all";
@@ -189,7 +189,7 @@ export class DurableRunHost {
     const reservation=this.reservation(binding),sessionId=identity(reservation);
     if(binding.sessionId!==null&&binding.sessionId!==sessionId)
       throw new Error("Durable session ID does not match its scoped Run");
-    if(!cwd||!resolve(cwd).startsWith("/"))
+    if(!cwd||!isAbsolute(cwd))
       throw new Error("Durable requires an absolute trusted Worktree");
     const canonical=realpathSync(cwd);
     if(canonical!==resolve(cwd))throw new Error("Durable Worktree path is not canonical");
@@ -333,6 +333,11 @@ export class DurableRunHost {
     Promise<"running"|"settled"|"uncertain">{
     if(!isDurableSession(binding.sessionId))
       throw new Error("Not a Pi Durable Run");
+    // The initial watch snapshot predates the first submit. Do not re-read
+    // that stale pre-submit snapshot when a live owned Harness is already
+    // supervising the same Run. No second Harness may open the same SQLite.
+    if(this.connected(binding.sessionId!))
+      return binding.phase==="settled"?"settled":"running";
     const manifest=this.path(this.reservation(binding));
     if(!existsSync(manifest))
       throw new Error("Durable storage missing; do not create a replacement Run");
