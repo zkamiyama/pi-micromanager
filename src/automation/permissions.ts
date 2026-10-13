@@ -36,7 +36,7 @@ function integrationSubject(sourceId:string,runId:string,sha:string,
 function subject(action:PermissionAction,taskId:string,runId:string,
   sha:string,pub:PublicationConfig,repo="",branch=""):string{
   return createHash("sha256").update(JSON.stringify([
-    action,taskId,runId,sha,pub.remote,pub.baseBranch,pub.draft])).digest("hex");
+    action,taskId,runId,sha,pub.remote,pub.baseBranch,pub.draft,repo,branch])).digest("hex");
 }
 export class PermissionLedger {
   private readonly db:DatabaseSync;
