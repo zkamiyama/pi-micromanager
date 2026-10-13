@@ -174,3 +174,32 @@ test("Invalid or missing Run evidence can never be used to capture arbitrary fil
     assert.equal(x.screenshots.list("project","orchestra","feature").length,0);
   }finally{x.close();}
 });
+test("Opt-in screenshot discovery imports only Git-tracked, QC-verified image bytes",async()=>{
+ const x=fixture();
+ try{
+   const imported=await x.screenshots.captureTracked(
+     "project","orchestra","feature","qc-ui-1");
+   assert.equal(imported.length,1);
+   assert.equal(imported[0].relativePath,"screenshots/qc.png");
+   assert.equal(imported[0].sourceSha,x.sha);
+   const repeated=await x.screenshots.captureTracked(
+     "project","orchestra","feature","qc-ui-1");
+   assert.equal(repeated[0].id,imported[0].id,
+     "Automatic discovery may run twice without new evidence records");
+   const journal=buildJournal(x.workflows.get("project","orchestra","feature"),
+     x.agents.list("project","orchestra","all"),x.ledger,
+     x.screenshots.list("project","orchestra","feature"));
+   assert.equal(journal.screenshots.length,1);
+ }finally{x.close();}
+});
+
+test("Automatic screenshot import never accepts tracked files after QC HEAD changes",async()=>{
+ const x=fixture();
+ try{
+   writeFileSync(join(x.linked,"screenshots","changed.png"),PNG);
+   commit(x.linked,"screenshots/changed.png");
+   await assert.rejects(x.screenshots.captureTracked(
+     "project","orchestra","feature","qc-ui-1"),/exact verified Git HEAD/);
+   assert.equal(x.screenshots.list("project","orchestra","feature").length,0);
+ }finally{x.close();}
+});
