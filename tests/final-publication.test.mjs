@@ -19,7 +19,7 @@ function fixture(override={}){
    models:{implementer:profile,qc:profile,architect:profile,planner:profile},
    finalization:{workspaceId:"wt-final",autoMerge:true},
    publication:{remote:"origin",baseBranch:"main",draft:true},
-   test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3};
+   test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3};
  let wf=workflows.create("p","o",{id:"all-done",title:"QC-gated final merge",
    maxQcRounds:3,maxParallelByRole:{
      implementer:1,reviewer:1,architect:1,planner:1},
@@ -70,9 +70,10 @@ function fixture(override={}){
      commands.push([request.file,...args]);
      if(request.file==="git"){
        const command=args.slice(2).join(" ");
+       if(command==="ls-files -v -z"||command==="diff-files --quiet --ignore-submodules=none")return output("");
        if(command==="rev-parse --show-toplevel")return output("/repo/final\n");
        if(command==="rev-parse HEAD")return output(commit+"\n");
-       if(command==="status --porcelain")return output(dirty?"??dirty.txt\n":"");
+       if(command==="status --porcelain --untracked-files=all --ignore-submodules=none")return output(dirty?"??dirty.txt\n":"");
        if(command==="symbolic-ref --quiet --short HEAD")return output("feature/final\n");
        if(command==="remote get-url origin"||
           command==="remote get-url --push --all origin")
@@ -101,22 +102,28 @@ function fixture(override={}){
          pr.isDraft=false;return output("Review requested\n");
        }
        if(command==="pr checks"){
+         if(override.actionsPages)return {...output("",1),stderr:"Resource not accessible by personal access token"};
          const bucket=ciState==="none"?[]:[{name:"build-and-test",bucket:ciState}];
          return output(JSON.stringify(bucket),ciState==="pending"?8:
            ciState==="fail"?1:0);
        }
-       if(command==="pr merge"){
+       if(args[0]==="api"&&args[1]?.startsWith("repos/acme/final-project/actions/runs?")){
+         const page=Number(new URL("https://api.github.com/"+args[1]).searchParams.get("page"));
+         return output(JSON.stringify(override.actionsPages[page-1]));
+       }
+       if(args[0]==="api"&&args.includes("--method")){
          mergeCount++;if(!pr||pr.isDraft)throw Error("Cannot merge draft");
-         if(!args.includes("--auto")||!args.includes("--merge")||
-           !args.includes("--match-head-commit")||
-           args[args.indexOf("--match-head-commit")+1]!==FINAL||
-           args.includes("--admin")||args.includes("--delete-branch"))
-           throw Error("Unsafe GitHub merge options");
-         if(mergePending)pr.autoMergeRequest={enabledAt:new Date().toISOString()};
-         else pr.state="MERGED";
+         assert.equal(args[args.indexOf("--method")+1],"PUT");
+         assert.ok(args.includes("repos/acme/final-project/pulls/7/merge"));
+         assert.ok(args.includes("sha="+FINAL));assert.ok(args.includes("merge_method=merge"));
+         assert.ok(!args.includes("--auto")&&!args.includes("--admin"));
+         if(mergePending)return output("HTTP/2.0 405 Method Not Allowed\r\n\r\n"+JSON.stringify({message:"Required review pending"}),1);
+         pr.state="MERGED";
          if(loseMerge){loseMerge=false;throw Error("Lost GitHub merge response");}
-         return output(mergePending?"GitHub scheduled native auto-merge\n":
-           "GitHub merged verified commit\n");
+         return output("HTTP/2.0 200 OK\r\n\r\n"+JSON.stringify({merged:true,sha:FINAL}));
+       }
+       if(command==="pr merge"&&args.includes("--disable-auto")){
+         pr.autoMergeRequest=null;return output("Legacy reservation cancelled");
        }
        throw new Error("Unexpected gh "+args.join(" "));
      }
@@ -193,7 +200,7 @@ test("Deny merge leaves Draft PR reviewable without making GitHub auto-merge req
  const x=fixture({policy:{actions:{"github.pr.merge":"deny"}}});
  try{
    await x.tick();await x.tick();
-   assert.equal(await x.tick(),"none");
+   assert.equal(await x.tick(),"waiting");
    assert.equal(x.pr.isDraft,true);
    assert.equal(x.readyCount,0);
    assert.equal(x.mergeCount,0);
@@ -258,21 +265,55 @@ test("Failing GitHub CI prevents merging even with host QC PASS",async()=>{
  }finally{x.close();}
 });
 
-test("Passing host CI can still schedule native GitHub auto-merge until review completes",async()=>{
+test("R07: required review refusal leaves no deferred auto-merge authorization",async()=>{
  const x=fixture();
  try{
-   await x.tick();await x.tick();await x.tick();
-   x.setMergePending(true);
-   assert.equal(await x.tick(),"scheduled");
-   assert.equal(x.pr.state,"OPEN");
-   assert.ok(x.pr.autoMergeRequest);
-   assert.equal(await x.tick(),"scheduled");
-   assert.equal(x.mergeCount,1);
-   x.markMerged();
-   assert.equal(await x.tick(),"acted");
-   assert.equal(await x.tick(),"none");
-   assert.equal(x.mergeCount,1);
-   const state=x.workflows.get("p","o","all-done");
-   assert.equal(state.tasks.api.status,"integrated");
+   await x.tick();await x.tick();await x.tick();x.setMergePending(true);
+   assert.equal(await x.tick(),"checks_pending");assert.equal(x.pr.state,"OPEN");
+   assert.equal(x.pr.autoMergeRequest,null);assert.equal(x.mergeCount,1);
+   x.reopen();assert.equal(await x.tick(),"checks_pending");assert.equal(x.mergeCount,2);
+   x.setMergePending(false);assert.equal(await x.tick(),"acted");assert.equal(x.mergeCount,3);
+   assert.equal(await x.tick(),"acted");assert.equal(await x.tick(),"none");
+   assert.equal(x.workflows.get("p","o","all-done").tasks.api.status,"integrated");
+ }finally{x.close();}
+});
+
+test('R23: autoMerge=false still observes exact human MERGED without external writes',async()=>{
+ const x=fixture();try{
+  x.ledger.save('p','o','all-done',{...x.config,finalization:{...x.config.finalization,autoMerge:false}});
+  x.ledger.setStatus('p','o','all-done',true,'observe');await x.tick();await x.tick();
+  assert.equal(await x.tick(),'waiting');assert.equal(x.mergeCount,0);assert.equal(x.readyCount,0);
+  x.markMerged();assert.equal(await x.tick(),'acted');assert.equal(x.workflows.get('p','o','all-done').tasks.api.status,'integrated');
+  assert.equal(x.mergeCount,0);assert.equal(x.readyCount,0);
+ }finally{x.close();}
+});
+test('R23: merge deny permits read-only human completion but never Ready or merge',async()=>{
+ const x=fixture({policy:{actions:{'github.pr.merge':'deny'}}});try{
+  await x.tick();await x.tick();assert.equal(await x.tick(),'waiting');x.markMerged();assert.equal(await x.tick(),'acted');
+  assert.equal(x.mergeCount,0);assert.equal(x.readyCount,0);
+ }finally{x.close();}
+});
+function actionPage(count,offset=0,last='success'){
+ return {total_count:101,workflow_runs:Array.from({length:count},(_,i)=>({id:offset+i+1,head_sha:FINAL,event:'pull_request',repository:{full_name:'acme/final-project'},pull_requests:[{number:7}],status:'completed',conclusion:i===count-1?last:'success'}))};
+}
+test('R22: successful 101-run Actions fallback checks all pages before exact merge',async()=>{
+ const x=fixture({actionsPages:[actionPage(100),actionPage(1,100)]});try{
+  await x.tick();await x.tick();await x.tick();assert.equal(await x.tick(),'acted');assert.equal(x.mergeCount,1);
+  assert.equal(x.commands.filter(c=>c[0]==='gh'&&c[1]==='api'&&c[2]?.includes('actions/runs')).length,2);
+ }finally{x.close();}
+});
+test('R22: a failure on the second Actions page prevents merge',async()=>{
+ const x=fixture({actionsPages:[actionPage(100),actionPage(1,100,'failure')]});try{
+  await x.tick();await x.tick();await x.tick();await assert.rejects(x.tick(),/did not succeed/);assert.equal(x.mergeCount,0);
+ }finally{x.close();}
+});
+test('R07: Pause explicitly cancels and verifies a legacy owned auto-merge request',async()=>{
+ const x=fixture();try{
+  await x.tick();await x.tick();await x.tick();
+  x.publisher.reserve('p','o','all-done','mm-final-integration','github.pr.merge','qc-mm-final-integration-1',FINAL,'feature/final','acme/final-project origin main');
+  x.pr.autoMergeRequest={enabledAt:new Date().toISOString()};x.ledger.setStatus('p','o','all-done',false,'Pause');
+  await x.publisher.cancelScheduled(x.ledger.get('p','o','all-done'));
+  assert.equal(x.pr.autoMergeRequest,null);assert.equal(x.mergeCount,0);assert.ok(x.commands.some(c=>c.includes('--disable-auto')));
+  assert.equal(x.ledger.get('p','o','all-done').enabled,false);
  }finally{x.close();}
 });

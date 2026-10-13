@@ -90,7 +90,7 @@ test("Real divergent leaf commits can be merge-conflicted, repaired, committed a
      replaySettledReport:async()=>{},notify(){},
    });
    const cfg={finalization:{workspaceId:"wt-final",autoMerge:true},
-     test:{file:"node",args:["--version"],timeoutMs:8000}};
+     test:{execution:"trusted-host",file:"node",args:["--version"],timeoutMs:8000}};
    const binding={projectId:"p",orchestraWorkspaceId:"o",
      workflowId:"combined",workspaceId:"wt-final",taskId:"mm-final-integration"};
    await assert.rejects(port.verify(binding,cfg),

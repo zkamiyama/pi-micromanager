@@ -22,7 +22,7 @@ const def={id:"integration-flow",title:"Final integration system test",
 const profiles=Object.fromEntries(["planner","implementer","qc","architect"].map(role=>
   [role,{provider:"mock",model:"mock"}]));
 const config={workspaces:{api:"wt-api",frontend:"wt-ui"},models:profiles,
-  test:{file:"node",args:["--test"],timeoutMs:30000},maxAttempts:3,
+  test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:30000},maxAttempts:3,
   publication:{remote:"origin",baseBranch:"main",draft:true},
   finalization:{workspaceId:"wt-final",autoMerge:true},
 };

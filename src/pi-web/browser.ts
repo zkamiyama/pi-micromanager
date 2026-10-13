@@ -107,7 +107,8 @@ function stateFor(context: WorkspacePanelContext): State {
       quickRemote:"origin",quickBase:"main",quickMerge:"ask",
       quickRuntime:"durable",quickAdvanced:false,
       quickSetupDraft:JSON.stringify({
-        config:{runtime:"durable",managedWorktrees:true,workspaces:{},
+        config:{runtime:"durable",managedWorktrees:true,convergenceMode:"linearized",
+          maxConcurrentRuns:8,maxManagedWorktrees:32,workspaces:{},
           finalization:{workspaceId:"auto",autoMerge:true},
           publication:{remote:"origin",baseBranch:"main",draft:true},
           models:Object.fromEntries(["planner","implementer","qc","architect"]
@@ -802,7 +803,7 @@ const plugin: PiWebPlugin = {
           }}>Open Task's live Run in Orchestra</button>
         </div>`}
 
-        ${task.spec.kind==="implementation"&&task.status==="passed"&&state.autopilotConfigured?
+        ${task.spec.kind==="implementation"&&task.spec.systemPurpose!=="final-integration"&&task.status==="passed"&&state.autopilotConfigured?
           html`<div class="mm-integration" aria-label="Verify external Git integration">
             <strong>Verify completed Git integration</strong>
             <p>This verification is read-only. First integrate the QC-passed commit into
@@ -840,6 +841,17 @@ const plugin: PiWebPlugin = {
       const act = (action: WorkflowAction) => { void change(context, action); };
       const buttons = [];
       if(stateFor(context).autopilotConfigured){
+        if(["needs_human","held"].includes(t.status)&&(t.qcBudget??w.definition.maxQcRounds)<100){
+          buttons.push(html`<button ?disabled=${stateFor(context).busy||stateFor(context).autopilotEnabled}
+            @click=${()=>{
+              const budget=globalThis.prompt("New total QC round limit (must increase, maximum 100):",
+                String(Math.min(100,(t.qcBudget??w.definition.maxQcRounds)+2)));
+              if(budget===null)return;
+              const reason=globalThis.prompt("Reason for authorizing additional QC rounds:");
+              if(!reason?.trim())return;
+              act({type:"extend_qc_budget",taskId:t.spec.id,maxRounds:Number(budget),reason:reason.trim()});
+            }}>Extend QC budget with reason</button>`);
+        }
         // Do not offer simulation transitions for a real automated Workflow.
         // The explicit human resume decision is still supported.
         if(t.status==="held")for(const a of w.amendments.filter(a=>a.targetTaskId===t.spec.id&&
@@ -948,6 +960,7 @@ const plugin: PiWebPlugin = {
                     <strong>${job.phase==="reserved"?"Queued":job.phase==="planning"?"Sol is planning":
                       job.phase==="starting"?"Preparing Worktrees":
                       job.phase==="running"?"Autopilot is running":
+                      job.phase==="paused"?"Paused — resume from Autopilot":
                       job.phase==="finished"?"Completed":
                       job.phase==="cancelled"?"Cancelled":"Needs attention"}</strong>
                     <p>${job.message}</p>
@@ -966,11 +979,11 @@ const plugin: PiWebPlugin = {
                           "mm-step-done":""}>${title}</span>`)}
                     </div>
                     <div class="mm-actions">
-                      ${["reserved","planning"].includes(job.phase)?html`
+                      ${["reserved","planning","starting"].includes(job.phase)?html`
                         <button ?disabled=${state.busy}
                           @click=${()=>void cancelQuick(context,job.requestId)}>
                           Cancel before code starts</button>`:null}
-                      ${["starting","running","finished"].includes(job.phase)?html`
+                      ${["starting","running","paused","finished"].includes(job.phase)?html`
                         <button ?disabled=${state.busy}
                           @click=${()=>void openQuickWorkflow(context,job.workflowId)}>
                           Open DAG</button>`:null}

@@ -21,7 +21,7 @@ const profile={provider:"local",model:"exact"};
 const config={workspaces:{code:"worker"},publication:{
   remote:"origin",baseBranch:"main",draft:true},
   models:{implementer:profile,qc:profile,architect:profile,planner:profile},
-  test:{file:"node",args:["--test"],timeoutMs:5000},maxAttempts:2};
+  test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:5000},maxAttempts:2};
 function fixture(permissions){
   const dir=mkdtempSync(join(tmpdir(),"mm-permissions-"));
   const workflows=new WorkflowStore(join(dir,"workflow.sqlite"));

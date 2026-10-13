@@ -8,7 +8,7 @@ import {dirname} from "node:path";
 import {parseAutopilotConfig,type AutopilotConfig,automationScope} from "./ledger.js";
 import {validatePermissions,type WorkflowPermissions} from "../core/permissions.js";
 
-export type QuickPhase="reserved"|"planning"|"starting"|"running"|"finished"|"needs_attention"|"cancelled";
+export type QuickPhase="reserved"|"planning"|"starting"|"running"|"paused"|"finished"|"needs_attention"|"cancelled";
 export interface QuickProfile {config:AutopilotConfig;permissions:WorkflowPermissions}
 export interface QuickGoal {
   requestId:string;projectId:string;orchestraWorkspaceId:string;
@@ -122,9 +122,9 @@ export class QuickLaunchLedger{
       return rowToGoal(old);
     }
     const active=this.db.prepare("SELECT workflow_id FROM quick_goals WHERE scope=?"+
-      " AND phase IN ('reserved','planning','starting','running') LIMIT 1")
+      " AND phase IN ('reserved','planning','starting','running','paused') LIMIT 1")
       .get(scope) as {workflow_id:string}|undefined;
-    if(active)throw new Error("A one-command run is already active; finish or pause it before starting another");
+    if(active)throw new Error("A one-command run is already active or paused; finish it before starting another in this Workspace");
     const token=createHash("sha256").update(scope+"|"+requestId).digest("hex").slice(0,16);
     const workflowId="quick-"+token,draftId="draft-"+token,runId="goal-"+token;
     const at=new Date().toISOString();
@@ -142,8 +142,8 @@ export class QuickLaunchLedger{
   }
   pending():QuickGoal[]{
     const rows=this.db.prepare("SELECT "+COLS+" FROM quick_goals WHERE"+
-      " phase IN ('reserved','planning','starting','running')"+
-      " ORDER BY created_at ASC LIMIT 100").all() as unknown as QuickRow[];
+      " phase IN ('reserved','planning','starting','running','paused')"+
+      " ORDER BY created_at ASC").all() as unknown as QuickRow[];
     return rows.map(rowToGoal);
   }
   phase(p:string,o:string,requestId:string,phase:QuickPhase,message:string):QuickGoal{
@@ -164,7 +164,7 @@ export class QuickLaunchLedger{
   cancel(p:string,o:string,requestId:string):QuickGoal{
     const row=this.find(p,o,requestId);
     if(!row)throw new Error("Unknown one-command request");
-    if(row.phase!=="reserved"&&row.phase!=="planning")
+    if(row.phase!=="reserved"&&row.phase!=="planning"&&row.phase!=="starting")
       throw new Error("The code run has begun or this request is already terminal; use Pause admission for active Autopilot");
     return this.phase(p,o,requestId,"cancelled",
       "Auto-start cancelled. A running read-only Sol proposal may still settle, but will not start code.");

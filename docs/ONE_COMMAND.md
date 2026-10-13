@@ -1,5 +1,7 @@
 # One command: natural language → verified Pi DAG execution
 
+> **Update:** [ADR-0016](adr/0016-audit-control-generation-and-proof-boundaries.md) supersedes the deferred auto-merge and test-environment behavior below. New host verification uses Linux Bubblewrap; new merges are synchronous and SHA-bound. See [migration and supported limits](AUDIT_REMEDIATION_R01_R23.md). Historical trial records remain historical evidence.
+
 From **main**, install Micromanager using
 [Quickstart](QUICKSTART.md) in the PI WEB host's Pi environment.
 Use a **disposable GitHub repository** for the first run.
@@ -84,3 +86,21 @@ single control-plane writer per Git checkout root. Never run your
 first hands-free goal against production code.
 
 Architecture/recovery details: [ADR-0015](adr/0015-one-command-goal-launch.md).
+
+## Conservative fan-in support
+
+The new simple one-command setup explicitly includes
+`convergenceMode: "linearized"`. When the planner proposes parallel
+implementations that must be merged before a dependent Task, the host adds
+a deterministic QC dependency chain **before admission**. Every subsequent
+Task can then start from a fast-forward-compatible QC commit; no unreviewed
+host-side non-fast-forward merge is performed. This also means independent
+implementation Tasks run sequentially rather than in parallel. Advanced
+setups may omit the option to retain the original parallel DAG, but divergent
+dependencies may require manual Git integration. See
+[AUDIT_REMEDIATION](AUDIT_REMEDIATION.md) for exact limits.
+
+New one-command setup profiles explicitly select `maxConcurrentRuns: 8`
+and `maxManagedWorktrees: 32` to bound expensive execution and
+pre-provisioned checkouts. Legacy runtime settings are not silently capped. No destructive
+automatic Worktree/Session cleanup is implied by these quotas.

@@ -148,8 +148,9 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
     async execute(_toolId,params){
       if(!job||job.kind!=="qc")throw new Error("Not bound to an automated QC Run");
       if(recorded)throw new Error("A verdict was already submitted for this Run");
-      const report:RunReport={kind:"qc",runId:job.runId,verdict:params.verdict,
-        summary:params.summary,at:Date.now()};
+      const report=parseRunReport({kind:"qc",runId:job.runId,verdict:params.verdict,
+        summary:params.summary,at:Date.now()});
+      if(!report)throw new Error("Invalid structured report; correct the input and submit again");
       pi.appendEntry(reportEntry,report);
       recorded=report;
       pi.events.emit(REPORT_CHANNEL,report);
@@ -165,7 +166,8 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
       if(!job||(job.kind!=="diagnosis"&&job.kind!=="synthesis"))
         throw new Error("Not bound to a diagnosis or synthesis Run");
       if(recorded)throw new Error("A Task result was already submitted for this Run");
-      const report:RunReport={kind:"task",runId:job.runId,summary:params.summary,at:Date.now()};
+      const report=parseRunReport({kind:"task",runId:job.runId,summary:params.summary,at:Date.now()});
+      if(!report)throw new Error("Invalid structured report; correct the input and submit again");
       pi.appendEntry(reportEntry,report);
       recorded=report;
       pi.events.emit(REPORT_CHANNEL,report);
@@ -191,8 +193,9 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
     async execute(_toolId,params){
       if(!job||job.kind!=="planning")throw new Error("Not bound to a Sol planning Run");
       if(recorded)throw new Error("A plan was already submitted");
-      const report:RunReport={kind:"plan",runId:job.runId,summary:params.summary,
-        agents:params.agents,at:Date.now()};
+      const report=parseRunReport({kind:"plan",runId:job.runId,summary:params.summary,
+        agents:params.agents,at:Date.now()});
+      if(!report)throw new Error("Invalid structured report; correct the input and submit again");
       pi.appendEntry(reportEntry,report);
       recorded=report;
       pi.events.emit(REPORT_CHANNEL,report);
@@ -299,14 +302,17 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
       return;
     }
     if (command.type === "inspect") {
+      const fresh=!context.sessionManager.getEntries().some(e=>e.type==="message");
       if(!job){
-        respond({requestId:command.requestId,status:"failed",code:"job_not_bound"});
+        respond({requestId:command.requestId,status:"ok",idle:context.isIdle(),fresh,
+          inputAccepted:claims.size>0||!fresh,pendingMessages:context.hasPendingMessages()});
         return;
       }
       // Report replay is explicit and bound to this exact hosted Session.
       if(recorded&&recorded.runId===job.runId)pi.events.emit(REPORT_CHANNEL,recorded);
       respond({requestId:command.requestId,status:"ok",jobRunId:job.runId,
-        idle:context.isIdle(),
+        idle:context.isIdle(),fresh,inputAccepted:claims.size>0||!fresh,
+        pendingMessages:context.hasPendingMessages(),
         ...(turnSettled===undefined?{}:{turnSettled}),
         ...(turnInterrupted===undefined?{}:{turnInterrupted}),
         hasReport:!!recorded&&recorded.runId===job.runId});
@@ -355,6 +361,19 @@ export default function micromanagerCompanion(pi: ExtensionAPI): void {
       return;
     }
     if (command.type === "message") {
+      if(!job){
+        respond({requestId:command.requestId,status:"failed",code:"job_not_bound"});
+        return;
+      }
+      if(command.delivery!=="newTurn" && (context.isIdle()||turnSettled!==false)){
+        respond({requestId:command.requestId,status:"failed",code:"not_running",
+          message:"Live delivery requires an admitted running turn"});
+        return;
+      }
+      if(command.delivery==="newTurn" && turnSettled!==undefined){
+        respond({requestId:command.requestId,status:"failed",code:"run_already_started"});
+        return;
+      }
       if (command.delivery === "steer" && context.isIdle()) {
         respond({ requestId: command.requestId, status: "failed", code: "not_running",
           message: "Steer is only available during a running turn" });

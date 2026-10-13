@@ -1,5 +1,7 @@
 # Pi Durable as the default Micromanager execution engine
 
+> **Update:** [ADR-0016](adr/0016-audit-control-generation-and-proof-boundaries.md) supersedes the deferred auto-merge and test-environment behavior below. New host verification uses Linux Bubblewrap; new merges are synchronous and SHA-bound. See [migration and supported limits](AUDIT_REMEDIATION_R01_R23.md). Historical trial records remain historical evidence.
+
 - Status: Experimental. Verified with the **real** Pi Durable 1.2.0
   `Harness`, authenticated Pi OAuth model/tool turns, independent
   implementation and QC, PI WEB 1.202610.1 daemon plugin activation,

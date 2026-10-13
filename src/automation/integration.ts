@@ -52,6 +52,8 @@ export class IntegrationVerifier {
   private source(projectId:string,orchestraWorkspaceId:string,workflowId:string,taskId:string){
     const workflow=this.options.workflows.get(projectId,orchestraWorkspaceId,workflowId);
     const task=workflow.tasks[taskId];
+    if(task?.spec.systemPurpose==="final-integration")
+      throw new Error("Final integration requires verified GitHub MERGED state");
     if(!task||task.spec.kind!=="implementation"||task.status!=="passed"||!task.lastQc||
       task.lastQc.verdict!=="pass"||!gitSha(task.lastQc.headSha))
       throw new Error("Task requires a real passing QC verdict before Git integration");
@@ -143,6 +145,19 @@ export class IntegrationVerifier {
     // is strictly observational; it does not run merge/cherry-pick/reset/push.
     await this.checkTarget(projectId,orchestraWorkspaceId,row.workflowId,
       row.taskId,row.targetWorkspaceId,qc,row.sourceSha,row.targetHead);
+    // A global integrated gate must certify EVERY dependent checkout, not
+    // merely the arbitrary Workspace selected in the preview.
+    const config=this.options.ledger.get(projectId,orchestraWorkspaceId,row.workflowId)?.config;
+    for(const child of Object.values(workflow.tasks)){
+      if(child.spec.kind!=="implementation"||child.spec.systemPurpose=== "final-integration"||
+        !child.spec.dependsOn.some(d=>d.taskId===row.taskId))continue;
+      const target=config?.workspaces[child.spec.id];
+      if(!target)throw new Error("Missing dependent integration Workspace: "+child.spec.id);
+      await this.checkTarget(projectId,orchestraWorkspaceId,row.workflowId,
+        row.taskId,target,qc,row.sourceSha);
+    }
+    if(this.options.ledger.get(projectId,orchestraWorkspaceId,row.workflowId)?.enabled)
+      throw new Error("Pause Autopilot before confirming Git integration");
     this.options.host.lifetimeSignal.throwIfAborted();
     const next=this.options.workflows.act(projectId,orchestraWorkspaceId,row.workflowId,
       row.revision,commandId,{type:"integrate",taskId:row.taskId});

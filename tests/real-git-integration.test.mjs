@@ -20,7 +20,7 @@ const definition={id:"flow",title:"Real Git test feature",maxQcRounds:3,
 const models=Object.fromEntries(["implementer","qc","architect","planner"]
   .map(seat=>[seat,{provider:"mock",model:"mock"}]));
 const config={workspaces:{feature:"wt-feature"},models,
-  test:{file:"node",args:["--test"],timeoutMs:15000},maxAttempts:2};
+  test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:15000},maxAttempts:2};
 function cmd(cwd,...args){
   return execFileSync("git",["-C",cwd,...args],{encoding:"utf8",timeout:10000});
 }

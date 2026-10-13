@@ -55,7 +55,7 @@ test("New workflows default to Durable; explicit native and legacy saved configu
  try{
    const cfg={models:Object.fromEntries(["planner","qc","architect","implementer"]
      .map(role=>[role,{provider:"faux",model:"faux-1"}])),
-     workspaces:{alpha:"wt-alpha"},test:{file:"node",args:["--test"]},
+     workspaces:{alpha:"wt-alpha"},test:{execution:"trusted-host",file:"node",args:["--test"]},
      maxAttempts:3};
    assert.equal(parseAutopilotConfig(cfg).runtime,"durable");
    assert.equal(parseAutopilotConfig({...cfg,runtime:"pi-web"}).runtime,"pi-web");
@@ -269,4 +269,59 @@ test("F13: failed input proof cannot be bypassed by a second reconnect",async()=
       /input receipt missing/);
     assert.equal(x.faux.state.callCount,0);
   }finally{await x.close();}
+});
+
+test("Audit F18: Durable final QC must fetch every full source contract before PASS",async()=>{
+ const x=fixture();
+ const r={...x.r,taskId:"mm-final-integration",runId:"qc-mm-final-integration-1"};
+ const contracts=[
+  {taskId:"a",title:"Source A",description:"A".repeat(3900),
+   acceptanceCriteria:["A contract"],qcSha:"a".repeat(40)},
+  {taskId:"b",title:"Source B",description:"B".repeat(3900),
+   acceptanceCriteria:["B contract"],qcSha:"b".repeat(40)},
+ ];
+ x.options.finalContracts=()=>contracts;
+ try{
+  x.faux.setResponses([
+   fauxAssistantMessage([fauxToolCall("mm_final_qc_contract",{index:0},{id:"page-0"})],{stopReason:"toolUse"}),
+   fauxAssistantMessage([fauxToolCall("mm_final_qc_contract",{index:1},{id:"page-1"})],{stopReason:"toolUse"}),
+   fauxAssistantMessage([fauxToolCall("mm_qc_report",{verdict:"pass",summary:"Reviewed A and B"},{id:"qc-final"})],{stopReason:"toolUse"}),
+   fauxAssistantMessage([fauxText("Final review done.")]),
+  ]);
+  const binding=await x.durable.launch({...x.launch,reservation:r,
+    prompt:"Use mm_final_qc_contract for every index; then report PASS."});
+  await x.waitFor(()=>x.agents.getRun("p","o","workflow",r.runId)?.phase==="settled");
+  assert.equal(x.ledger.report(binding)?.kind,"qc",JSON.stringify({calls:x.faux.state.callCount,events:x.events.map(x=>x.event.kind+":"+x.event.text),reports:x.reports}));
+  assert.equal(x.ledger.report(binding)?.verdict,"pass");
+  assert.equal(x.reports.length,1);
+ }finally{await x.close();}
+});
+test("Audit F18: missing source pages make a final-QC PASS invalid",async()=>{
+ const x=fixture();
+ const r={...x.r,taskId:"mm-final-integration",runId:"qc-mm-final-integration-1"};
+ x.options.finalContracts=()=>[
+  {taskId:"a",title:"A",qcSha:"a".repeat(40)},
+  {taskId:"b",title:"B",qcSha:"b".repeat(40)},
+ ];
+ try{
+  x.faux.setResponses([
+   fauxAssistantMessage([fauxToolCall("mm_qc_report",{verdict:"pass",summary:"Not checked"},{id:"early-qc"})],{stopReason:"toolUse"}),
+   fauxAssistantMessage([fauxText("Terminated.")]),
+  ]);
+  const binding=await x.durable.launch({...x.launch,reservation:r});
+  await x.waitFor(()=>x.agents.getRun("p","o","workflow",r.runId)?.phase==="settled");
+  assert.equal(x.ledger.report(binding),undefined);
+ }finally{await x.close();}
+});
+
+test('R14 real Durable: explicit zero-input recovery uses the original Harness after configured Pause',async()=>{
+ const x=fixture();try{
+  let checks=0;await assert.rejects(x.durable.launch({...x.launch,assertAdmitted(){if(++checks===2)throw Error('Operator paused before first input');}}),/Operator paused/);
+  const original=x.current();assert.equal(original.phase,'configured');assert.equal(x.faux.state.callCount,0);
+  await x.durable.close();x.durable=new DurableRunHost(x.options);
+  x.faux.setResponses([fauxAssistantMessage([fauxToolCall('mm_qc_report',{verdict:'pass',summary:'Recovered the exact original zero-input run'},{id:'recovered'})],{stopReason:'toolUse'}),fauxAssistantMessage('Done')]);
+  await x.durable.resumeUnstarted(original,x.launch);await x.waitFor(()=>x.current()?.phase==='settled');
+  assert.equal(x.current().sessionId,original.sessionId);assert.equal(x.reports.length,1);assert.equal(x.faux.state.callCount,2);
+  await assert.rejects(x.durable.resumeUnstarted(x.current(),x.launch),/unstarted/);
+ }finally{await x.close();}
 });

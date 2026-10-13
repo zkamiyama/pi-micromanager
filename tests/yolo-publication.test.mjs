@@ -18,7 +18,7 @@ const models=Object.fromEntries(["planner","implementer","qc","architect"]
   .map(role=>[role,{provider:"mock",model:"mock"}]));
 const config={workspaces:{api:"wt-api"},
   publication:{remote:"origin",baseBranch:"main",draft:true},
-  models,test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:2};
+  models,test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:10000},maxAttempts:2};
 function fixture(policy){
   const dir=mkdtempSync(join(tmpdir(),"mm-pub-"));
   const wf=new WorkflowStore(join(dir,"wf.sqlite"));
@@ -54,9 +54,10 @@ function fixture(policy){
       unsetEnv:req.unsetEnv});
     if(req.file==="git"){
       const args=req.args.slice(2).join(" ");
-      if(args==="rev-parse --show-toplevel")return output("/repo/api\n");
+      if(args==="ls-files -v -z"||args==="diff-files --quiet --ignore-submodules=none")return output("");
+       if(args==="rev-parse --show-toplevel")return output("/repo/api\n");
       if(args==="rev-parse HEAD")return output(headSha+"\n");
-      if(args==="status --porcelain"){
+      if(args==="status --porcelain --untracked-files=all --ignore-submodules=none"){
         statusChecks++;
         if(pauseDuringPreflight&&statusChecks>=2)
           ledger.setStatus("p","o","workflow",false,"Paused during Git preflight");

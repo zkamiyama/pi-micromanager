@@ -46,9 +46,15 @@ export async function gitHead(host:GitHost,root:string):Promise<string>{
 export async function requireCleanGit(host:GitHost,path:string):Promise<string>{
   await inspectedGitRoot(host,path);
   const [head,status]=await Promise.all([
-    gitHead(host,path),gitValue(host,path,["status","--porcelain"]),
+    gitHead(host,path),gitValue(host,path,["status","--porcelain","--untracked-files=all","--ignore-submodules=none"]),
   ]);
   if(status!=="")throw new Error("Git workspace has uncommitted/untracked files");
+  const index=await gitValue(host,path,["ls-files","-v","-z"]);
+  if(index.split("\0").some(entry=>entry&&(/^[a-z]/.test(entry)||entry[0]==="S")))
+    throw new Error("Git index contains assume-unchanged or skip-worktree flags; restore explicit tracking before verification");
+  const disk=await git(host,path,["diff-files","--quiet","--ignore-submodules=none"]);
+  if(disk.exitCode!==0)throw new Error("Tracked Git bytes changed during snapshot verification");
+  if(await gitHead(host,path)!==head)throw new Error("Git HEAD moved during snapshot verification");
   return head;
 }
 export async function requireAncestor(host:GitHost,root:string,

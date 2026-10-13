@@ -8,13 +8,16 @@ import {
   type PiWebServerPlugin, type JsonValue, type ServerPluginPeerRequestContext,
 } from "@jmfederico/pi-web/server-plugin-api";
 import { WorkflowStore } from "../core/store.js";
-import {internalRunId} from "../core/identifiers.js";
+import {internalRunId,sessionDisplayName} from "../core/identifiers.js";
 import { WorkflowError, type WorkflowAction, type TaskState } from "../core/workflow.js";
 import { AgentRegistry, type AgentBinding, type Reservation, type Seat } from "../runtime/registry.js";
 import { PiSessionBridge } from "../runtime/session-bridge.js";
 import { type RuntimeActivity, type RuntimeControl } from "../runtime/protocol.js";
 import { AutopilotLedger, parseAutopilotConfig } from "../automation/ledger.js";
 import { QuickLaunchLedger, type QuickGoal } from "../automation/quick-launch.js";
+import {linearizeImplementationDag} from "../automation/dag-linearization.js";
+import {validateExecutionPlan} from "../automation/admission.js";
+import {newWorkflow} from "../core/workflow.js";
 import { AutopilotEngine } from "../automation/engine.js";
 import { createHostExecutor } from "../automation/host-port.js";
 import { DurableRunHost,isDurableSession,type DurableKind } from "../runtime/durable-runner.js";
@@ -116,8 +119,25 @@ const plugin:PiWebServerPlugin={
   let automationReady=false;
   const recoveryFlights=new Map<string,Promise<void>>();
   const quickFlights=new Map<string,Promise<void>>();
+  const startFlights=new Map<string,Promise<AutopilotRecord>>();
   const durable=new DurableRunHost({
     dataDirectory:host.dataDirectory,agents,ledger,
+    finalContracts:binding=>{
+      const workflow=store.get(binding.projectId,binding.orchestraWorkspaceId,binding.workflowId);
+      const final=workflow.tasks[binding.taskId];
+      if(final?.spec.systemPurpose!=="final-integration"||
+        final.status!=="awaiting_qc")
+        throw new Error("Final QC contract request is not bound to an awaiting final Task");
+      return Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation"&&
+        t.spec.systemPurpose!=="final-integration").map(t=>{
+          if(!t.lastQc||t.lastQc.verdict!=="pass"||
+            !["passed","integrated"].includes(t.status))
+            throw new Error("Unverified source in final QC contract set");
+          return {taskId:t.spec.id,title:t.spec.title,qcSha:t.lastQc.headSha,
+            ...(t.spec.description?{description:t.spec.description}:{}),
+            ...(t.spec.acceptanceCriteria?{acceptanceCriteria:t.spec.acceptanceCriteria}:{})};
+        });
+    },
     activity:emit,changed:notifyRun,
     report:(binding,report)=>{
       ledger.recordReport(binding,report);
@@ -265,6 +285,7 @@ const plugin:PiWebServerPlugin={
     const resolved=await workspaces.resolve({projectId:ctx.project.id,workspaceId:targetWorkspace});
     if(resolved.project.id!==ctx.project.id||resolved.workspace.id!==targetWorkspace)
       throw new Error("Workspace belongs to a different project");
+    agents.registerWorkspacePath(ctx.project.id,targetWorkspace,resolved.workspace.path);
     if(seat==="implementer"||seat==="qc"||seat==="architect"){
       if(resolved.workspace.isMain||resolved.workspace.provider?.metadata?.isGitWorktree!==true)
         throw new WorkflowError("worktree_required",
@@ -341,14 +362,20 @@ const plugin:PiWebServerPlugin={
       }
     }
   }
-  autopilot=new AutopilotEngine(store,agents,ledger,{
-    ...createHostExecutor({
+  const executor=createHostExecutor({
       host,workflows:store,agents,durable,
       getRuntime:(p,o,w)=>ledger.get(p,o,w)?.config.runtime??"pi-web",
       getSessions:()=>sessions,getWorkspaces:()=>workspaces,probe,
       validateRun:plannedRunId,notify:notifyRun,
+      assertAdmitted:job=>{
+        const state=ledger.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
+        if(!state||!state.enabled||state.generation!==job.controlGeneration)
+          throw new Error("Autopilot stopped or reconfigured during Run admission");
+      },
       replaySettledReport,
-    }),
+    });
+  autopilot=new AutopilotEngine(store,agents,ledger,{
+    ...executor,
     publish:(record,workflow)=>publisher.step(record,workflow),
     converge:(record,workflow)=>convergence.step(record,workflow),
     authorizeImplementation:(record,workflow,taskId,nextAttempt)=>{
@@ -439,12 +466,23 @@ const plugin:PiWebServerPlugin={
                 "Sol is preparing a read-only, human-reviewed DAG proposal"};
   }
 
-  async function startConfiguredAutopilot(p:string,o:string,
+  function startConfiguredAutopilot(p:string,o:string,workflowId:string,
+    projectRoot:string):Promise<AutopilotRecord>{
+    const key=JSON.stringify([p,o,workflowId]);
+    const existing=startFlights.get(key);if(existing)return existing;
+    const flight=startConfiguredOnce(p,o,workflowId,projectRoot);
+    startFlights.set(key,flight);
+    void flight.finally(()=>{if(startFlights.get(key)===flight)startFlights.delete(key);}).catch(()=>{});
+    return flight;
+  }
+  async function startConfiguredOnce(p:string,o:string,
     workflowId:string,projectRoot:string):Promise<AutopilotRecord>{
             const workflow=store.get(p,o,workflowId);
             const configured=ledger.get(p,o,workflowId);
             if(!configured)throw new WorkflowError("not_configured","Configure Autopilot first");
+            validateExecutionPlan(workflow,configured.config);
             if(bootstrap)await bootstrap;
+            ledger.assertCurrent(configured,false);
             const fresh=ledger.get(p,o,workflowId);
             if(fresh?.enabled)return fresh;
             if(!workspaces)throw new Error("PI WEB workspace authority unavailable");
@@ -456,6 +494,11 @@ const plugin:PiWebServerPlugin={
             // never mutates Git. Prepare ALL Worktrees before starting a Pi Run.
             let ready=configured;
             if(ready.config.managedWorktrees){
+              const needed=Object.values(workflow.tasks).filter(t=>
+                t.spec.kind==="implementation"&&t.spec.systemPurpose!=="final-integration").length+
+                (ready.config.finalization?.workspaceId==="auto"?1:0);
+              if(needed>(ready.config.maxManagedWorktrees??32))
+                throw new Error("Managed Worktree budget exceeded before Git mutation: "+needed);
               const workspacesByTask={...ready.config.workspaces};
               const missing=Object.values(workflow.tasks).filter(t=>
                 t.spec.kind==="implementation"&&
@@ -463,22 +506,25 @@ const plugin:PiWebServerPlugin={
               const needsFinal=ready.config.finalization?.workspaceId==="auto";
               if(missing.length||needsFinal){
                 for(const task of missing){
-                  const plan=await provisioner.ensure(p,o,workflowId,task.spec.id,projectRoot);
+                  ledger.assertCurrent(ready,false);
+                  const plan=await provisioner.ensure(p,o,workflowId,task.spec.id,projectRoot,()=>ledger.assertCurrent(ready,false));
                   workspacesByTask[task.spec.id]=await resolveManagedGitWorkspace(
                     workspaces,p,plan.path);
                 }
                 let finalization=ready.config.finalization;
                 if(needsFinal&&finalization){
+                  ledger.assertCurrent(ready,false);
                   const plan=await provisioner.ensure(p,o,workflowId,
-                    "mm-final-integration",projectRoot);
+                    "mm-final-integration",projectRoot,()=>ledger.assertCurrent(ready,false));
                   finalization={...finalization,workspaceId:
                     await resolveManagedGitWorkspace(workspaces,p,plan.path)};
                 }
                 // Persist all host-validated identities before ANY Pi Session.
+                ledger.assertCurrent(ready,false);
                 ready=ledger.save(p,o,workflowId,{
                   ...ready.config,workspaces:workspacesByTask,
                   ...(finalization?{finalization}:{}),
-                });
+                },ready.generation);
               }
             }
             const owners=new Set<string>();
@@ -491,15 +537,17 @@ const plugin:PiWebServerPlugin={
                 resolved.workspace.id!==workerId||resolved.workspace.isMain||
                 resolved.workspace.provider?.metadata?.isGitWorktree!==true)
                 throw new Error("Task "+task.spec.id+" has no valid linked PI WEB worktree");
-              if(owners.has(resolved.workspace.path))
+              const physical=agents.registerWorkspacePath(p,workerId,resolved.workspace.path);
+              if(owners.has(physical))
                 throw new Error("Multiple implementation Tasks resolve to the same Worktree path");
-              owners.add(resolved.workspace.path);
+              owners.add(physical);
               const reviewId=ready.config.reviewWorkspaces?.[task.spec.id];
               if(reviewId){
                 const qc=await workspaces.resolve({projectId:p,workspaceId:reviewId});
                 if(qc.project.id!==p||qc.workspace.id!==reviewId||qc.workspace.isMain||
                   qc.workspace.provider?.metadata?.isGitWorktree!==true)
                   throw new Error("QC requires an existing linked Worktree");
+                agents.registerWorkspacePath(p,reviewId,qc.workspace.path);
               }
             }
             if(ready.config.finalization){
@@ -509,14 +557,18 @@ const plugin:PiWebServerPlugin={
               if(final.project.id!==p||final.workspace.projectId!==p||
                 final.workspace.id!==finalId||final.workspace.isMain||
                 final.workspace.provider?.metadata?.isGitWorktree!==true||
-                owners.has(final.workspace.path))
+                owners.has(agents.registerWorkspacePath(p,finalId,final.workspace.path)))
                 throw new Error("Final integration requires an independent linked Worktree");
+              agents.registerWorkspacePath(p,finalId,final.workspace.path);
               if(Object.values(ready.config.reviewWorkspaces??{}).includes(finalId))
                 throw new Error("Final Worktree cannot share a QC Workspace");
             }
+            ledger.assertCurrent(ready,false);
             await reconcileWorkflow(ready);
-            ledger.setStatus(p,o,workflowId,true,
-              "Autopilot running; managed Worktrees retained, PR merge gated by QC and policy");
+            ledger.assertCurrent(ready,false);
+            if(!ledger.setProgress(ready,true,
+              "Autopilot running; managed Worktrees retained, PR merge gated by QC and policy"))
+              throw new Error("Autopilot admission changed while starting");
             scheduleAutopilot(p,o,workflowId);
             return ledger.get(p,o,workflowId)!;
   }
@@ -529,13 +581,16 @@ const plugin:PiWebServerPlugin={
     const current=quick.find(p,o,job.requestId);
     if(!current||current.phase==="cancelled"||current.phase==="needs_attention"||
       current.phase==="finished")return;
-    if(current.phase==="running"){
+    if(current.phase==="running"||current.phase==="paused"){
       const config=ledger.get(p,o,current.workflowId);
-      if(config?.enabled)return;
+      if(config?.enabled){
+        if(current.phase==="paused")quick.phase(p,o,current.requestId,"running","Autopilot resumed.");
+        return;
+      }
       const workflow=store.get(p,o,current.workflowId);
       const completed=Object.values(workflow.tasks).every(t=>
         t.status==="integrated"||t.status==="done");
-      quick.phase(p,o,current.requestId,completed?"finished":"needs_attention",
+      quick.phase(p,o,current.requestId,completed?"finished":"paused",
         completed?"GitHub merge / DAG complete":
           "Autopilot paused: "+(config?.status??"inspect the Workflow"));
       return;
@@ -585,8 +640,11 @@ const plugin:PiWebServerPlugin={
       if(quick.find(p,o,current.requestId)?.phase==="cancelled")return;
       // Ignore model-authored permissions; freeze the operator's reviewed
       // policy and assign a deterministic, collision-resistant Workflow ID.
-      const def={...report.definition,id:current.workflowId,
+      const proposed={...report.definition,id:current.workflowId,
         permissions:current.profile.permissions};
+      const def=current.profile.config.convergenceMode==="linearized"?
+        linearizeImplementationDag(proposed):proposed;
+      validateExecutionPlan(newWorkflow(def,new Date().toISOString()),current.profile.config);
       store.create(p,o,def); // Idempotent if we crashed after the DB commit.
       if(run.phase==="settled"){
         const evidence=ledger.sealEvidence(run,"one-command-proposal",
@@ -613,6 +671,7 @@ const plugin:PiWebServerPlugin={
       const resolved=await workspaces?.resolve({projectId:p,workspaceId:o});
       if(!resolved||resolved.project.id!==p||resolved.workspace.id!==o)
         throw new Error("Original PI WEB project/workspace authority changed");
+      if(quick.find(p,o,current.requestId)?.phase!=="starting")return;
       await startConfiguredAutopilot(p,o,current.workflowId,resolved.project.path);
       if(quick.find(p,o,current.requestId)?.phase!=="cancelled")
         quick.phase(p,o,current.requestId,"running",
@@ -683,9 +742,16 @@ const plugin:PiWebServerPlugin={
             const running=ledger.get(p,o,workflowId)?.enabled===true;
             const automatedRuns=agents.hasAutomatedRun(p,o,workflowId);
             if((running||automatedRuns)&&
-              !["request_intervention","cancel_amendment","resume_after_diagnosis"].includes(action.type))
+              !["request_intervention","cancel_amendment","resume_after_diagnosis","extend_qc_budget"].includes(action.type))
               throw new WorkflowError("autopilot_owns_transition",
                 "Autopilot owns real Task/QC transitions; simulation commands cannot overwrite its history");
+            if(action.type==="request_intervention"){
+              const current=store.get(p,o,workflowId);
+              if(ledger.get(p,o,workflowId)?.config.finalization&&!current.tasks["mm-final-integration"]&&current.definition.tasks.length+6>512)
+                throw new Error("Reserve diagnosis and final integration Task slots before intervention");
+            }
+            if(action.type==="extend_qc_budget"&&(running||agents.hasUnsealedAutomatedRun(p,o,workflowId)))
+              throw new Error("Pause and reconcile unsealed Runs before extending a QC budget");
             if(!Number.isSafeInteger(input.expectedRevision))throw new WorkflowError("invalid_revision","Expected revision required");
             const next=store.act(p,o,workflowId,input.expectedRevision as number,
               id(input.commandId),action);
@@ -696,7 +762,7 @@ const plugin:PiWebServerPlugin={
 
           case "auto.quick.status":{
             const goals=quick.list(p,o).map(goal=>{
-              if(goal.phase!=="running")return goal;
+              if(goal.phase!=="running"&&goal.phase!=="paused")return goal;
               const current=ledger.get(p,o,goal.workflowId);
               return {...goal,message:current?.status??goal.message};
             });
@@ -720,7 +786,15 @@ const plugin:PiWebServerPlugin={
           }
           case "auto.quick.cancel":{
             const input=object(ctx.input);
-            const goal=quick.cancel(p,o,id(input.requestId));
+            const requestId=id(input.requestId);
+            const pending=quick.find(p,o,requestId);
+            if(pending?.phase==="starting"){
+              if(agents.hasAutomatedRun(p,o,pending.workflowId))
+                throw new Error("Code admission has begun; pause the Workflow instead");
+              if(ledger.get(p,o,pending.workflowId))
+                ledger.setStatus(p,o,pending.workflowId,false,"One-command Start cancelled by operator");
+            }
+            const goal=quick.cancel(p,o,requestId);
             return j(goal);
           }
           case "auto.propose":{
@@ -855,7 +929,7 @@ const plugin:PiWebServerPlugin={
           case "auto.journal":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             const current=store.get(p,o,workflowId);
-            return j(buildJournal(current,agents.list(p,o,"all"),ledger,
+            return j(buildJournal(current,agents.listWorkflow(p,o,workflowId),ledger,
               screenshots.list(p,o,workflowId)));
           }
           case "auto.retention.preview":{
@@ -922,7 +996,34 @@ const plugin:PiWebServerPlugin={
             if(missing.length&&!config.managedWorktrees)
               throw new WorkflowError("missing_worktrees",
                 "Configure a linked Worktree per Task or opt into managedWorktrees: "+missing.join(", "));
+            validateExecutionPlan(workflow,config);
             return j(ledger.save(p,o,workflowId,config));
+          }
+          case "auto.recover.unstarted":{
+            const input=object(ctx.input),binding=registered(ctx,id(input.sessionId));
+            const reason=nonempty(input.reason,1000),workflowId=binding.workflowId;
+            const config=ledger.get(p,o,workflowId);
+            if(!config||config.enabled)throw new Error("Pause Autopilot before inspecting an unstarted Run");
+            const key=JSON.stringify([p,o,workflowId]);
+            if(recoveryFlights.has(key)||startFlights.has(key))throw new Error("Workflow admission/recovery is already in progress");
+            const job=ledger.launchFor(binding);
+            ledger.setStatus(p,o,workflowId,false,"Operator requested zero-input Run recovery: "+reason.slice(0,700));
+            const paused=ledger.get(p,o,workflowId)!;
+            const flight=(async()=>{
+              try{
+                await executor.resumeUnstarted(binding,job,()=>ledger.assertCurrent(paused,false));
+                ledger.assertCurrent(paused,false);
+                if(!ledger.setProgress(paused,true,"Original Run resumed after verified zero-input inspection"))
+                  throw new Error("Operator control changed during recovery");
+                scheduleAutopilot(p,o,workflowId);
+              }catch(error){
+                ledger.setProgress(paused,false,"Recovery paused safely: "+String(error).slice(0,800));
+                throw error;
+              }
+            })();
+            recoveryFlights.set(key,flight);
+            try{await flight;}finally{if(recoveryFlights.get(key)===flight)recoveryFlights.delete(key);}
+            return j(agents.get(p,o,binding.sessionId!));
           }
           case "auto.start":{
             const workflowId=id(object(ctx.input).workflowId);
@@ -932,6 +1033,10 @@ const plugin:PiWebServerPlugin={
             const input=object(ctx.input),workflowId=id(input.workflowId);
             store.get(p,o,workflowId);
             ledger.setStatus(p,o,workflowId,false,"Paused by operator. Running Pi Sessions are not aborted.");
+            const paused=ledger.get(p,o,workflowId)!;
+            try{await publisher.cancelScheduled(paused);}catch(error){
+              ledger.setProgress(paused,false,"Paused locally; legacy GitHub cancellation needs attention: "+String(error).slice(0,700));
+            }
             return j(ledger.get(p,o,workflowId));
           }
           case "agents.list":{
@@ -977,7 +1082,7 @@ const plugin:PiWebServerPlugin={
               job:{runId:run.runId,
                 kind:run.seat==="qc"&&manualTask.spec.kind==="implementation"?
                   "qc":manualTask.spec.kind},
-              sessionName:"MM "+run.seat+" "+run.taskId+" "+run.runId,
+              sessionName:sessionDisplayName("MM",run.seat,run.taskId,run.runId),
             });
             binding=agents.update(binding,receipt.status==="ok"?"configured":
               receipt.status==="uncertain"?"uncertain":"blocked",
@@ -1025,6 +1130,8 @@ const plugin:PiWebServerPlugin={
           case "agents.configure":{
             const input=object(ctx.input);
             let binding=registered(ctx,id(input.sessionId));
+            if(binding.requestId.startsWith("auto:"))
+              throw new Error("Automatic model configuration is owned by the frozen launch contract; use explicit unstarted recovery");
             if(binding.phase==="running"||binding.phase==="settled"||binding.phase==="sealed"||
               binding.phase==="uncertain"||binding.phase==="failed")
               throw new Error("Cannot configure a running, completed or uncertain execution");
@@ -1052,6 +1159,8 @@ const plugin:PiWebServerPlugin={
               binding.phase==="uncertain"||binding.phase==="blocked")
               throw new Error("This run has ended or needs reconciliation. Do not retry uncertain sends.");
             const action=input.action;
+            if((action==="steer"||action==="followUp")&&binding.phase!=="running")
+              throw new Error("Live messages require a configured, already running Run");
             if(isDurableSession(binding.sessionId)){
               if(action!=="abort"&&action!=="steer"&&action!=="followUp")
                 throw new Error("Durable Run accepts steer, followUp, or abort only");
@@ -1124,6 +1233,7 @@ const plugin:PiWebServerPlugin={
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       await quickDrain;
+      await Promise.allSettled([...startFlights.values(),...recoveryFlights.values()]);
       await durable.close();
       for(const bridge of live.values())bridge.stop();
       live.clear();viewers.clear();convergence.close();publisher.close();permissions.close();adr.close();screenshots.close();retention.close();provisioner.close();integration.close();quick.close();ledger.close();agents.close();store.close();

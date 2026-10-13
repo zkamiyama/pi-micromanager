@@ -17,7 +17,7 @@ const definition={id:"flow",title:"Implement API",maxQcRounds:3,
 const models=Object.fromEntries(["implementer","qc","architect","planner"].map(role=>
   [role,{provider:"mock-provider",model:"mock-model"}]));
 const config={models,workspaces:{api:"wt-source",consumer:"wt-consumer"},
-  test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:2};
+  test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:10000},maxAttempts:2};
 function fixture(){
   const dir=mkdtempSync(join(tmpdir(),"mm-integrate-"));
   const workflows=new WorkflowStore(join(dir,"workflow.sqlite"));
@@ -51,19 +51,20 @@ function fixture(){
       const args=req.args.slice(2);
       const operation=args.join(" ");
       let stdout="",exitCode=0,stderr="";
-      if(operation==="rev-parse --show-toplevel")stdout="/git/integration\n";
+      if(operation==="rev-parse --show-toplevel")stdout=req.args[1]+"\n";
       else if(operation==="rev-parse HEAD")stdout=targetHead+"\n";
-      else if(operation==="status --porcelain")stdout=dirty?"?? untracked.txt\n":"";
+      else if(operation==="status --porcelain --untracked-files=all --ignore-submodules=none")stdout=dirty?"?? untracked.txt\n":"";
+      else if(operation==="ls-files -v -z"||operation==="diff-files --quiet --ignore-submodules=none")stdout="";
       else if(operation.startsWith("merge-base --is-ancestor")){
         exitCode=isAncestor?0:1;
       }else throw Error("Unexpected Git command "+operation);
       return {exitCode,signal:null,stdout,stderr,stdoutTruncated:false,stderrTruncated:false};
     }};
   const workspaces={version:1,async resolve({projectId,workspaceId}){
-    if(projectId!=="p"||workspaceId!=="wt-integration")
+    if(projectId!=="p"||!["wt-integration","wt-consumer"].includes(workspaceId))
       throw Error("Unknown target");
     return {project:{id:"p",name:"Mock",path:"/git"},
-      workspace:{id:workspaceId,projectId:"p",path:"/git/integration",
+      workspace:{id:workspaceId,projectId:"p",path:workspaceId==="wt-consumer"?"/git/consumer":"/git/integration",
         label:"integration",isMain:false,provider:{metadata:{isGitWorktree:true}}}};
   }};
   function open(){
@@ -93,9 +94,9 @@ test("Integration proof is read-only, QC sealed, verified in target and CAS-back
     const repeat=await x.service.confirm("p","o",preview.id);
     assert.equal(repeat.revision,updated.revision);
     assert.ok(x.calls.every(c=>c.file==="git"),"No shell commands");
-    assert.ok(x.calls.every(c=>["rev-parse","status","merge-base"].includes(c.args[2])),
+    assert.ok(x.calls.every(c=>["rev-parse","status","merge-base","ls-files","diff-files"].includes(c.args[2])),
       "Never merge/cherry-pick/reset or push");
-    assert.ok(x.calls.every(c=>c.args.includes("-C")&&c.args.includes("/git/integration")));
+    assert.ok(x.calls.every(c=>c.args.includes("-C")&&["/git/integration","/git/consumer"].includes(c.args[1])));
   }finally{x.close();}
 });
 test("Cannot call a source checkout 'integrated', or assert Git ancestry without proof",async()=>{
@@ -160,4 +161,14 @@ test("Separate QC review workspace cannot disguise the writer's own checkout as 
       /Source implementation\/QC Worktree/);
     assert.equal(x.workflows.get("p","o","flow").tasks.api.status,"passed");
   }finally{x.close();}
+});
+
+test('R01: a proved arbitrary target cannot globally integrate a missing configured consumer',async()=>{
+ const x=fixture();try{
+  const preview=await x.service.preview('p','o','flow','api','wt-integration');const original=x.host.execFile;
+  x.host.execFile=async req=>req.args[1]==='/git/consumer'&&req.args[2]==='merge-base'?
+   {exitCode:1,signal:null,stdout:'',stderr:'',stdoutTruncated:false,stderrTruncated:false}:original(req);
+  await assert.rejects(x.service.confirm('p','o',preview.id),/does not contain/);
+  assert.equal(x.workflows.get('p','o','flow').tasks.api.status,'passed');assert.equal(x.workflows.get('p','o','flow').tasks.consumer.status,'blocked');
+ }finally{x.close();}
 });

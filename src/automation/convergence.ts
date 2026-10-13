@@ -125,7 +125,7 @@ export class AutomaticIntegrator {
     this.opt.host.lifetimeSignal.throwIfAborted();
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     const current=this.opt.ledger.get(p,o,w);
-    if(!current?.enabled||JSON.stringify(current.config.workspaces)!==
+    if(!current?.enabled||current.generation!==record.generation||JSON.stringify(current.config.workspaces)!==
       JSON.stringify(record.config.workspaces))
       throw new Error("Autopilot stopped or Task Worktree assignments changed");
     const workflow=this.opt.workflows.get(p,o,w);
@@ -162,10 +162,40 @@ export class AutomaticIntegrator {
     const preceding=this.operationQueue;
     let release:()=>void=()=>{};
     this.operationQueue=new Promise<void>(resolve=>{release=resolve;});
+    const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
+    const owner="git-convergence:"+createHash("sha256").update(automationScope(p,o)+w).digest("hex");
+    const acquired:string[]=[];
+    const physicalKeys=new Map<string,string>();
     try{
       await preceding;
+      const targets=new Set<string>();
+      for(const source of Object.values(workflow.tasks)){
+        if(source.status!=="passed"||source.spec.kind!=="implementation")continue;
+        for(const child of Object.values(workflow.tasks)){
+          if(child.spec.kind!=="implementation"||child.spec.systemPurpose==="final-integration"||
+            !child.spec.dependsOn.some(d=>d.taskId===source.spec.id))continue;
+          const id=record.config.workspaces[child.spec.id];if(id)targets.add(id);
+        }
+      }
+      for(const id of [...targets].sort()){
+        const authority=await this.opt.workspaces()?.resolve({projectId:p,workspaceId:id});
+        if(!authority||authority.project.id!==p||authority.workspace.id!==id||authority.workspace.projectId!==p)
+          throw new Error("Convergence Workspace authority changed");
+        physicalKeys.set(id,this.opt.agents.registerWorkspacePath(p,id,authority.workspace.path));
+        this.opt.agents.acquireWorkspaceOperation(p,id,owner);acquired.push(id);
+      }
       return await this.stepOne(record,workflow);
-    }finally{release();}
+    }finally{
+      const retained=new Set<string>();
+      for(const id of acquired){
+        const uncertain=this.db.prepare("SELECT 1 FROM auto_git_convergence WHERE scope=? AND workflow_id=? AND target_workspace_id=? AND state='reserved' LIMIT 1")
+          .get(automationScope(p,o),w,id);
+        if(uncertain)retained.add(physicalKeys.get(id)!);
+      }
+      for(const id of acquired)if(!retained.has(physicalKeys.get(id)!))
+        this.opt.agents.releaseWorkspaceOperation(p,id,owner);
+      release();
+    }
   }
   /** One deterministic action per scheduler tick. No Git merge except ff-only. */
   private async stepOne(record:AutopilotRecord,workflow:WorkflowInstance):

@@ -1,5 +1,9 @@
 /** Public PI WEB Host API adapter for the deterministic Autopilot engine. */
+import { internalRunId,sessionDisplayName } from "../core/identifiers.js";
 import { randomUUID,createHash } from "node:crypto";
+import {boundedFailureDiagnostics} from "./test-diagnostics.js";
+import {requireCleanGit} from "./git.js";
+import {testInvocation,assertTestEnvironment} from "./test-execution.js";
 import { resolve } from "node:path";
 import type {
   ServerPluginActivationContext, PiWebHostPiSessionsV1,
@@ -34,8 +38,11 @@ export interface HostPortOptions {
   validateRun(task:TaskState,seat:Seat):string;
   replaySettledReport(binding:AgentBinding):Promise<void>;
   notify(binding:AgentBinding):void;
+  assertAdmitted?(job:LaunchJob):void;
 }
-export function createHostExecutor(options:HostPortOptions):ExecutorPort {
+export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
+  resumeUnstarted(binding:AgentBinding,job:LaunchJob,assertAdmitted:()=>void):Promise<AgentBinding>;
+} {
   const {host,workflows,agents,probe,notify}=options;
   const assertActive=()=>host.lifetimeSignal.throwIfAborted();
   async function workspace(projectId:string,workspaceId:string){
@@ -44,6 +51,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
     const authority=await api.resolve({projectId,workspaceId});
     if(authority.project.id!==projectId||authority.workspace.projectId!==projectId||
       authority.workspace.id!==workspaceId)throw new Error("Workspace authority mismatch");
+    agents.registerWorkspacePath?.(projectId,workspaceId,authority.workspace.path);
     return authority.workspace;
   }
   async function gitRead(path:string,args:string[]):Promise<string> {
@@ -54,10 +62,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
     return r.stdout.trim();
   }
   async function snapshot(path:string):Promise<{sha:string;clean:boolean}>{
-    const sha=await gitRead(path,["rev-parse","HEAD"]);
-    const status=await gitRead(path,["status","--porcelain"]);
-    if(!/^[0-9a-f]{40,64}$/.test(sha))throw new Error("No Git HEAD in resolved workspace");
-    return {sha,clean:status.length===0};
+    return {sha:await requireCleanGit(host,path),clean:true};
   }
   async function linkedWorktree(projectId:string,workspaceId:string){
     const w=await workspace(projectId,workspaceId);
@@ -71,7 +76,8 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
   return {
     recoverReport:options.replaySettledReport,
     async launch(job:LaunchJob){
-      assertActive();
+      const admitted=()=>{assertActive();options.assertAdmitted?.(job);};
+      admitted();
       let executablePath:string;
       if(job.kind==="implementation"||job.kind==="qc"||job.kind==="diagnosis"){
         const w=await linkedWorktree(job.projectId,job.workspaceId);
@@ -92,13 +98,13 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
           }
         }
       }else executablePath=(await workspace(job.projectId,job.workspaceId)).path;
-      assertActive();
+      admitted();
       const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
       const task=current.tasks[job.taskId];
       if(!task)throw new Error("Unknown Task");
       if(job.kind==="planning"){
         const amendment=current.amendments.find(a=>a.targetTaskId===job.taskId&&
-          a.status==="planning"&&"plan-"+a.id===job.runId);
+          a.status==="planning"&&internalRunId("plan",a.id)===job.runId);
         if(!amendment||job.seat!=="planner")
           throw new Error("Stale/invalid Sol planning Run");
       }else if(options.validateRun(task,job.seat)!==job.runId)
@@ -110,34 +116,34 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       };
       if(agents.getRun(job.projectId,job.orchestraWorkspaceId,job.workflowId,job.runId))
         throw new Error("Already reserved: never create the same one-shot Run twice");
-      assertActive();
+      admitted();
       if(options.durable&&options.getRuntime?.(job.projectId,job.orchestraWorkspaceId,
         job.workflowId)==="durable"){
         return options.durable.launch({reservation,kind:job.kind,model:job.model,
-          cwd:executablePath,prompt:job.prompt});
+          cwd:executablePath,prompt:job.prompt,assertAdmitted:admitted});
       }
       const sessions=options.getSessions();
       if(!sessions)throw new Error("PI WEB native Pi sessions capability unavailable");
       notify(agents.reserve(reservation));
       // Any uncertain sessions.create response intentionally leaves this durable
       // reservation untouched; operator reconciliation is required.
-      assertActive();
+      admitted();
       const created=await sessions.create({projectId:job.projectId,workspaceId:job.workspaceId});
       // Preserve the exact Session identity even if the plugin was revoked
       // during the non-atomic host creation response. Never send a new prompt
       // when shutdown is already in progress.
       let binding=agents.assign(reservation,created.sessionId);
       notify(binding);
-      assertActive();
+      admitted();
       const checked=await probe(binding);
       binding=agents.get(job.projectId,job.orchestraWorkspaceId,created.sessionId);
-      assertActive();
+      admitted();
       if(checked.status!=="ok")throw new Error("Pi companion did not acknowledge its probe");
       const configured=await checked.bridge.send({
         type:"configure",requestId:randomUUID(),provider:job.model.provider,
         model:job.model.model,...(job.model.effort?{effort:job.model.effort}:{}),
         job:{runId:job.runId,kind:job.kind},
-        sessionName:"AUTO "+job.seat+" "+job.taskId+" "+job.runId,
+        sessionName:sessionDisplayName("AUTO",job.seat,job.taskId,job.runId),
       },10000);
       if(configured.status!=="ok"||configured.provider!==job.model.provider||
         configured.model!==job.model.model||
@@ -149,7 +155,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       binding=agents.update(binding,"configured",{provider:job.model.provider,model:job.model.model,
         ...(job.model.effort?{effort:job.model.effort}:{})});
       notify(binding);
-      assertActive();
+      admitted();
       const started=await checked.bridge.send({
         type:"message",requestId:randomUUID(),text:job.prompt,delivery:"newTurn",
       },10000);
@@ -170,6 +176,68 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       binding=agents.update(observed,"running");
       notify(binding);
       return binding;
+    },
+    async resumeUnstarted(binding,job,assertAdmitted){
+      const admitted=()=>{assertActive();assertAdmitted();};
+      admitted();
+      if(!binding.sessionId||!binding.requestId.startsWith("auto:")||binding.abortRequested===1||
+        !["created","connected","configured"].includes(binding.phase))
+        throw new Error("Only an attached, unstarted automatic Run may be recovered explicitly");
+      for(const key of ["projectId","orchestraWorkspaceId","workflowId","taskId","runId","workspaceId","seat"] as const)
+        if(binding[key]!==job[key])throw new Error("Frozen launch contract does not match the exact Run");
+      const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
+      const task=current.tasks[job.taskId];
+      if(!task)throw new Error("Recovery Task is missing");
+      if(job.kind==="planning"){
+        if(!current.amendments.some(a=>a.status==="planning"&&a.targetTaskId===job.taskId&&
+          internalRunId("plan",a.id)===job.runId))throw new Error("Recovery intervention changed");
+      }else if(options.validateRun(task,job.seat)!==job.runId)
+        throw new Error("Recovery Task admission changed");
+      const ws=job.kind==="implementation"||job.kind==="qc"||job.kind==="diagnosis"?
+        await linkedWorktree(job.projectId,job.workspaceId):await workspace(job.projectId,job.workspaceId);
+      if(job.kind==="implementation"||job.kind==="qc"||job.kind==="diagnosis"){
+        const state=await snapshot(ws.path);
+        if(job.kind!=="implementation"&&state.sha!==job.headSha)
+          throw new Error("Recovery snapshot differs from the frozen review SHA");
+        for(const sha of job.requiredAncestors??[])
+          await gitRead(ws.path,["merge-base","--is-ancestor",sha,"HEAD"]);
+      }
+      admitted();
+      if(binding.sessionId.startsWith("durable:")){
+        if(!options.durable)throw new Error("Original Durable runtime is unavailable");
+        return options.durable.resumeUnstarted(binding,{reservation:{
+          projectId:binding.projectId,orchestraWorkspaceId:binding.orchestraWorkspaceId,
+          workflowId:binding.workflowId,taskId:binding.taskId,runId:binding.runId,
+          workspaceId:binding.workspaceId,seat:binding.seat,requestId:binding.requestId},
+          cwd:ws.path,kind:job.kind,model:job.model,prompt:job.prompt,assertAdmitted:admitted});
+      }
+      const checked=await probe(binding);
+      admitted();
+      if(checked.status!=="ok")throw new Error("Original native Pi Session is unavailable");
+      const proof=await checked.bridge.send({type:"inspect",requestId:randomUUID()},7000);
+      if(proof.status!=="ok"||proof.idle!==true||proof.fresh!==true||
+        proof.inputAccepted!==false||proof.pendingMessages!==false||
+        proof.jobRunId!==undefined&&proof.jobRunId!==job.runId)
+        throw new Error("Native Session cannot prove zero accepted input; no replay permitted");
+      admitted();
+      const configured=await checked.bridge.send({type:"configure",requestId:randomUUID(),
+        provider:job.model.provider,model:job.model.model,...(job.model.effort?{effort:job.model.effort}:{}),
+        job:{runId:job.runId,kind:job.kind},sessionName:sessionDisplayName("AUTO",job.seat,job.taskId,job.runId)});
+      if(configured.status!=="ok"||configured.provider!==job.model.provider||configured.model!==job.model.model||
+        job.model.effort!==undefined&&configured.effort!==job.model.effort)
+        throw new Error("Original model configuration was not acknowledged");
+      notify(agents.update(agents.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId),"configured",job.model));
+      admitted();
+      const started=await checked.bridge.send({type:"message",
+        requestId:"initial:"+createHash("sha256").update(JSON.stringify([binding.projectId,binding.orchestraWorkspaceId,binding.workflowId,binding.runId])).digest("hex"),
+        text:job.prompt,delivery:"newTurn"},10000);
+      const observed=agents.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId);
+      if(started.status!=="ok"){
+        if(!["running","settled","sealed"].includes(observed.phase))notify(agents.update(observed,"uncertain"));
+        throw new Error("Recovery input admission is uncertain; inspect, never repeat blindly");
+      }
+      if(!["running","settled","sealed"].includes(observed.phase))notify(agents.update(observed,"running"));
+      return agents.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId);
     },
     async checkSnapshot(binding,expectedSha){
       const w=await linkedWorktree(binding.projectId,binding.workspaceId);
@@ -204,10 +272,16 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
           }
         }
       }
+      const invocation=testInvocation(config.test,w.path);
       const result=await host.execFile({
-        file:config.test.file,args:config.test.args,cwd:w.path,
+        ...invocation,
         timeoutMs:config.test.timeoutMs,signal:host.lifetimeSignal,
+        // Test code is not an OS sandbox: at least prevent accidental
+        // provider and publication credentials from environment inheritance.
+        unsetEnv:Object.keys(process.env).filter(key=>
+          !["PATH","SystemRoot","WINDIR","COMSPEC","PATHEXT","LANG","LC_ALL","TMPDIR","TEMP","TMP"].includes(key)),
       });
+      assertTestEnvironment(config.test,result);
       const after=await snapshot(w.path);
       const clean=before.clean&&after.clean&&before.sha===after.sha;
       const testsPassed=result.exitCode===0&&!result.signal&&
@@ -222,7 +296,8 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
         " stdoutSha256="+createHash("sha256").update(result.stdout).digest("hex")+
         " stderrBytes="+Buffer.byteLength(result.stderr)+
         " stderrSha256="+createHash("sha256").update(result.stderr).digest("hex");
-      return {headSha:after.sha,clean,testsPassed,details};
+      const actionable=testsPassed?"":" redactedFailure="+boundedFailureDiagnostics(result.stdout,result.stderr);
+      return {headSha:after.sha,clean,testsPassed,details:details+actionable};
     },
     onTransition:notify,
   };

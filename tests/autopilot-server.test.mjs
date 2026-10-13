@@ -21,7 +21,7 @@ const profile = {provider:"local-provider",model:"exact-model"};
 const config = {
   runtime:"pi-web",workspaces:{api:"worktree-api"},
   models:{implementer:profile,qc:profile,architect:profile,planner:profile},
-  test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
+  test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
 };
 
 function fakePluginHost(shared,options={}) {
@@ -40,7 +40,7 @@ function fakePluginHost(shared,options={}) {
   const isManagedFinal=path=>[...createdWorktrees].some(([p,t])=>
     p===path&&t.branch.endsWith("/mm-final-integration"));
   const workspace = id => ({
-    id,projectId:"project",path:managedPath(id)??(id==="orchestra"?"/repo":
+    id,projectId:"project",path:options.workspacePaths?.[id]??managedPath(id)??(id==="orchestra"?"/repo":
       id==="wt-integrated"?"/repo/integrated":
       id==="worktree-consumer"?"/repo/consumer":
       id==="worktree-final"?"/repo/final":"/repo/api"),
@@ -51,6 +51,7 @@ function fakePluginHost(shared,options={}) {
   const workspaces = {
     version:1,
     async resolve({projectId,workspaceId}) {
+      await options.beforeResolve?.({projectId,workspaceId});
       const managed=managedPath(workspaceId);
       if(projectId!=="project"||
         (managed&&options.discovery?.allowed===false)||
@@ -88,10 +89,13 @@ function fakePluginHost(shared,options={}) {
             });
             if(data.type==="inspect")Object.assign(response,{
               jobRunId:session.commands.find(c=>c.type==="configure")?.job?.runId,
-              idle:session.completed===true,
+              idle:session.completed===true||!session.commands.some(c=>c.type==="message"),
+              fresh:!session.commands.some(c=>c.type==="message"),
+              inputAccepted:session.commands.some(c=>c.type==="message"),pendingMessages:false,
               turnSettled:session.completed===true,turnInterrupted:false,
               hasReport:session.reported===true,
             });
+            if(data.type==="configure")options.onConfigure?.(session);
             session.publish(RECEIPT_CHANNEL,response);
             if(data.type==="inspect"&&session.report)
               session.publish(REPORT_CHANNEL,session.report);
@@ -129,7 +133,8 @@ function fakePluginHost(shared,options={}) {
       const args=request.args??[];
       if(request.file==="git"){
         const command=args.slice(2).join(" ");
-        if(command==="rev-parse --show-toplevel")
+        if(command==="ls-files -v -z"||command==="diff-files --quiet --ignore-submodules=none")return result("");
+       if(command==="rev-parse --show-toplevel")
           return result(args[1]+"\n");
         if(command==="rev-parse HEAD")
           return result(args[1]==="/repo/consumer"?convergence.head+"\n":
@@ -137,7 +142,7 @@ function fakePluginHost(shared,options={}) {
             isManagedFinal(args[1])?(finalization.settled?finalization.head:
               createdWorktrees.get(args[1]).sha)+"\n":
             args[1]==="/repo/integrated"?"c".repeat(40)+"\n":SHA+"\n");
-        if(command==="status --porcelain")
+        if(command==="status --porcelain --untracked-files=all --ignore-submodules=none")
           return result("");
         if(command.startsWith("merge-base --is-ancestor ")){
           if(args[1]==="/repo/final"||isManagedFinal(args[1])){
@@ -215,14 +220,15 @@ function fakePluginHost(shared,options={}) {
         }
         if(args[0]==="pr"&&args[1]==="checks")
           return result(JSON.stringify([{name:"build-and-test",bucket:"pass"}]));
-        if(args[0]==="pr"&&args[1]==="merge"){
-          if(!args.includes("--match-head-commit")||!args.includes("--auto")||
-            args.includes("--admin"))
-            throw new Error("Merge should be CI-gated, auto-scheduled and SHA-bound");
+        if(args[0]==="api"&&args.includes("--method")){
+          assert.equal(args[args.indexOf("--method")+1],"PUT");
+          assert.ok(args.includes("repos/acme/repo/pulls/7/merge"));
+          assert.ok(args.includes("sha="+FINAL));assert.ok(!args.includes("--auto"));
           publication.mergeCount++;
           publication.pr.state="MERGED";
-          return result("GitHub merged verified final SHA\n");
+          return result("HTTP/2.0 200 OK\r\n\r\n"+JSON.stringify({merged:true,sha:FINAL}));
         }
+
       }
       throw new Error("Unexpected host process request "+request.file);
     },
@@ -1046,4 +1052,48 @@ test("Audit F19: manually created QC runs require linked worktree and read-only 
     const configure=session.commands.find(c=>c.type==="configure");
     assert.deepEqual(configure.job,{runId:"qc-api-1",kind:"qc"});
   }finally{await host.cleanup();}
+});
+
+const residualDefinition={id:'recovery-flow',title:'Explicit recovery',maxQcRounds:2,
+ maxParallelByRole:{implementer:1,reviewer:1,architect:1,planner:1},
+ tasks:[{id:'api',title:'API',kind:'implementation',role:'implementer',dependsOn:[]}]};
+for(const operation of ['pause','reconfigure'])test('R02 public API: '+operation+' wins over Start awaiting Workspace authority',async()=>{
+ let release,entered,blocked=false;const held=new Promise(r=>release=r),arrived=new Promise(r=>entered=r);
+ const x=fakePluginHost(undefined,{beforeResolve:async({workspaceId})=>{
+  if(workspaceId==='worktree-api'&&!blocked){blocked=true;entered();await held;}
+ }});
+ try{await x.activate();await x.request('create',residualDefinition);await x.request('auto.configure',{workflowId:residualDefinition.id,config});
+  const flight=x.request('auto.start',{workflowId:residualDefinition.id});await arrived;
+  if(operation==='pause')await x.request('auto.pause',{workflowId:residualDefinition.id});
+  else await x.request('auto.configure',{workflowId:residualDefinition.id,config:{...config,maxAttempts:2}});
+  release();await assert.rejects(flight,/generation changed/);
+  const status=await x.request('auto.status',{workflowId:residualDefinition.id});assert.equal(status.enabled,false);assert.equal(x.sessions.size,0);
+  if(operation==='reconfigure')assert.equal(status.config.maxAttempts,2);
+ }finally{release?.();await x.cleanup();}
+});
+test('R14 public native API: paused configured Run resumes exactly its saved original input once',async()=>{
+ const {AutopilotLedger}=await import('../dist/automation/ledger.js');let control;let paused=false;
+ const x=fakePluginHost(undefined,{onConfigure:()=>{
+  if(!paused){paused=true;control.setStatus('project','orchestra',residualDefinition.id,false,'Pause before initial send');}
+ }});
+ try{await x.activate();control=new AutopilotLedger(join(x.shared.dir,'autopilot.sqlite'));
+  await x.request('create',residualDefinition);await x.request('auto.configure',{workflowId:residualDefinition.id,config});await x.request('auto.start',{workflowId:residualDefinition.id});
+  const run=await eventually(async()=>{const rows=await x.request('agents.list',{view:'all'});return rows.find(b=>b.workflowId===residualDefinition.id&&b.phase==='configured');});
+  assert.equal(x.sessions.size,1);const session=x.sessions.get(run.sessionId);assert.equal(session.commands.filter(c=>c.type==='message').length,0);
+  await assert.rejects(x.request('agents.configure',{sessionId:run.sessionId,provider:'other',model:'other',requestId:'manual-override'}),/frozen launch contract/);
+  const resumed=await x.request('auto.recover.unstarted',{sessionId:run.sessionId,reason:'Inspected zero-input admission after Pause'});
+  assert.equal(resumed.sessionId,run.sessionId);assert.equal(resumed.phase,'running');assert.equal(x.sessions.size,1);
+  assert.equal(session.commands.filter(c=>c.type==='message').length,1);assert.match(session.commands.find(c=>c.type==='message').text,/Task ID: api/);
+  await x.request('auto.pause',{workflowId:residualDefinition.id});
+  await assert.rejects(x.request('auto.recover.unstarted',{sessionId:run.sessionId,reason:'Attempt duplicate'}),/unstarted/);
+  assert.equal(session.commands.filter(c=>c.type==='message').length,1);
+ }finally{control?.close();await x.cleanup();}
+});
+
+test('R03 public admission: distinct Workspace IDs cannot alias the same physical code checkout',async()=>{
+ const x=fakePluginHost(undefined,{workspacePaths:{'worktree-api':'/repo/api','worktree-consumer':'/repo/./api'}});
+ try{await x.activate();await x.request('create',{...residualDefinition,tasks:[...residualDefinition.tasks,{id:'consumer',title:'Consumer',kind:'implementation',role:'implementer',dependsOn:[]}]});
+  await x.request('auto.configure',{workflowId:residualDefinition.id,config:{...config,workspaces:{api:'worktree-api',consumer:'worktree-consumer'}}});
+  await assert.rejects(x.request('auto.start',{workflowId:residualDefinition.id}),/same Worktree path/);assert.equal(x.sessions.size,0);
+ }finally{await x.cleanup();}
 });

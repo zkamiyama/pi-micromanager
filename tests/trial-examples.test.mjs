@@ -16,7 +16,7 @@ test("The published trial workflow and Autopilot configuration pass the actual v
   assert.equal(parsed.finalization.workspaceId,"auto");
   assert.equal(parsed.finalization.autoMerge,true);
   assert.equal(parsed.publication.baseBranch,"main");
-  assert.deepEqual(parsed.test,{file:"node",args:["--test"],timeoutMs:60000});
+  assert.deepEqual(parsed.test,{execution:"sandbox",file:"node",args:["--test"],timeoutMs:60000});
 });
 
 test("The disposable starter repository really passes baseline Node tests",async()=>{

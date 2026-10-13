@@ -15,7 +15,7 @@ const profile={config:{
   publication:{remote:"origin",baseBranch:"main",draft:true},
   models:Object.fromEntries(["planner","implementer","qc","architect"]
     .map(role=>[role,{provider:"example",model:"exact-model"}])),
-  test:{file:"node",args:["--test"],timeoutMs:60000},maxAttempts:3,
+  test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:60000},maxAttempts:3,
 },permissions:{default:"allow",
   actions:{"github.pr.merge":"ask","deploy.production":"deny"}}};
 
@@ -66,8 +66,8 @@ test("Request IDs and stage transitions cannot silently widen permissions or res
    ledger.begin("p","o","Build",id1);
    ledger.phase("p","o",id1,"planning","Sol started");
    ledger.phase("p","o",id1,"starting","Starting the DAG");
-   assert.throws(()=>ledger.cancel("p","o",id1),/code run has begun/);
    ledger.phase("p","o",id1,"running","Real Pi Sessions admitted");
+   assert.throws(()=>ledger.cancel("p","o",id1),/code run has begun/);
    ledger.phase("p","o",id1,"finished","GitHub MERGED");
    assert.throws(()=>ledger.phase("p","o",id1,"starting","Again"),/cannot restart/);
    assert.equal(ledger.begin("p","o","Another",id2).phase,"reserved");

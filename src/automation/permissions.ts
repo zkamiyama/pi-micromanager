@@ -1,5 +1,6 @@
 /** Durable, exact-subject approvals for autonomous publication.
  * These records authorize one QC commit+destination, never arbitrary shell access. */
+import {internalRunId} from "../core/identifiers.js";
 import {randomUUID,createHash} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {mkdirSync} from "node:fs";
@@ -87,7 +88,7 @@ export class PermissionLedger {
       throw new Error("Git commit approval must reference a ready implementation attempt");
     const decision=permissionDecision(workflow.definition.permissions,"git.commit");
     if(decision!=="ask")return {decision};
-    const scope=automationScope(p,o),runId="impl-"+taskId+"-"+nextAttempt;
+    const scope=automationScope(p,o),runId=internalRunId("impl",taskId,nextAttempt);
     const mark=commitSubject(taskId,runId,workflow.revision,workspaceId);
     const current=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
       " WHERE scope=? AND workflow_id=? AND task_id=? AND action='git.commit'"+
@@ -197,7 +198,7 @@ export class PermissionLedger {
     const workflow=this.workflows.get(p,o,row.workflowId),task=workflow.tasks[row.taskId];
     if(row.action==="git.commit"){
       if(!task||task.spec.kind!=="implementation"||task.status!=="ready"||
-        row.runId!=="impl-"+row.taskId+"-"+(task.attempts+1)||
+        row.runId!==internalRunId("impl",row.taskId,task.attempts+1)||
         (task.spec.systemPurpose==="final-integration"?
           config.finalization?.workspaceId:
           config.workspaces[row.taskId])!==row.target||row.headSha!=="pre-commit"||
