@@ -125,8 +125,8 @@ test("Durable real Harness rejects unsupported models without allocating Pi Sess
  try{
    await assert.rejects(x.durable.launch({...x.launch,model:{
      provider:"faux",model:"nonexistent"} }),/not in the configured Pi catalog/);
-   assert.equal(x.current().phase,"reserved");
-   assert.equal(x.current().sessionId,null);
+   assert.equal(x.current(),undefined,
+     "Invalid model must not strand an unreplayable Run reservation");
    assert.equal(x.faux.state.callCount,0);
  }finally{await x.close();}
 });
