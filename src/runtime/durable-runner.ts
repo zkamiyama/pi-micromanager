@@ -10,7 +10,7 @@ import {mkdirSync,realpathSync,existsSync} from "node:fs";
 import {join,resolve,isAbsolute} from "node:path";
 import {BACKGROUND_CONTEXT} from "@earendil-works/chord/context";
 import {Type} from "@earendil-works/pi-ai";
-import {builtinModels} from "@earendil-works/pi-ai/providers/all";
+import {ModelRuntime} from "@earendil-works/pi-coding-agent";
 import type {Models} from "@earendil-works/pi-ai/models";
 import type {ModelThinkingLevel} from "@earendil-works/pi-ai";
 import {
@@ -170,12 +170,33 @@ function reportTools(kind:DurableKind,runId:string,emit:(report:RunReport)=>void
   });
   return {qc,task,plan,proposal};
 }
+/** Use the public Pi SDK authentication pipeline. The daemon's Pi CLI
+ * profile resolves API keys and OAuth credentials (including refresh) without
+ * copying bearer tokens into any Micromanager SQLite table or Run event.
+ * A different daemon OS user must authenticate their own Pi profile. */
+export async function createDurableModels(authPath?:string):Promise<Models>{
+  return ModelRuntime.create({
+    allowModelNetwork:false,refreshOnCreate:false,
+    ...(authPath?{authPath}:{}),
+  });
+}
 export class DurableRunHost {
+  private modelsPromise?:Promise<Models>;
   private readonly active=new Map<string,Active>();
   private readonly opening=new Map<string,Promise<Active>>();
   private closing=false;
   constructor(private readonly options:DurableCallbacks){}
   connected(id:string):boolean{return this.active.get(id)?.closed===false;}
+  private configuredModels():Promise<Models>{
+    if(this.options.models)return Promise.resolve(this.options.models);
+    if(!this.modelsPromise){
+      this.modelsPromise=createDurableModels().catch(error=>{
+        this.modelsPromise=undefined;
+        throw error;
+      });
+    }
+    return this.modelsPromise;
+  }
   private path(reservation:Reservation):string{
     const home=resolve(this.options.dataDirectory),directory=join(home,"durable-runs");
     mkdirSync(directory,{recursive:true,mode:0o700});
@@ -201,15 +222,25 @@ export class DurableRunHost {
     const opening=this.opening.get(sessionId);
     if(opening)return opening;
     const future=(async()=>{
-      const models=this.options.models??builtinModels();
+      const models=await this.configuredModels();
       if(!models.getModel(model.provider,model.model))
-        throw new Error("Pi Durable model is not in the builtin catalog: "+
+        throw new Error("Pi Durable model is not in the configured Pi catalog: "+
           model.provider+"/"+model.model);
-      // Credentials stay with the machine's provider environment or a
-      // host-installed credential resolver. Never copy PI WEB auth.json.
-      // Providers without auth (local, faux, etc.) legitimately return no
-      // auth metadata. Generation resolves credentials and fails closed
-      // unless the daemon's Pi Durable provider is authenticated.
+      // ModelRuntime reads the daemon OS user's Pi auth.json and refreshes
+      // OAuth using Pi's lock-aware credential store. PI WEB browser/session
+      // credentials owned by another user remain outside this trust boundary.
+      // Scripted test models are injected and may intentionally be keyless.
+      if(!this.options.models){
+        let authorized=false;
+        try{authorized=Boolean(await models.getAuth(model.provider));}
+        catch{
+          throw new Error("Pi Durable provider authentication failed for "+
+            model.provider+"; run pi auth check --provider "+model.provider+
+            " as the daemon OS user");
+        }
+        if(!authorized)throw new Error("Pi Durable provider is not authenticated: "+
+          model.provider+"; authenticate Pi as the daemon OS user first");
+      }
       const rootPath=this.path(reservation);
       const registry=createRegistry();
       const reports=reportTools(kind,binding.runId,r=>{
