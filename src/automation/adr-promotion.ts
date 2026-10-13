@@ -378,6 +378,20 @@ export class AdrPromotion {
     const expected="https://github.com/"+githubRepo+"/pull/";
     if(!url.startsWith(expected)||!/\/[1-9][0-9]{0,8}$/.test(url.slice(expected.length-1)))
       throw new Error("GitHub did not return a matching ADR Draft PR URL");
+    // Never treat gh create output alone as authority. Verify the precise
+    // Draft PR's source SHA, source branch and explicit base via GitHub.
+    let pr:unknown;
+    try{pr=JSON.parse(await this.gh(ws.path,["pr","view",url,"--repo",githubRepo,
+      "--json","url,headRefName,headRefOid,baseRefName,isDraft,state"]));}
+    catch{throw new Error("ADR Draft PR creation is uncertain; inspect the remote receipt");}
+    if(!pr||typeof pr!=="object"||Array.isArray(pr))
+      throw new Error("Malformed GitHub ADR Draft PR state");
+    const result=pr as Record<string,unknown>;
+    if(result.url!==url||result.headRefName!==branch||
+      result.headRefOid!==commit||
+      result.baseRefName!==config.publication.baseBranch||
+      result.isDraft!==true||result.state!=="OPEN")
+      throw new Error("GitHub ADR PR does not match the exact reviewed branch and commit");
     this.markPublished(p,o,id,"published",commit,url);
     return this.published(p,o,id)!;
   }
