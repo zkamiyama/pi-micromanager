@@ -746,6 +746,10 @@ const plugin:PiWebServerPlugin={
             store.get(p,o,workflowId);
             return j(adr.latest(p,o,workflowId));
           }
+          case "auto.adr.suggest":{
+            const input=object(ctx.input),workflowId=id(input.workflowId);
+            return j(adr.suggest(p,o,workflowId));
+          }
           case "auto.adr.preview":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             return j(await adr.preview(p,o,workflowId,
