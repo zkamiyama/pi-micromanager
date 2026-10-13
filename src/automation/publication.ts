@@ -275,7 +275,7 @@ export class PublicationManager {
     const pub=record.config.publication!;
     if(!record.config.finalization?.autoMerge)return "none";
     const approval=this.options.permissions.ensure(p,o,w,taskId,
-      "github.pr.merge",qcRunId,sha,pub);
+      "github.pr.merge",qcRunId,sha,pub,repo,branch);
     if(approval.decision==="deny")return "none";
     if(approval.decision==="ask")return "waiting";
     const prs=await this.pullRequests(path,repo,branch);
@@ -438,7 +438,7 @@ export class PublicationManager {
         throw new Error("Git publication destination changed after reservation");
       if(!donePush||donePush.state!=="completed"){
         const approval=this.options.permissions.ensure(p,o,w,task.spec.id,
-          "git.push",qc.runId,qc.headSha,pub);
+          "git.push",qc.runId,qc.headSha,pub,repo,branch);
         if(approval.decision==="deny")continue;
         if(approval.decision==="ask")return "waiting";
         const remote=await this.remoteSha(target.path,pub,branch);
@@ -470,7 +470,7 @@ export class PublicationManager {
         return "acted";
       }
       const approval=this.options.permissions.ensure(p,o,w,task.spec.id,
-        "github.pr.create",qc.runId,qc.headSha,pub);
+        "github.pr.create",qc.runId,qc.headSha,pub,repo,branch);
       if(approval.decision==="deny")continue;
       if(approval.decision==="ask")return "waiting";
       const previous=this.existing(p,o,w,task.spec.id,"github.pr.create",qc.runId);
