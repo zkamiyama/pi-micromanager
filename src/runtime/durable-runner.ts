@@ -197,6 +197,27 @@ export class DurableRunHost {
     }
     return this.modelsPromise;
   }
+  private async validatedModels(model:ModelProfile):Promise<Models>{
+    const models=await this.configuredModels();
+    if(!models.getModel(model.provider,model.model))
+      throw new Error("Pi Durable model is not in the configured Pi catalog: "+
+        model.provider+"/"+model.model);
+    // Use the daemon user's Pi OAuth/API-key resolver, which refreshes
+    // credentials via Pi's own atomic store. Do not cache or log tokens.
+    // Scripted test models are injected and can intentionally be keyless.
+    if(!this.options.models){
+      let authorized=false;
+      try{authorized=Boolean(await models.getAuth(model.provider));}
+      catch{
+        throw new Error("Pi Durable provider authentication failed for "+
+          model.provider+"; run pi auth check --provider "+model.provider+
+          " as the daemon OS user");
+      }
+      if(!authorized)throw new Error("Pi Durable provider is not authenticated: "+
+        model.provider+"; authenticate Pi as the daemon OS user first");
+    }
+    return models;
+  }
   private path(reservation:Reservation):string{
     const home=resolve(this.options.dataDirectory),directory=join(home,"durable-runs");
     mkdirSync(directory,{recursive:true,mode:0o700});
@@ -222,25 +243,7 @@ export class DurableRunHost {
     const opening=this.opening.get(sessionId);
     if(opening)return opening;
     const future=(async()=>{
-      const models=await this.configuredModels();
-      if(!models.getModel(model.provider,model.model))
-        throw new Error("Pi Durable model is not in the configured Pi catalog: "+
-          model.provider+"/"+model.model);
-      // ModelRuntime reads the daemon OS user's Pi auth.json and refreshes
-      // OAuth using Pi's lock-aware credential store. PI WEB browser/session
-      // credentials owned by another user remain outside this trust boundary.
-      // Scripted test models are injected and may intentionally be keyless.
-      if(!this.options.models){
-        let authorized=false;
-        try{authorized=Boolean(await models.getAuth(model.provider));}
-        catch{
-          throw new Error("Pi Durable provider authentication failed for "+
-            model.provider+"; run pi auth check --provider "+model.provider+
-            " as the daemon OS user");
-        }
-        if(!authorized)throw new Error("Pi Durable provider is not authenticated: "+
-          model.provider+"; authenticate Pi as the daemon OS user first");
-      }
+      const models=await this.validatedModels(model);
       const rootPath=this.path(reservation);
       const registry=createRegistry();
       const reports=reportTools(kind,binding.runId,r=>{
@@ -351,6 +354,10 @@ export class DurableRunHost {
     if(this.options.agents.getRun(r.projectId,r.orchestraWorkspaceId,
       r.workflowId,r.runId))
       throw new Error("Durable Run already reserved; reconcile, never replay blindly");
+    // Credential/model validation is read-only and belongs BEFORE the durable
+    // Run reservation: unavailable auth must not strand a fresh Task in the
+    // non-replayable 'reserved' phase.
+    await this.validatedModels(spec.model);
     const reserved=this.options.agents.reserve(r);
     this.options.changed(reserved);
     const sid=identity(r);
