@@ -197,6 +197,11 @@ export class DurableRunHost {
     }
     return this.modelsPromise;
   }
+  private validateEffort(model:ModelProfile):void{
+    const levels=new Set<string>(["off","minimal","low","medium","high","xhigh","max"]);
+    if(model.effort!==undefined&&!levels.has(model.effort))
+      throw new Error("Unsupported Pi Durable thinking level: "+model.effort);
+  }
   private async validatedModels(model:ModelProfile):Promise<Models>{
     const models=await this.configuredModels();
     if(!models.getModel(model.provider,model.model))
@@ -357,6 +362,7 @@ export class DurableRunHost {
     // Credential/model validation is read-only and belongs BEFORE the durable
     // Run reservation: unavailable auth must not strand a fresh Task in the
     // non-replayable 'reserved' phase.
+    this.validateEffort(spec.model);
     await this.validatedModels(spec.model);
     const reserved=this.options.agents.reserve(r);
     this.options.changed(reserved);
