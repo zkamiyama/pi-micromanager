@@ -67,12 +67,14 @@ function shellEnvironment():NodeJS.ProcessEnv{
       delete env[key];
   return env;
 }
-function isSafeBashCommand(command:string):boolean{
-  // No shell regexp is an OS security boundary. This is a blocking guard
-  // against direct publishing. Strong isolation still needs a sandbox with
-  // credentials unavailable to workers.
+/** Local Git merges are required only to assemble QC-approved commits in
+ * the isolated final-integration Worktree. Other workers cannot merge. This
+ * heuristic guard is not a sandbox and is never relied on as a permission
+ * boundary; the host independently verifies Git ancestry and runs QC. */
+export function isSafeBashCommand(command:string,allowFinalLocalMerge=false):boolean{
   const c=command.toLowerCase();
-  return !/\b(?:git\s+(?:push|remote|fetch|pull|merge|rebase|reset|checkout|switch|worktree\s+remove)|gh\s+(?:pr|repo|api|workflow|release)\s+|git\s+config\s+.*(?:credential|http\.)|curl\s+.*github\.com|wget\s+.*github\.com)\b/.test(c);
+  if(!allowFinalLocalMerge&&/\bgit\s+merge\b/.test(c))return false;
+  return !/\b(?:git\s+(?:push|remote|fetch|pull|rebase|reset|checkout|switch|worktree\s+remove)|gh\s+(?:pr|repo|api|workflow|release)\s+|git\s+config\s+.*(?:credential|http\.)|curl\s+.*github\.com|wget\s+.*github\.com)\b/.test(c);
 }
 /** One safe-to-display event; never forward hidden thinking, raw tool
  * arguments, messages from another Run, tokens, or full tool output. */
@@ -224,7 +226,8 @@ export class DurableRunHost {
         if(tool.name!=="bash")return tool;
         return {...tool,async execute(args:never,api:never,context:never){
           const command=String((args as {command?:string}).command??"");
-          if(!isSafeBashCommand(command))
+          if(!isSafeBashCommand(command,
+            kind==="implementation"&&binding.taskId==="mm-final-integration"))
             throw new Error("Direct GitHub publication and dangerous Git mutations "+
               "must use the Orchestrator's exact QC/permission gates");
           return tool.execute(args,api,context);
