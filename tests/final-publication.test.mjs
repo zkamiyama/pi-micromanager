@@ -76,6 +76,8 @@ function fixture(override={}){
        if(command==="symbolic-ref --quiet --short HEAD")return output("feature/final\n");
        if(command==="remote get-url origin")
          return output("https://github.com/acme/final-project.git\n");
+       if(command==="remote get-url --push --all origin")
+         return output("https://github.com/acme/final-project.git\n");
        if(command==="merge-base --is-ancestor "+SOURCE+" "+FINAL)
          return output("",ancestry?0:1);
        if(command==="ls-remote --heads origin refs/heads/feature/final")
