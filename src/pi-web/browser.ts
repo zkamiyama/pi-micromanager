@@ -105,7 +105,7 @@ function stateFor(context: WorkspacePanelContext): State {
       quickTestFile:"node",quickTestArgs:"--test",
       quickRemote:"origin",quickBase:"main",quickMerge:"ask",quickAdvanced:false,
       quickSetupDraft:JSON.stringify({
-        config:{managedWorktrees:true,workspaces:{},
+        config:{runtime:"durable",managedWorktrees:true,workspaces:{},
           finalization:{workspaceId:"auto",autoMerge:true},
           publication:{remote:"origin",baseBranch:"main",draft:true},
           models:Object.fromEntries(["planner","implementer","qc","architect"]
