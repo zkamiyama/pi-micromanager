@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {createHash} from "node:crypto";
 import {mkdtempSync,mkdirSync,rmSync,writeFileSync,readdirSync,
-  symlinkSync,readFileSync} from "node:fs";
+  symlinkSync,readFileSync,utimesSync,existsSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {WorkflowStore} from "../dist/core/store.js";
@@ -201,5 +201,67 @@ test("Automatic screenshot import never accepts tracked files after QC HEAD chan
    await assert.rejects(x.screenshots.captureTracked(
      "project","orchestra","feature","qc-ui-1"),/exact verified Git HEAD/);
    assert.equal(x.screenshots.list("project","orchestra","feature").length,0);
+ }finally{x.close();}
+});
+
+test("Two-step orphan cleanup removes only aged unreferenced plugin blobs; QC evidence is pinned",async()=>{
+ const x=fixture();
+ try{
+   const pinned=await x.capture();
+   let wf=x.workflows.get("project","orchestra","feature");
+   x.workflows.act("project","orchestra","feature",wf.revision,"integrate",
+     {type:"integrate",taskId:"ui"});
+   const owner=readdirSync(join(x.data,"screenshot-objects"))[0];
+   const folder=join(x.data,"screenshot-objects",owner);
+   const orphanBytes=Buffer.from("unreferenced-private-orphan-not-evidence");
+   const name=createHash("sha256").update(orphanBytes).digest("hex")+".png";
+   const path=join(folder,name);
+   writeFileSync(path,orphanBytes);
+   const old=new Date(Date.now()-72*60*60*1000);
+   utimesSync(path,old,old);
+   const preview=x.screenshots.orphanPreview("project","orchestra","feature");
+   assert.equal(preview.state,"prepared");
+   assert.equal(preview.files,1);
+   assert.equal(preview.bytes,orphanBytes.length);
+   assert.ok(existsSync(path),"Dry-run may not delete anything");
+   const confirmed=x.screenshots.orphanConfirm("project","orchestra",
+     "feature",preview.id);
+   assert.equal(confirmed.state,"completed");
+   assert.equal(confirmed.files,1);
+   assert.equal(existsSync(path),false);
+   assert.equal(x.screenshots.preview("project","orchestra","feature",
+     pinned.id).artifact.id,pinned.id,
+     "Pinned QC bytes and their metadata are never GC candidates");
+   assert.equal(x.screenshots.orphanConfirm("project","orchestra",
+     "feature",preview.id).state,"completed",
+     "A repeated confirmation cannot delete any additional file");
+ }finally{x.close();}
+});
+
+test("Orphan cleanup refuses active workflows and changed private objects",async()=>{
+ const x=fixture();
+ try{
+   assert.throws(()=>x.screenshots.orphanPreview(
+     "project","orchestra","feature"),/finished, inactive Workflow/);
+   const pinned=await x.capture();
+   const wf=x.workflows.get("project","orchestra","feature");
+   x.workflows.act("project","orchestra","feature",wf.revision,"integrate",
+     {type:"integrate",taskId:"ui"});
+   const owner=readdirSync(join(x.data,"screenshot-objects"))[0];
+   const folder=join(x.data,"screenshot-objects",owner);
+   const bytes=Buffer.from("old-untracked-orphan");
+   const name=createHash("sha256").update(bytes).digest("hex")+".jpg";
+   const path=join(folder,name);
+   writeFileSync(path,bytes);
+   const old=new Date(Date.now()-72*60*60*1000);
+   utimesSync(path,old,old);
+   const preview=x.screenshots.orphanPreview("project","orchestra","feature");
+   assert.equal(preview.files,1);
+   writeFileSync(path,Buffer.from("changed-after-preview"));
+   assert.throws(()=>x.screenshots.orphanConfirm(
+     "project","orchestra","feature",preview.id),/do not match/);
+   assert.equal(existsSync(path),true,"Changed bytes cannot be removed");
+   assert.equal(x.screenshots.preview("project","orchestra",
+     "feature",pinned.id).artifact.id,pinned.id);
  }finally{x.close();}
 });
