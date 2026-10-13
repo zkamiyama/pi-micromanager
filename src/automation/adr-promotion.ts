@@ -8,6 +8,7 @@ import {mkdirSync,existsSync,lstatSync,realpathSync,
   readFileSync,writeFileSync} from "node:fs";
 import type {PiWebHostWorkspacesV1} from "@jmfederico/pi-web/server-plugin-api";
 import type {WorkflowStore,} from "../core/store.js";
+import type {WorkflowInstance} from "../core/workflow.js";
 import type {AgentRegistry} from "../runtime/registry.js";
 import type {AutopilotLedger} from "./ledger.js";
 import {automationScope} from "./ledger.js";
@@ -58,6 +59,45 @@ function parseFields(input:unknown):AdrFields{
     decision:valid(f.decision,4000,"decision"),
     consequences:valid(f.consequences,4000,"consequences")};
 }
+/** A completed, human-resolved QC investigation is the only
+ * automatically detectable decision source. Do not hallucinate architecture
+ * decisions from routine Task completions or free-form model prose. */
+export function suggestAdrFromVerifiedIntervention(workflow:WorkflowInstance):AdrFields|null{
+  const a=[...workflow.amendments].reverse().find(x=>
+    x.status==="completed"&&!!x.planRationale&&
+    !!workflow.tasks[x.targetTaskId]?.lastQc);
+  if(!a)return null;
+  const target=workflow.tasks[a.targetTaskId]!;
+  const qc=target.lastQc!;
+  const resolution=workflow.events.slice().reverse().find(e=>
+    e.type==="resume_after_diagnosis"&&e.message.includes(a.id));
+  const slug=(target.spec.id.slice(0,40).replace(/-+$/g,"")||"decision");
+  const fields:AdrFields={
+    filename:"0199-"+slug+"-review.md",
+    title:"Review "+target.spec.title.slice(0,160),
+    context:(
+      "Workflow: "+workflow.definition.title+"; Task: "+target.spec.id+"\n"+
+      "User intervention: "+(a.instruction??"Explicit QC investigation")+"\n"+
+      "Last sealed QC: "+qc.runId+" verdict="+qc.verdict+" SHA="+qc.headSha
+    ).slice(0,4000),
+    options:(
+      "Read-only Sol diagnosis proposal (not an approved decision):\n"+
+      a.planRationale+"\nInvestigators: "+
+      a.agents.map(x=>x.role+" "+x.title).join("; ")
+    ).slice(0,4000),
+    decision:(
+      "Human-authorized workflow transition: "+
+      (resolution?.message??("Intervention "+a.id+" completed"))+
+      ". Review and write the actual architecture decision here before publishing."
+    ).slice(0,4000),
+    consequences:(
+      "QC provenance: "+qc.runId+" at "+qc.headSha+
+      ". This generated candidate must be reviewed for behavior, risks "+
+      "and independently verified implementation effects."
+    ).slice(0,4000),
+  };
+  return parseFields(fields);
+}
 function escaped(value:string):string {
   // Keep operator sections plain Markdown; disable injected top-level
   // frontmatter that would change rendered ADR metadata unexpectedly.
@@ -101,6 +141,12 @@ export class AdrPromotion {
       targetHead:row.targetHead,workflowRevision:row.workflowRevision,
       sourceDigest:row.sourceDigest,sha256:row.sha256,content:row.content,
       expiresAt:row.expiresAt,state:row.state};
+  }
+  /** Suggest an editable, evidence-backed ADR candidate only when a
+   * human-confirmed intervention completed. Never stage/push autonomously. */
+  suggest(p:string,o:string,workflowId:string):AdrFields|null{
+    const proof=this.evidence(p,o,workflowId);
+    return suggestAdrFromVerifiedIntervention(proof.workflow);
   }
   latest(p:string,o:string,workflowId:string):AdrDraft|null{
     const row=this.db.prepare("SELECT "+FIELDS+" FROM adr_drafts WHERE scope=?"+
