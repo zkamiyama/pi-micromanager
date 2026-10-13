@@ -10,8 +10,8 @@ const base = {
 };
 test("F01: malformed permission values are rejected rather than permitting execution",()=>{
   for(const value of [["deny"],["allow"],{},true,1]){
-    assert.throws(()=>parseDefinition({...base,permissions:{default:value}}),/invalid_permissions/);
-    assert.throws(()=>parseDefinition({...base,permissions:{actions:{"git.commit":value}}}),/invalid_permissions/);
+    assert.throws(()=>parseDefinition({...base,permissions:{default:value}}),/Invalid (default permission|permission decision)/);
+    assert.throws(()=>parseDefinition({...base,permissions:{actions:{"git.commit":value}}}),/Invalid (default permission|permission decision)/);
   }
   assert.throws(()=>permissionDecision({default:["deny"]},"git.commit"),/Invalid default permission/);
   assert.throws(()=>permissionDecision({actions:{"git.commit":["deny"]}},"git.commit"),/Invalid permission decision/);
