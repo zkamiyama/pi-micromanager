@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {mkdtempSync,rmSync,mkdirSync,writeFileSync} from "node:fs";
 import {join} from "node:path";
+import {DatabaseSync} from "node:sqlite";
 import {tmpdir} from "node:os";
 import {createModels} from "@earendil-works/pi-ai/models";
 import {fauxProvider,fauxToolCall,fauxAssistantMessage,fauxText}
@@ -61,6 +62,14 @@ test("New workflows default to Durable; explicit native and legacy saved configu
    assert.throws(()=>parseAutopilotConfig({...cfg,runtime:"unknown"}),/Agent runtime/);
    x.ledger.save("p","o","workflow",cfg);
    assert.equal(x.ledger.get("p","o","workflow").config.runtime,"durable");
+   // An older saved row without a runtime must not silently switch a
+   // potentially active native Pi Session after a server upgrade.
+   const legacy=new DatabaseSync(join(x.data,"ledger.sqlite"));
+   legacy.prepare("UPDATE autopilots SET config_json=? WHERE scope=? AND workflow_id=?")
+     .run(JSON.stringify(cfg),JSON.stringify(["p","o"]),"workflow");
+   legacy.close();
+   assert.equal(x.ledger.get("p","o","workflow").config.runtime,"pi-web");
+   assert.equal(x.ledger.list()[0].config.runtime,"pi-web");
  }finally{void x.close();}
 });
 test("Real Pi Durable Harness commits a typed QC tool, emits public events and settles once",async()=>{
