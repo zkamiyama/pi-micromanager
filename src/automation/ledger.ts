@@ -21,6 +21,9 @@ export interface FinalizationConfig {
   autoMerge:boolean;
 }
 export interface AutopilotConfig {
+  /** Opt-in bounded independent diagnostics following QC failures.
+   * It does not auto-resume or grant Git publication permissions. */
+  diagnosticEscalation?:{afterFailures:number;maxPerTask:number};
   /** No final Git integration for legacy configurations unless set explicitly. */
   finalization?:FinalizationConfig;
   /** Explicit permission to create missing linked Worktrees when Autopilot starts. */
@@ -106,6 +109,18 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   const maxAttempts=raw.maxAttempts??5;
   if(!Number.isSafeInteger(maxAttempts)||typeof maxAttempts!=="number"||maxAttempts<1||maxAttempts>10)
     throw new Error("Implementation attempt budget must be 1..10");
+  let diagnosticEscalation:AutopilotConfig["diagnosticEscalation"];
+  if(raw.diagnosticEscalation!==undefined){
+    const d=object(raw.diagnosticEscalation);
+    if(Object.keys(d).some(k=>k!=="afterFailures"&&k!=="maxPerTask"))
+      throw new Error("Unknown diagnostic escalation option");
+    if(typeof d.afterFailures!=="number"||!Number.isSafeInteger(d.afterFailures)||
+      d.afterFailures<1||d.afterFailures>maxAttempts||
+      typeof d.maxPerTask!=="number"||!Number.isSafeInteger(d.maxPerTask)||
+      d.maxPerTask<1||d.maxPerTask>3)
+      throw new Error("Diagnostic escalation requires afterFailures 1..maxAttempts and maxPerTask 1..3");
+    diagnosticEscalation={afterFailures:d.afterFailures,maxPerTask:d.maxPerTask};
+  }
   let publication:PublicationConfig|undefined;
   if(raw.publication!==undefined){
     const p=object(raw.publication);
@@ -124,6 +139,7 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   if(finalization&&!publication)
     throw new Error("Final integration requires a configured GitHub publication destination");
   return {workspaces, ...(managedWorktrees?{managedWorktrees:true as const}:{}),
+    ...(diagnosticEscalation?{diagnosticEscalation}:{}),
     ...(finalization?{finalization}:{}),
     ...(raw.reviewWorkspaces===undefined?{}:{
     reviewWorkspaces:workspaceMap(raw.reviewWorkspaces)}),
