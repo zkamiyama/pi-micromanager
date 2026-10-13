@@ -32,12 +32,12 @@
     "@jmfederico/pi-web": "^1.202610.1",
     "@types/node": "^24.13.3",
     "typescript": "^6.0.3",
-    "@earendil-works/pi-ai": "^1.0.0"
+    "@earendil-works/pi-ai": "^1.2.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^1.0.0",
     "@jmfederico/pi-web": "^1.202610.1",
-    "@earendil-works/pi-ai": "^1.0.0"
+    "@earendil-works/pi-ai": "^1.2.0"
   },
   "piWeb": {
     "plugins": [
@@ -55,5 +55,9 @@
     "extensions": [
       "./dist/runtime/companion.js"
     ]
+  },
+  "dependencies": {
+    "@earendil-works/pi-durable": "1.2.0",
+    "@earendil-works/chord": "1.2.0"
   }
 }

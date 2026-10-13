@@ -19,10 +19,16 @@ save configuration **and explicitly Start Autopilot**.
 - PI WEB compatible with Browser API v4 and Server Plugin API v3,
   whose Git Workspace provider is enabled. Sources for
   `v1.202610.1` were reviewed in [ADR-0014](adr/0014-automatic-worktree-discovery.md).
-- Pi installed with an authenticated **provider/model** usable by the
-  session daemon's own Pi profile. The model used for QC must be able to
-  call the `mm_qc_report` extension tool. Pi extension resources must be
-  loaded for the spawned sessions.
+- **Default: Pi Durable 1.2.0** uses Pi's official `ModelRuntime` and
+  reads the **session daemon OS user's** existing Pi credentials
+  (`~/.pi/agent/auth.json`, including ChatGPT subscription OAuth with
+  automatic refresh) or daemon environment API keys. Test from that
+  same user with `pi auth check --provider openai`. Browser-only ChatGPT
+  login, a different user's Pi profile and host-native PI WEB-only
+  credentials do not grant Durable access automatically. To use the
+  original native Pi Session backend, set `"runtime": "pi-web"`
+  explicitly and enable the Pi companion extension. Both backends
+  require the structured QC report tool.
 - Working `gh auth login` and Git remote push credentials **for the
   session daemon OS user**, not only for a different shell, container or
   browser user. The disposable target repository must allow pull requests,
@@ -53,6 +59,9 @@ cd pi-micromanager
 npm install --no-audit --no-fund
 npm run check
 npm run doctor
+# Optional but recommended: one real model/tool turn with this Pi user's
+# OAuth/API-key credentials, disposable SQLite, no shell/file tools:
+node scripts/durable-auth-smoke.mjs openai gpt-5.5
 pwd
 ```
 
@@ -70,10 +79,10 @@ systemctl --user restart pi-web-sessiond
 ```
 
 Reload the browser after the daemon restarts. A browser reload alone
-does not activate a new server-plugin entry. The package declares both
-a PI WEB browser/server entry and the Pi-native companion in
-`package.json`; make sure the installed Pi profile has the latter
-enabled (not filtered out). Check **Settings → PI WEB plugins** for an
+does not activate a new server-plugin entry. The package declares both a PI WEB browser/server entry and the Pi-native
+companion in `package.json`; the companion is only required for the
+explicit `"runtime": "pi-web"` compatibility mode. Check **Settings →
+PI WEB plugins** for an
 active, non-error state and `pi-web logs` if activation fails.
 
 ## 3. Create a disposable target GitHub repository
@@ -130,8 +139,11 @@ register Task Worktrees manually.
 2. Under **Autopilot → configuration (JSON)** paste
    [`examples/trial.autopilot.json`](../examples/trial.autopilot.json).
    Replace all `REPLACE_WITH_PI_PROVIDER` and `REPLACE_WITH_PI_MODEL`
-   placeholders with **exact provider/model IDs actually authenticated in
-   Pi on the PI WEB machine**. All four roles are required.
+   placeholders with **exact Pi-compatible provider/model IDs** available
+   to the daemon user: for example `openai` / `gpt-5.5` if confirmed by
+   `pi --list-models` and `pi auth check --provider openai`. All four
+   roles are required. The existing Pi OAuth login is reused by Durable.
+   Set `"runtime": "pi-web"` to test the native compatibility backend.
 3. Inspect `publication.remote="origin"`, `baseBranch="main"`,
    `finalization.autoMerge=true`, `managedWorktrees=true`,
    `workspaces={}`, and `test.file="node"` with `args=["--test"]`.

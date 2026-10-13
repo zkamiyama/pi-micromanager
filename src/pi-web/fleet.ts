@@ -524,6 +524,8 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
           <span class="mm-f-node-dot ${b.phase==="running"?"mm-f-running":b.phase==="uncertain"||b.phase==="blocked"?"mm-f-needs-attention":""}"></span>
           <strong>${b.seat.toUpperCase()}</strong>
           <span class="mm-f-node-phase">${b.phase}</span>
+          ${b.sessionId?.startsWith("durable:")?html`
+            <span class="mm-f-durable-label" title="Pi Durable: SQLite-backed native Harness, not a PI WEB chat">Durable</span>`:null}
           <button class="mm-f-density-toggle" type="button" aria-label=${(expanded?"Collapse ":"Expand ")+b.runId}
             title=${expanded?"Compact activity":"Expand activity"}
             @pointerdown=${(e:PointerEvent)=>e.stopPropagation()}
@@ -661,7 +663,9 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       </details>
       ${selected?html`<section class="mm-f-inspector">
         <h3>${selected.taskId} · ${selected.runId}</h3>
-        <small>${selected.phase} · Session ${selected.sessionId??"not yet created"} · ${selected.workspaceId}</small>
+        <small>${selected.phase} ·
+          ${selected.sessionId?.startsWith("durable:")?"Pi Durable Conversation":"PI WEB native Pi Session"}
+          · ${selected.sessionId??"not yet created"} · ${selected.workspaceId}</small>
         <div class="mm-f-activity">${(s.activity.get(selected.sessionId??"")??[]).map(event=>
           html`<p><small>${event.kind}</small> ${event.text}</p>`)}</div>
 
@@ -775,6 +779,8 @@ const css=`
   .mm-f-node-dot.mm-f-running{background:var(--pi-success,var(--pi-accent));}
   .mm-f-node-dot.mm-f-needs-attention{background:var(--pi-warning,var(--pi-accent));}
   .mm-f-node-phase{color:var(--pi-muted);font-size:11px;margin-left:auto;}
+  .mm-f-durable-label{font-size:10px;font-weight:600;color:var(--pi-accent);
+    border:1px solid var(--pi-accent-border);border-radius:5px;padding:1px 4px;}
   .mm-f-drag-handle{color:var(--pi-muted);font-size:14px;}
   .mm-f-node-meta{padding:7px 10px 4px;min-width:0;display:flex;flex-direction:column;gap:3px;}
   .mm-f-node-meta strong{font-size:12px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;}

@@ -128,3 +128,20 @@ test("Durable prepare command is replay safe and does not create duplicate final
     assert.equal(store.list("p","o")[0].definition.tasks.length,3);
   }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test("Read-only final QC receives concrete source contracts, not only uninspectable Git ancestry criteria",()=>{
+ const at=new Date().toISOString();
+ let workflow=applyAction(passed(),{type:"prepare_final_integration"},at);
+ workflow=applyAction(workflow,{type:"start",taskId:"mm-final-integration"},at);
+ workflow=applyAction(workflow,{type:"implementation_finished",
+   taskId:"mm-final-integration",headSha:sha,criteriaRevision:0,testsPassed:true},at);
+ const prompt=buildJobPrompt(workflow,workflow.tasks["mm-final-integration"],"qc");
+ assert.match(prompt,/Source Task api: API implementation/);
+ assert.match(prompt,/Provide API contract/);
+ assert.match(prompt,/Source Task frontend: Frontend/);
+ assert.match(prompt,/Provide UI/);
+ assert.match(prompt,/using the read tool/);
+ assert.match(prompt,/host independently proves the source Git SHA ancestry/i);
+ assert.match(prompt,/Do not mark inconclusive merely because/);
+ assert.match(prompt,/mm_qc_report exactly once/);
+});

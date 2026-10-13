@@ -54,6 +54,35 @@ interface FinalPrState {
   number:number;url:string;headRefOid:string;baseRefName:string;
   isDraft:boolean;state:string;autoMergeRequest:unknown;
 }
+/** A PR-linked Actions run is trustworthy only with an exact head SHA,
+ * repository and PR number. Empty, incomplete, foreign or skipped checks
+ * never authorize a merge. */
+export function evaluatePrActionsRuns(value:unknown,repo:string,pr:number,sha:string):
+  "pass"|"pending"{
+  if(!value||typeof value!=="object"||Array.isArray(value))
+    throw new Error("Malformed GitHub Actions run page");
+  const page=value as Record<string,unknown>;
+  if(!Array.isArray(page.workflow_runs)||!Number.isSafeInteger(page.total_count)||
+    (page.total_count as number)<0||page.workflow_runs.length>100)
+    throw new Error("Malformed GitHub Actions run list");
+  if((page.total_count as number)>page.workflow_runs.length)return "pending";
+  const matched=page.workflow_runs.filter(row=>{
+    if(!row||typeof row!=="object"||Array.isArray(row))
+      throw new Error("Malformed GitHub Actions run");
+    const run=row as Record<string,unknown>;
+    if(!Array.isArray(run.pull_requests))throw new Error("Missing GitHub PR association");
+    return run.head_sha===sha&&run.event==="pull_request"&&
+      (!run.repository||typeof run.repository==="object"&&
+        (run.repository as {full_name?:unknown}).full_name===repo)&&
+      run.pull_requests.some(link=>link&&typeof link==="object"&&
+        (link as {number?:unknown}).number===pr);
+  }) as Record<string,unknown>[];
+  if(!matched.length)return "pending";
+  if(matched.some(run=>run.status==="completed"&&run.conclusion!=="success"))
+    throw new Error("GitHub PR Actions run did not succeed; no merge permitted");
+  if(matched.some(run=>run.status!=="completed"))return "pending";
+  return "pass";
+}
 export class PublicationManager {
   private readonly db:DatabaseSync;
   constructor(private readonly options:PublicationOptions){
@@ -180,16 +209,40 @@ export class PublicationManager {
       throw new Error("Incomplete GitHub PR merge state");
     return row as unknown as FinalPrState;
   }
+  /** Strict fallback for fine-grained gh tokens that may read Actions runs
+   * but lack commit check-rollup GraphQL access. A success is accepted only
+   * for a completed, exact-commit pull_request workflow linked to this PR. */
+  private async prActionsChecks(path:string,repo:string,number:number,sha:string):
+    Promise<"pass"|"pending">{
+    const result=await this.options.host.execFile({
+      file:"gh",args:["api","repos/"+repo+"/actions/runs?head_sha="+sha+
+        "&event=pull_request&per_page=100"],
+      cwd:path,timeoutMs:45000,signal:this.options.host.lifetimeSignal,
+      unsetEnv:["GH_REPO","GH_HOST","GIT_DIR","GIT_WORK_TREE","GIT_INDEX_FILE"],
+    });
+    if(result.exitCode!==0||result.signal||result.stdoutTruncated||result.stderrTruncated)
+      throw new Error("Cannot inspect PR Actions runs; CI state is uncertain");
+    let raw:unknown;
+    try{raw=JSON.parse(result.stdout);}catch{
+      throw new Error("PR Actions runs did not return valid JSON");
+    }
+    return evaluatePrActionsRuns(raw,repo,number,sha);
+  }
   /** Poll exact PR CI without relying on GitHub's optional repository
    * "Allow auto-merge" setting. Refuse empty, failing or unknown checks.
    * The PR head is verified again immediately before merge. */
-  private async prChecks(path:string,repo:string,number:number):Promise<"pass"|"pending">{
+  private async prChecks(path:string,repo:string,number:number,sha:string):Promise<"pass"|"pending">{
     const result=await this.options.host.execFile({
       file:"gh",args:["pr","checks",String(number),"--repo",repo,
         "--json","name,bucket"],
       cwd:path,timeoutMs:45000,signal:this.options.host.lifetimeSignal,
       unsetEnv:["GH_REPO","GH_HOST","GIT_DIR","GIT_WORK_TREE","GIT_INDEX_FILE"],
     });
+    // GitHub fine-grained tokens can have Actions read but no GraphQL
+    // statusCheckRollup scope. Never infer success from this denial.
+    if(result.exitCode!==0&&
+      /Resource not accessible by personal access token/i.test(result.stderr))
+      return this.prActionsChecks(path,repo,number,sha);
     if(result.signal||result.stdoutTruncated||result.stderrTruncated||
       ![0,1,8].includes(result.exitCode??-1))
       throw new Error("Cannot verify GitHub PR checks; CI state is uncertain");
@@ -293,7 +346,7 @@ export class PublicationManager {
     }
     if(merge)
       throw new Error("Merge response is uncertain: PR is still OPEN without a scheduled request");
-    if(await this.prChecks(path,repo,number)!=="pass")
+    if(await this.prChecks(path,repo,number,sha)!=="pass")
       return "checks_pending";
     // A genuine passing GitHub CI run is mandatory, even if the repository
     // has no required checks or Allow auto-merge is disabled.

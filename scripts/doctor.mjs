@@ -61,6 +61,6 @@ if(args.length===2){
     report(author.ok,"Git author identity configured");
   }
 }
-console.log(failed===0?"Preflight prerequisites passed. Authenticate Pi in PI WEB and confirm the model IDs before Start.":
+console.log(failed===0?"Preflight passed. Default Pi Durable reuses the daemon user's Pi OAuth/API-key profile (run pi auth check --provider openai as that user). Confirm exact model IDs before Start; PI WEB native Sessions remain available with runtime: pi-web.":
   "Preflight failed. Correct the required items before trying autonomous publication.");
 process.exit(failed===0?0:1);

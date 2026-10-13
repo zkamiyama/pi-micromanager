@@ -16,6 +16,8 @@ import { AutopilotLedger, parseAutopilotConfig } from "../automation/ledger.js";
 import { QuickLaunchLedger, type QuickGoal } from "../automation/quick-launch.js";
 import { AutopilotEngine } from "../automation/engine.js";
 import { createHostExecutor } from "../automation/host-port.js";
+import { DurableRunHost,isDurableSession,type DurableKind } from "../runtime/durable-runner.js";
+import type { AgentRuntime } from "../automation/ledger.js";
 import { IntegrationVerifier } from "../automation/integration.js";
 import { ManagedWorktreeProvisioner } from "../automation/worktree-provisioner.js";
 import { resolveManagedGitWorkspace } from "../automation/workspace-discovery.js";
@@ -59,6 +61,9 @@ function plannedRunId(task:TaskState,seat:Seat):string {
 type Fanout={scope:string;send:(payload:JsonValue)=>void};
 const plugin:PiWebServerPlugin={
  apiVersion:3,name:"pi-micromanager",
+ // PI WEB only resolves capabilities declared here. Keep native session
+ // requirements even though newly configured Autopilot Runs default to Durable,
+ // otherwise the explicit pi-web compatibility backend would be unreachable.
  requires:[PI_WEB_HOST_PI_SESSIONS_CAPABILITY,PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY,PI_WEB_HOST_WORKSPACES_CAPABILITY],
  activate(host){
   const store=new WorkflowStore(join(host.dataDirectory,"workflows.sqlite"));
@@ -110,6 +115,35 @@ const plugin:PiWebServerPlugin={
   let automationReady=false;
   const recoveryFlights=new Map<string,Promise<void>>();
   const quickFlights=new Map<string,Promise<void>>();
+  const durable=new DurableRunHost({
+    dataDirectory:host.dataDirectory,agents,ledger,
+    activity:emit,changed:notifyRun,
+    report:(binding,report)=>{
+      ledger.recordReport(binding,report);
+      scheduleAutopilot(binding.projectId,binding.orchestraWorkspaceId,binding.workflowId);
+    },
+    wake:binding=>scheduleAutopilot(binding.projectId,binding.orchestraWorkspaceId,
+      binding.workflowId),
+  });
+  function durableKind(binding:AgentBinding):DurableKind{
+    if(binding.runId.startsWith("goal-"))return "workflow_plan";
+    if(binding.runId.startsWith("plan-"))return "planning";
+    const wf=store.get(binding.projectId,binding.orchestraWorkspaceId,binding.workflowId);
+    const task=wf.tasks[binding.taskId];
+    if(!task)throw new Error("Durable Run Task no longer belongs to its Workflow");
+    return binding.seat==="qc"&&task.spec.kind==="implementation"?"qc":
+      task.spec.kind==="implementation"?"implementation":task.spec.kind;
+  }
+  async function durablePath(binding:AgentBinding):Promise<string>{
+    if(!workspaces)throw new Error("PI WEB workspace authority unavailable");
+    const authority=await workspaces.resolve({
+      projectId:binding.projectId,workspaceId:binding.workspaceId});
+    if(authority.project.id!==binding.projectId||
+      authority.workspace.id!==binding.workspaceId||
+      authority.workspace.projectId!==binding.projectId)
+      throw new Error("Durable workspace authority changed");
+    return authority.workspace.path;
+  }
   function scheduleAutopilot(projectId:string,workspaceId:string,workflowId:string):void {
     if(host.lifetimeSignal.aborted||!automationReady)return;
     const cfg=ledger.get(projectId,workspaceId,workflowId);
@@ -120,6 +154,14 @@ const plugin:PiWebServerPlugin={
   const orchestraKey=(project:string,orchestraWorkspaceId:string)=>JSON.stringify([project,orchestraWorkspaceId]);
   const bridgeKey=(binding:AgentBinding)=>JSON.stringify([binding.projectId,binding.orchestraWorkspaceId,binding.sessionId]);
   function notifyRun(binding:AgentBinding):void {
+    // Engine, one-command and explicit operator sealing all converge here.
+    // Release the live Durable watcher/SQLite handle once evidence is sealed;
+    // the transcript and host evidence remain on disk for read-only history.
+    if(binding.phase==="sealed"&&isDurableSession(binding.sessionId)){
+      void durable.stopRun(binding).catch(error=>
+        host.logger.error("Sealed Pi Durable Run could not be released",
+          {runId:binding.runId,message:String(error).slice(0,400)}));
+    }
     const scope=orchestraKey(binding.projectId,binding.orchestraWorkspaceId);
     for(const viewer of viewers){
       if(viewer.scope!==scope)continue;
@@ -175,8 +217,14 @@ const plugin:PiWebServerPlugin={
    */
   async function replaySettledReport(binding:AgentBinding):Promise<void>{
     if(binding.phase!=="settled"||!binding.sessionId||
-      !binding.requestId.startsWith("auto:")||!sessionEvents)
+      !binding.requestId.startsWith("auto:"))
       throw new Error("Only a settled automated Pi Run can replay its report");
+    if(isDurableSession(binding.sessionId)){
+      if(!ledger.report(binding))
+        throw new Error("Durable tool result is missing a committed host report; stop safely");
+      return;
+    }
+    if(!sessionEvents)throw new Error("PI WEB session-events capability missing");
     const conn=await sessionEvents.connect({
       projectId:binding.projectId,workspaceId:binding.workspaceId,
       sessionId:binding.sessionId,
@@ -248,6 +296,19 @@ const plugin:PiWebServerPlugin={
         if(host.lifetimeSignal.aborted)throw new Error("Plugin is shutting down");
         if(binding.phase!=="running"||!binding.sessionId)
           throw new Error("Run "+binding.runId+" requires manual reconciliation ("+binding.phase+")");
+        if(isDurableSession(binding.sessionId)){
+          const outcome=await durable.reconnect(binding,await durablePath(binding),
+            durableKind(binding));
+          if(outcome==="uncertain")
+            throw new Error("Durable Run needs manual reconciliation");
+          if(outcome==="settled"){
+            const current=agents.get(binding.projectId,binding.orchestraWorkspaceId,
+              binding.sessionId);
+            if(current.phase==="running")emit(current,{kind:"agent_settled",
+              sequence:1,at:Date.now(),text:"Agent settled"});
+          }
+          continue;
+        }
         const bridge=await connect(binding);
         const response=await bridge.send({type:"inspect",requestId:randomUUID()},7000);
         const outcome=classifyRecoveredRun(binding.runId,response);
@@ -280,7 +341,8 @@ const plugin:PiWebServerPlugin={
   }
   autopilot=new AutopilotEngine(store,agents,ledger,{
     ...createHostExecutor({
-      host,workflows:store,agents,
+      host,workflows:store,agents,durable,
+      getRuntime:(p,o,w)=>ledger.get(p,o,w)?.config.runtime??"pi-web",
       getSessions:()=>sessions,getWorkspaces:()=>workspaces,probe,
       validateRun:plannedRunId,notify:notifyRun,
       replaySettledReport,
@@ -297,8 +359,8 @@ const plugin:PiWebServerPlugin={
   });
   async function launchGoalProposal(p:string,o:string,goal:string,
     provider:string,model:string,effort:string|undefined,
-    token:string,oneCommand:boolean){
-            if(!sessions||!workspaces)throw new Error("Pi Session/Workspace provider unavailable");
+    token:string,oneCommand:boolean,runtime:AgentRuntime="durable"){
+            if(!workspaces)throw new Error("PI WEB Workspace provider unavailable");
             const available=agents.list(p,o,"active").filter(b=>b.taskId==="goal"&&
               b.requestId.startsWith("auto:goal:"));
             if(available.length>=3)throw new Error("Resolve or accept previous goal proposals first");
@@ -306,10 +368,33 @@ const plugin:PiWebServerPlugin={
             if(authorized.project.id!==p||authorized.workspace.id!==o)
               throw new Error("Current PI WEB Workspace authority changed");
             const draftWorkflowId="draft-"+token,runId="goal-"+token;
+            const prompt="You are Sol, an independent READ-ONLY workflow planner. User goal:\n"+
+              goal+"\nPropose a precise, acyclic Task DAG with 1..16 implementation Tasks. "+
+              "Each Task MUST contain bounded detailed requirements and independently testable "+
+              "acceptance criteria. Prefer qc_passed dependency gates; use integrated only "+
+              "where explicit upstream Git integration is required. "+
+              "Use lowercase kebab-case Task/workflow IDs. "+
+              "Call mm_workflow_proposal exactly once. Do not edit source files, "+
+              "create Pi Sessions, execute shell commands, or start implementation. "+
+              (oneCommand?
+                "The human has explicitly preauthorized automatic execution under a saved "+
+                "project profile and fixed permission policy. Do not include permission "+
+                "overrides or skip validation; the host will verify and start the DAG.":
+                "A human will review the proposal and separately configure Worktrees/models.");
             const reservation:Reservation={
               projectId:p,orchestraWorkspaceId:o,workspaceId:o,workflowId:draftWorkflowId,
               taskId:"goal",runId,seat:"planner",requestId:"auto:goal:"+token,
             };
+            if(runtime==="durable"){
+              const binding=await durable.launch({reservation,
+                kind:"workflow_plan",cwd:authorized.workspace.path,
+                model:{provider,model,...(effort?{effort}:{})},prompt});
+              return {draftWorkflowId,runId,sessionId:binding.sessionId,
+                status:oneCommand?
+                  "Durable Sol is planning; validated tasks will start automatically":
+                  "Durable Sol is preparing a human-reviewed DAG proposal"};
+            }
+            if(!sessions)throw new Error("PI WEB native Pi Sessions capability missing");
             notifyRun(agents.reserve(reservation));
             // Exactly-once native Session creation is protected by the
             // durable reservation; uncertain outcomes are not retried.
@@ -333,19 +418,6 @@ const plugin:PiWebServerPlugin={
             }
             binding=agents.update(binding,"configured",{provider,model,...(effort?{effort}:{})});
             notifyRun(binding);
-            const prompt="You are Sol, an independent READ-ONLY workflow planner. User goal:\n"+
-              goal+"\nPropose a precise, acyclic Task DAG with 1..16 implementation Tasks. "+
-              "Each Task MUST contain bounded detailed requirements and independently testable "+
-              "acceptance criteria. Prefer qc_passed dependency gates; use integrated only "+
-              "where explicit upstream Git integration is required. "+
-              "Use lowercase kebab-case Task/workflow IDs. "+
-              "Call mm_workflow_proposal exactly once. Do not edit source files, "+
-              "create Pi Sessions, execute shell commands, or start implementation. "+
-              (oneCommand?
-                "The human has explicitly preauthorized automatic execution under a saved "+
-                "project profile and fixed permission policy. Do not include permission "+
-                "overrides or skip validation; the host will verify and start the DAG.":
-                "A human will review the proposal and separately configure Worktrees/models.");
             const started=await checked.bridge.send({type:"message",requestId:randomUUID(),
               text:prompt,delivery:"newTurn"},10000);
             const current=agents.get(p,o,created.sessionId);
@@ -384,7 +456,8 @@ const plugin:PiWebServerPlugin={
             if(ready.config.managedWorktrees){
               const workspacesByTask={...ready.config.workspaces};
               const missing=Object.values(workflow.tasks).filter(t=>
-                t.spec.kind==="implementation"&&!workspacesByTask[t.spec.id]);
+                t.spec.kind==="implementation"&&
+                t.spec.systemPurpose!=="final-integration"&&!workspacesByTask[t.spec.id]);
               const needsFinal=ready.config.finalization?.workspaceId==="auto";
               if(missing.length||needsFinal){
                 for(const task of missing){
@@ -407,7 +480,8 @@ const plugin:PiWebServerPlugin={
               }
             }
             const owners=new Set<string>();
-            for(const task of Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation")){
+            for(const task of Object.values(workflow.tasks).filter(t=>
+              t.spec.kind==="implementation"&&t.spec.systemPurpose!=="final-integration")){
               const workerId=ready.config.workspaces[task.spec.id];
               if(!workerId)throw new Error("Task "+task.spec.id+" needs a linked Worktree");
               const resolved=await workspaces.resolve({projectId:p,workspaceId:workerId});
@@ -470,7 +544,8 @@ const plugin:PiWebServerPlugin={
         throw new Error("Missing reserved Sol Session; refusing a duplicate");
       const profile=current.profile.config.models.planner;
       await launchGoalProposal(p,o,current.goal,profile.provider,profile.model,
-        profile.effort,current.draftWorkflowId.slice(6),true);
+        profile.effort,current.draftWorkflowId.slice(6),true,
+        current.profile.config.runtime);
       quick.phase(p,o,current.requestId,"planning",
         "Sol is building a validated Task DAG. No modifying Pi run has started.");
       return;
@@ -480,6 +555,10 @@ const plugin:PiWebServerPlugin={
     if(run.phase==="running"){
       if(current.phase==="reserved")
         quick.phase(p,o,current.requestId,"planning","Sol is planning in its original Pi Session.");
+      if(run.sessionId&&isDurableSession(run.sessionId)){
+        await durable.reconnect(run,await durablePath(run),"workflow_plan");
+        return;
+      }
       if(run.sessionId&&!live.get(bridgeKey(run))?.connected){
         const connected=await connect(run);
         const receipt=await connected.send({type:"inspect",requestId:randomUUID()},7000);
@@ -649,7 +728,11 @@ const plugin:PiWebServerPlugin={
             const provider=nonempty(input.provider,120),model=nonempty(input.model,160);
             const effort=input.effort===undefined?undefined:nonempty(input.effort,32);
             const token=randomUUID().replace(/-/g,"").slice(0,16);
-            return j(await launchGoalProposal(p,o,goal,provider,model,effort,token,false));
+            const runtime=input.runtime===undefined?"durable":input.runtime;
+            if(runtime!=="durable"&&runtime!=="pi-web")
+              throw new Error("Invalid goal runtime");
+            return j(await launchGoalProposal(p,o,goal,provider,model,effort,
+              token,false,runtime));
           }
           case "auto.proposal":{
             const input=object(ctx.input),draftWorkflowId=id(input.draftWorkflowId);
@@ -660,16 +743,30 @@ const plugin:PiWebServerPlugin={
             let notice="";
             if(binding.phase==="running"&&binding.sessionId){
               try{
-                const bridge=await connect(binding);
-                const receipt=await bridge.send({type:"inspect",requestId:randomUUID()},7000);
-                const outcome=classifyRecoveredRun(runId,receipt);
-                if(outcome==="settled"||outcome==="aborted"){
-                  agents.record(binding,{kind:"agent_settled",sequence:1,at:Date.now(),
-                    text:outcome==="aborted"?"Agent interrupted":"Agent settled"});
-                  binding=agents.get(p,o,binding.sessionId);
-                  notifyRun(binding);
-                }else if(outcome==="uncertain")
-                  notice="Planner Session state could not be proved; no automatic replay";
+                if(isDurableSession(binding.sessionId)){
+                  // Goal proposals are Durable Conversations by default, not
+                  // host-native Pi Sessions. Reconnect to their own SQLite
+                  // Harness; never pass a durable:<hash> to session-events.
+                  const outcome=await durable.reconnect(binding,
+                    await durablePath(binding),"workflow_plan");
+                  if(outcome==="settled"){
+                    agents.record(binding,{kind:"agent_settled",sequence:1,
+                      at:Date.now(),text:"Agent settled"});
+                    binding=agents.get(p,o,binding.sessionId);
+                    notifyRun(binding);
+                  }
+                }else{
+                  const bridge=await connect(binding);
+                  const receipt=await bridge.send({type:"inspect",requestId:randomUUID()},7000);
+                  const outcome=classifyRecoveredRun(runId,receipt);
+                  if(outcome==="settled"||outcome==="aborted"){
+                    agents.record(binding,{kind:"agent_settled",sequence:1,at:Date.now(),
+                      text:outcome==="aborted"?"Agent interrupted":"Agent settled"});
+                    binding=agents.get(p,o,binding.sessionId);
+                    notifyRun(binding);
+                  }else if(outcome==="uncertain")
+                    notice="Planner Session state could not be proved; no automatic replay";
+                }
               }catch(error){notice="Proposal inspection unavailable: "+String(error).slice(0,250);}
             }
             if(binding.phase==="settled"&&!ledger.report(binding)){
@@ -819,7 +916,8 @@ const plugin:PiWebServerPlugin={
             const active=agents.list(p,o,"active").some(b=>b.workflowId===workflowId&&
               b.requestId.startsWith("auto:"));
             if(active)throw new Error("Cannot reconfigure while an automated Pi Run is unsealed");
-            const missing=Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation"&&
+            const missing=Object.values(workflow.tasks).filter(t=>
+              t.spec.kind==="implementation"&&t.spec.systemPurpose!=="final-integration"&&
               !config.workspaces[t.spec.id]).map(t=>t.spec.id);
             if(missing.length&&!config.managedWorktrees)
               throw new WorkflowError("missing_worktrees",
@@ -840,7 +938,9 @@ const plugin:PiWebServerPlugin={
             const input=ctx.input===null?{}:object(ctx.input);
             const view=input.view==="history"?"history":input.view==="all"?"all":"active";
             return j(agents.list(p,o,view).map(b=>({
-              ...b,connected:Boolean(b.sessionId&&live.get(bridgeKey(b))?.connected),
+              ...b,connected:Boolean(b.sessionId&&
+                 (isDurableSession(b.sessionId)?durable.connected(b.sessionId):
+                   live.get(bridgeKey(b))?.connected)),
             })));
           }
           case "agents.history":{
@@ -907,6 +1007,11 @@ const plugin:PiWebServerPlugin={
           case "agents.reconnect":{
             const input=object(ctx.input);
             const binding=registered(ctx,id(input.sessionId));
+            if(isDurableSession(binding.sessionId)){
+              const status=await durable.reconnect(binding,await durablePath(binding),
+                durableKind(binding));
+              return j({...binding,probeStatus:status,runtime:"durable"});
+            }
             const checked=await probe(binding);
             const current=agents.get(p,o,binding.sessionId!);
             notifyRun(current);
@@ -936,9 +1041,17 @@ const plugin:PiWebServerPlugin={
             if(binding.phase==="settled"||binding.phase==="sealed"||binding.phase==="failed"||
               binding.phase==="uncertain"||binding.phase==="blocked")
               throw new Error("This run has ended or needs reconciliation. Do not retry uncertain sends.");
+            const action=input.action;
+            if(isDurableSession(binding.sessionId)){
+              if(action!=="abort"&&action!=="steer"&&action!=="followUp")
+                throw new Error("Durable Run accepts steer, followUp, or abort only");
+              const receipt=await durable.command(binding,await durablePath(binding),
+                durableKind(binding),action,id(input.requestId),
+                action==="abort"?undefined:nonempty(input.text,16000));
+              return j(receipt);
+            }
             const bridge=live.get(bridgeKey(binding));
             if(!bridge?.connected)throw new Error("Reconnect before sending a command");
-            const action=input.action;
             if(binding.requestId.startsWith("auto:")&&action==="newTurn")
               throw new Error("Only Autopilot may admit the initial turn of its bound Pi Session");
             let cmd:RuntimeControl;
@@ -998,6 +1111,7 @@ const plugin:PiWebServerPlugin={
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       await quickDrain;
+      await durable.close();
       for(const bridge of live.values())bridge.stop();
       live.clear();viewers.clear();convergence.close();publisher.close();permissions.close();adr.close();screenshots.close();retention.close();provisioner.close();integration.close();quick.close();ledger.close();agents.close();store.close();
     },

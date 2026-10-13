@@ -20,7 +20,11 @@ export interface FinalizationConfig {
   /** End-to-end YOLO: promote Draft PR to ready and use GitHub auto-merge. */
   autoMerge:boolean;
 }
+export type AgentRuntime="durable"|"pi-web";
 export interface AutopilotConfig {
+  /** Newly admitted Workflows use Pi Durable unless native Pi is selected.
+   * Legacy persisted records are migrated as pi-web, not silently switched. */
+  runtime:AgentRuntime;
   /** No final Git integration for legacy configurations unless set explicitly. */
   finalization?:FinalizationConfig;
   /** Explicit permission to create missing linked Worktrees when Autopilot starts. */
@@ -66,6 +70,9 @@ function workspaceMap(value:unknown):Record<string,string>{
 }
 export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   const raw=object(value),profiles=object(raw.models);
+  const runtime=raw.runtime===undefined?"durable":raw.runtime;
+  if(runtime!=="durable"&&runtime!=="pi-web")
+    throw new Error("Agent runtime must be durable or pi-web");
   const models=Object.create(null) as Record<Seat,ModelProfile>;
   for(const seat of seats){
     const p=object(profiles[seat]);
@@ -123,7 +130,7 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   }
   if(finalization&&!publication)
     throw new Error("Final integration requires a configured GitHub publication destination");
-  return {workspaces, ...(managedWorktrees?{managedWorktrees:true as const}:{}),
+  return {runtime,workspaces, ...(managedWorktrees?{managedWorktrees:true as const}:{}),
     ...(finalization?{finalization}:{}),
     ...(raw.reviewWorkspaces===undefined?{}:{
     reviewWorkspaces:workspaceMap(raw.reviewWorkspaces)}),
@@ -155,6 +162,13 @@ export class AutopilotLedger {
     `);
   }
   close():void{this.db.close();}
+  /** Pre-Durable configurations remain on native PI WEB Sessions,
+   * including currently running Workflows after a daemon upgrade. */
+  private persisted(raw:unknown):AutopilotConfig{
+    const value=object(raw);
+    return parseAutopilotConfig(value.runtime===undefined?
+      {...value,runtime:"pi-web"}:value);
+  }
   save(projectId:string,workspaceId:string,workflowId:string,input:unknown):AutopilotRecord {
     const config=parseAutopilotConfig(input),scope=automationScope(projectId,workspaceId);
     str(workflowId,128);
@@ -173,7 +187,7 @@ export class AutopilotLedger {
       {config_json:string;enabled:number;status:string;updated_at:string}|undefined;
     return row?{projectId,orchestraWorkspaceId:workspaceId,workflowId,
       enabled:row.enabled===1,status:row.status,updatedAt:row.updated_at,
-      config:parseAutopilotConfig(JSON.parse(row.config_json))}:undefined;
+      config:this.persisted(JSON.parse(row.config_json))}:undefined;
   }
   list():AutopilotRecord[]{
     const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at
@@ -182,7 +196,7 @@ export class AutopilotLedger {
     return rows.map(row=>{
       const [projectId,orchestraWorkspaceId]=JSON.parse(row.scope) as [string,string];
       return {projectId,orchestraWorkspaceId,workflowId:row.workflow_id,
-        config:parseAutopilotConfig(JSON.parse(row.config_json)),
+        config:this.persisted(JSON.parse(row.config_json)),
         enabled:row.enabled===1,status:row.status,updatedAt:row.updated_at};
     });
   }

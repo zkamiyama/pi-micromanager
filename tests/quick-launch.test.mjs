@@ -4,6 +4,7 @@ import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join,resolve} from "node:path";
 import {readFileSync} from "node:fs";
+import {DatabaseSync} from "node:sqlite";
 import {QuickLaunchLedger,parseQuickProfile} from "../dist/automation/quick-launch.js";
 
 const id1="c66c2bb2-91ba-43bf-9e58-047197b147aa";
@@ -82,4 +83,28 @@ test("Copyable one-command trial setup uses safe reviewed defaults",()=>{
  assert.equal(parsed.config.finalization.autoMerge,true);
  assert.equal(parsed.permissions.actions["github.pr.merge"],"ask");
  assert.equal(parsed.permissions.actions["deploy.production"],"deny");
+});
+
+test("Previously saved one-command profiles and pending requests stay native after Durable becomes the default",()=>{
+ const dir=mkdtempSync(join(tmpdir(),"mm-quick-legacy-")),file=join(dir,"quick.sqlite");
+ let ledger=new QuickLaunchLedger(file);
+ try{
+   assert.equal(parseQuickProfile(profile).config.runtime,"durable",
+     "New profiles default to Durable");
+   ledger.saveProfile("p","o",profile);
+   ledger.begin("p","o","Existing goal",id1);
+   ledger.close();
+   // Model a profile and queued request from before the runtime field existed.
+   const db=new DatabaseSync(file);
+   const legacy=JSON.stringify(profile),scope=JSON.stringify(["p","o"]);
+   db.prepare("UPDATE quick_profiles SET profile_json=? WHERE scope=?")
+     .run(legacy,scope);
+   db.prepare("UPDATE quick_goals SET profile_json=? WHERE scope=? AND request_id=?")
+     .run(legacy,scope,id1);
+   db.close();
+   ledger=new QuickLaunchLedger(file);
+   assert.equal(ledger.profile("p","o").config.runtime,"pi-web");
+   assert.equal(ledger.find("p","o",id1).profile.config.runtime,"pi-web");
+   assert.equal(ledger.pending()[0].profile.config.runtime,"pi-web");
+ }finally{ledger.close();rmSync(dir,{recursive:true,force:true});}
 });

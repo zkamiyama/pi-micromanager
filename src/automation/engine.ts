@@ -92,11 +92,31 @@ export function buildJobPrompt(workflow:WorkflowInstance,task:TaskState,kind:Job
     "The Orchestrator separately verifies Git HEAD, clean state and configured tests before QC. "+
     "Never merge, rewrite protected branches or delete worktrees. "+
     "Finish your turn only after you have committed and described your work.");
-  if(kind==="qc")return boundedPrompt(common+
-    "This is a READ-ONLY QC session for Git SHA "+(task.pendingWork?.headSha??"UNKNOWN")+
-    ". Review the Task implementation and its acceptance criteria. Do not edit any file. "+
-    "Call mm_qc_report exactly once with pass, fail or inconclusive and a concise factual explanation. "+
-    "The Orchestrator independently rechecks Git SHA and tests; prose alone cannot approve anything.");
+  if(kind==="qc"){
+    const final=task.spec.systemPurpose==="final-integration";
+    // Final QC must see the original source contracts, not just system-level
+    // Git ancestry gates it cannot independently prove with its read-only tool.
+    // The host proves exact ancestry, cleanliness and tests separately.
+    const sources=final?Object.values(workflow.tasks)
+      .filter(t=>t.spec.kind==="implementation"&&
+        t.spec.systemPurpose!=="final-integration")
+      .map(t=>"Source Task "+t.spec.id+": "+t.spec.title+
+        "\nRequirements: "+(t.spec.description??"")+
+        "\nAcceptance: "+(t.spec.acceptanceCriteria??[]).join("; ")+
+        "\nSealed QC SHA: "+(t.lastQc?.headSha??"UNVERIFIED")).join("\n").slice(0,5000):"";
+    return boundedPrompt(common+
+      "This is a READ-ONLY QC session for Git SHA "+(task.pendingWork?.headSha??"UNKNOWN")+
+      ". Inspect actual source and tests in the selected checkout using the read tool "+
+      "before deciding; do not infer that files are absent without attempting a read. "+
+      (final?"Review the combined implementation against these original source contracts:\n"+
+        sources+"\nThe host independently proves the source Git SHA ancestry, clean HEAD "+
+        "and configured test execution. Do not mark inconclusive merely because your "+
+        "read-only role cannot execute Git or run host tests. Judge code behavior and "+
+        "acceptance criteria from inspected files. ":"")+
+      "Do not edit any file or execute shell commands. "+
+      "Call mm_qc_report exactly once with pass, fail or inconclusive and a concise factual explanation. "+
+      "The Orchestrator independently rechecks Git SHA and tests; prose alone cannot approve anything.");
+  }
   const reports=reportSnippets.length?"\nPrior independent reports:\n"+reportSnippets.join("\n").slice(0,7000):"";
   return boundedPrompt(common+
     (kind==="diagnosis"?"Independently investigate the failure and propose a read-only remedy.":

@@ -19,7 +19,7 @@ const definition = {
 };
 const profile = {provider:"local-provider",model:"exact-model"};
 const config = {
-  workspaces:{api:"worktree-api"},
+  runtime:"pi-web",workspaces:{api:"worktree-api"},
   models:{implementer:profile,qc:profile,architect:profile,planner:profile},
   test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
 };
@@ -227,8 +227,13 @@ function fakePluginHost(shared,options={}) {
   });
   function result(stdout){return {exitCode:0,signal:null,stdout,stderr:"",
     stdoutTruncated:false,stderrTruncated:false};}
+  const declared=new Set(serverPlugin.requires.map(capability=>
+    JSON.stringify([capability.pluginId,capability.id,capability.version])));
   const capabilities={
     resolve(capability){
+      if(!declared.has(JSON.stringify([capability.pluginId,
+        capability.id,capability.version])))
+        throw new Error("PI WEB v3 requires declaring a capability before resolve");
       if(capability.id==="pi-sessions")
         return {version:1,create:async()=>({sessionId:createSession().id})};
       if(capability.id==="pi-session-events")
@@ -320,6 +325,7 @@ test("Read-only Sol goal report does not create or execute a DAG before explicit
     await host.activate();
     const goal=await host.request("auto.propose",{
       goal:"Build a health endpoint with tests",provider:"local-provider",model:"exact-model",
+      runtime:"pi-web",
     });
     const session=host.sessions.get(goal.sessionId);
     assert.equal(session.commands.find(c=>c.type==="configure").job.kind,"workflow_plan");
@@ -967,5 +973,51 @@ test("One-command refuses a competing Workflow already running in the same Works
      requestId:quickRequestId,goal:"Risky competing DAG",
    }),/Another Autopilot is running/);
    assert.equal((await host.request("auto.quick.status",null)).goals.length,0);
+ }finally{await host.cleanup();}
+});
+
+test("PI WEB's strict declared-capability resolver keeps native compatibility available",async()=>{
+ // PI WEB v3 only resolves capabilities explicitly listed in requires.
+ // The Durable default must not remove either native compatibility token.
+ const ids=new Set(serverPlugin.requires.map(capability=>capability.id));
+ assert.ok(ids.has("pi-sessions"));
+ assert.ok(ids.has("pi-session-events"));
+ assert.ok(ids.has("workspaces"));
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   assert.deepEqual(await host.request("list",null),[]);
+   const runs=await host.request("agents.list",{view:"all"});
+   assert.deepEqual(runs,[]);
+ }finally{await host.cleanup();}
+});
+
+test("Restarting a QC-passed finalization Workflow does not demand a second per-Task final Worktree",async()=>{
+ const host=fakePluginHost();
+ try{
+   await host.activate();
+   let workflow=await host.request("create",definition);
+   const action=async(type,commandId)=>{
+     workflow=await host.request("act",{
+       workflowId:"wf",expectedRevision:workflow.revision,commandId,
+       action:type,
+     });
+   };
+   await action({type:"start",taskId:"api"},"test-restart-start");
+   await action({type:"implementation_finished",taskId:"api",
+     headSha:SHA,criteriaRevision:0,testsPassed:true},"test-restart-impl");
+   await action({type:"qc_finalized",taskId:"api",
+     runId:"qc-api-1",verdict:"pass",headSha:SHA,
+     criteriaRevision:0,attempt:1},"test-restart-qc");
+   await action({type:"prepare_final_integration"},"test-restart-final");
+   assert.equal(workflow.tasks["mm-final-integration"].status,"ready");
+   const finalConfig={...config,finalization:{workspaceId:"worktree-final",autoMerge:true},
+     publication:{remote:"origin",baseBranch:"main",draft:true}};
+   await host.request("auto.configure",{workflowId:"wf",config:finalConfig});
+   const started=await host.request("auto.start",{workflowId:"wf"});
+   assert.equal(started.enabled,true);
+   assert.equal(started.config.finalization.workspaceId,"worktree-final");
+   assert.equal(started.config.workspaces["mm-final-integration"],undefined,
+     "The system finalizer never needs its own per-Task workspace mapping");
  }finally{await host.cleanup();}
 });

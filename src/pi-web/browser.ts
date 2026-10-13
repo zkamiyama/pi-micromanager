@@ -30,6 +30,7 @@ interface State {
   quickSimpleProvider:string;quickSimpleModel:string;
   quickTestFile:string;quickTestArgs:string;
   quickRemote:string;quickBase:string;quickMerge:"allow"|"ask"|"deny";
+  quickRuntime:"durable"|"pi-web";
   quickAdvanced:boolean;
   workflows: WorkflowInstance[];
   journal?:WorkflowJournal;
@@ -103,9 +104,10 @@ function stateFor(context: WorkspacePanelContext): State {
       quickPolling:false,quickError:"",
       quickSimpleProvider:"",quickSimpleModel:"",
       quickTestFile:"node",quickTestArgs:"--test",
-      quickRemote:"origin",quickBase:"main",quickMerge:"ask",quickAdvanced:false,
+      quickRemote:"origin",quickBase:"main",quickMerge:"ask",
+      quickRuntime:"durable",quickAdvanced:false,
       quickSetupDraft:JSON.stringify({
-        config:{managedWorktrees:true,workspaces:{},
+        config:{runtime:"durable",managedWorktrees:true,workspaces:{},
           finalization:{workspaceId:"auto",autoMerge:true},
           publication:{remote:"origin",baseBranch:"main",draft:true},
           models:Object.fromEntries(["planner","implementer","qc","architect"]
@@ -122,7 +124,7 @@ function stateFor(context: WorkspacePanelContext): State {
       detailByRole: { planner: "expanded", implementer: "compact", reviewer: "expanded", architect: "expanded" },
       finalWorktreeWorkspaceId:"",
       autopilotDraft:JSON.stringify({
-        workspaces:{},
+        runtime:"durable",workspaces:{},
         models:{
           implementer:{provider:"",model:""},qc:{provider:"",model:""},
           planner:{provider:"",model:""},architect:{provider:"",model:""},
@@ -226,6 +228,7 @@ const plugin: PiWebPlugin = {
       }else state.quickAdvanced=true;
       state.quickTestFile=profile.config.test.file;
       state.quickTestArgs=profile.config.test.args.join("\n");
+      state.quickRuntime=profile.config.runtime;
       state.quickRemote=profile.config.publication?.remote??"origin";
       state.quickBase=profile.config.publication?.baseBranch??"main";
       state.quickMerge=profile.permissions.actions?.["github.pr.merge"]??
@@ -247,7 +250,8 @@ const plugin: PiWebPlugin = {
       };
       const models=Object.fromEntries(["planner","implementer","qc","architect"]
         .map(role=>[role,{provider,model}]));
-      return {...raw,config:{...raw.config,managedWorktrees:true,workspaces:{},
+      return {...raw,config:{...raw.config,runtime:state.quickRuntime,
+        managedWorktrees:true,workspaces:{},
         models,test:{file,args,timeoutMs:60000},
         publication:{remote,baseBranch,draft:true},
         finalization:{workspaceId:"auto",autoMerge:true}},
@@ -918,7 +922,8 @@ const plugin: PiWebPlugin = {
                     state.quickGoalText=goal;context.host.requestRender();
                   }}></textarea>
                 ${state.quickProfile?html`
-                  <p class="mm-quick-scope">Publish to
+                  <p class="mm-quick-scope">
+                    ${state.quickProfile.config.runtime==="durable"?"Pi Durable":"PI WEB native Pi"} · Publish to
                     <strong>${state.quickProfile.config.publication?.remote}/${state.quickProfile.config.publication?.baseBranch}</strong>
                     · PR merge: <strong>${state.quickProfile.permissions.actions?.["github.pr.merge"]??
                       state.quickProfile.permissions.default??"allow"}</strong>
@@ -978,6 +983,19 @@ const plugin: PiWebPlugin = {
                     Use a trusted Pi provider and model in the host session daemon.
                     Each new goal gets isolated Git Worktrees.</p>
                   <div class="mm-quick-form">
+                    <label>Execution engine
+                      <select .value=${state.quickRuntime}
+                        ?disabled=${state.busy||state.quickAdvanced}
+                        @change=${(e:Event)=>{state.quickRuntime=
+                          (e.target as HTMLSelectElement).value as "durable"|"pi-web";
+                          context.host.requestRender();}}>
+                        <option value="durable">Pi Durable — restart-safe, monitored (default)</option>
+                        <option value="pi-web">PI WEB native Pi — compatibility</option>
+                      </select></label>
+                    <p class="mm-quick-scope">Durable uses provider credentials available
+                      to the PI WEB daemon environment, not the browser login.
+                      Its conversation is monitored in Orchestra, but is not a native
+                      PI WEB Chat Session. Configure backend and model deliberately.</p>
                     <label>Pi provider ID
                       <input maxlength="120" placeholder="Authenticated provider ID"
                         .value=${state.quickSimpleProvider} ?disabled=${state.busy||state.quickAdvanced}
