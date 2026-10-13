@@ -124,7 +124,7 @@ test("Durable real Harness rejects unsupported models without allocating Pi Sess
  const x=fixture();
  try{
    await assert.rejects(x.durable.launch({...x.launch,model:{
-     provider:"faux",model:"nonexistent"} }),/not in the builtin catalog/);
+     provider:"faux",model:"nonexistent"} }),/not in the configured Pi catalog/);
    assert.equal(x.current().phase,"reserved");
    assert.equal(x.current().sessionId,null);
    assert.equal(x.faux.state.callCount,0);
