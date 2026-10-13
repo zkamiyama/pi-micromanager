@@ -19,7 +19,7 @@ const definition = {
 };
 const profile = {provider:"local-provider",model:"exact-model"};
 const config = {
-  workspaces:{api:"worktree-api"},
+  runtime:"pi-web",workspaces:{api:"worktree-api"},
   models:{implementer:profile,qc:profile,architect:profile,planner:profile},
   test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
 };
@@ -320,6 +320,7 @@ test("Read-only Sol goal report does not create or execute a DAG before explicit
     await host.activate();
     const goal=await host.request("auto.propose",{
       goal:"Build a health endpoint with tests",provider:"local-provider",model:"exact-model",
+      runtime:"pi-web",
     });
     const session=host.sessions.get(goal.sessionId);
     assert.equal(session.commands.find(c=>c.type==="configure").job.kind,"workflow_plan");
