@@ -19,13 +19,16 @@ save configuration **and explicitly Start Autopilot**.
 - PI WEB compatible with Browser API v4 and Server Plugin API v3,
   whose Git Workspace provider is enabled. Sources for
   `v1.202610.1` were reviewed in [ADR-0014](adr/0014-automatic-worktree-discovery.md).
-- **Default: Pi Durable 1.2.0** needs provider/model IDs in its built-in
-  model catalog and provider credentials accessible to the **PI WEB daemon
-  process** (for example `OPENAI_API_KEY`). Native PI WEB Pi credentials
-  and `auth.json` are **not** automatically inherited. To use the original
-  native Pi Session backend, explicitly set `"runtime": "pi-web"`, install
-  the Pi companion extension and use its authenticated session profile.
-  Both backends must support the structured QC report tool.
+- **Default: Pi Durable 1.2.0** uses Pi's official `ModelRuntime` and
+  reads the **session daemon OS user's** existing Pi credentials
+  (`~/.pi/agent/auth.json`, including ChatGPT subscription OAuth with
+  automatic refresh) or daemon environment API keys. Test from that
+  same user with `pi auth check --provider openai`. Browser-only ChatGPT
+  login, a different user's Pi profile and host-native PI WEB-only
+  credentials do not grant Durable access automatically. To use the
+  original native Pi Session backend, set `"runtime": "pi-web"`
+  explicitly and enable the Pi companion extension. Both backends
+  require the structured QC report tool.
 - Working `gh auth login` and Git remote push credentials **for the
   session daemon OS user**, not only for a different shell, container or
   browser user. The disposable target repository must allow pull requests,
@@ -133,10 +136,11 @@ register Task Worktrees manually.
 2. Under **Autopilot → configuration (JSON)** paste
    [`examples/trial.autopilot.json`](../examples/trial.autopilot.json).
    Replace all `REPLACE_WITH_PI_PROVIDER` and `REPLACE_WITH_PI_MODEL`
-   placeholders with **exact Pi Durable-compatible provider/model IDs**
-   that the daemon can authenticate using its environment. All four
-   roles are required. Set `"runtime": "pi-web"` to test the native
-   compatibility backend instead.
+   placeholders with **exact Pi-compatible provider/model IDs** available
+   to the daemon user: for example `openai` / `gpt-5.5` if confirmed by
+   `pi --list-models` and `pi auth check --provider openai`. All four
+   roles are required. The existing Pi OAuth login is reused by Durable.
+   Set `"runtime": "pi-web"` to test the native compatibility backend.
 3. Inspect `publication.remote="origin"`, `baseBranch="main"`,
    `finalization.autoMerge=true`, `managedWorktrees=true`,
    `workspaces={}`, and `test.file="node"` with `args=["--test"]`.
