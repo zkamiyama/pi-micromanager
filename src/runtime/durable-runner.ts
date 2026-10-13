@@ -181,7 +181,7 @@ export async function createDurableModels(authPath?:string):Promise<Models>{
   });
 }
 export class DurableRunHost {
-  private modelsPromise?:Promise<Models>;
+  private modelsPromise:Promise<Models>|undefined;
   private readonly active=new Map<string,Active>();
   private readonly opening=new Map<string,Promise<Active>>();
   private closing=false;
