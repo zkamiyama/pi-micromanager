@@ -234,6 +234,8 @@ test("Explicit reviewed ADR publication commits exact file, pushes only new bran
    const bare=join(x.home,"remote.git");
    execFileSync("git",["init","--bare",bare],{encoding:"utf8"});
    cmd(x.main,"remote","add","origin",bare);
+   cmd(x.target,"config","user.name","ADR Test");
+   cmd(x.target,"config","user.email","adr-test@example.invalid");
    const cfg={models:Object.fromEntries(["planner","implementer","qc","architect"]
        .map(role=>[role,{provider:"mock",model:"exact"}])),
      workspaces:{feature:"review-worker"},
@@ -299,6 +301,8 @@ test("Uncertain Git commit stops rather than repeating it or creating a PR",asyn
    const bare=join(x.home,"remote.git");
    execFileSync("git",["init","--bare",bare],{encoding:"utf8"});
    cmd(x.main,"remote","add","origin",bare);
+   cmd(x.target,"config","user.name","ADR Test");
+   cmd(x.target,"config","user.email","adr-test@example.invalid");
    x.ledger.save("p","o","flow",{models:Object.fromEntries(
      ["planner","implementer","qc","architect"].map(role=>[role,{
        provider:"mock",model:"exact"}])),
