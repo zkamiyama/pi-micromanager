@@ -16,7 +16,8 @@ test("Host test evidence records output hashes and exit code, not raw potentiall
         const args=request.args?.slice(2).join(" ");
         if(args==="rev-parse --show-toplevel")stdout="/safe/worktree\n";
         else if(args==="rev-parse HEAD")stdout=SHA+"\n";
-        else if(args==="status --porcelain")stdout="";
+        else if(args==="status --porcelain --untracked-files=all --ignore-submodules=none"||
+          args==="ls-files -v -z"||args==="diff-files --quiet --ignore-submodules=none")stdout="";
         else throw new Error("Unexpected mock Git request: "+args);
       }else if(request.file==="node"){
         stdout="stdout contains "+secret;
@@ -43,7 +44,7 @@ test("Host test evidence records output hashes and exit code, not raw potentiall
   const previousTestKey=process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY="synthetic-test-placeholder";
   const result=await port.verify({projectId:"p",workspaceId:"wt-1"},{
-    test:{file:"node",args:["--test"],timeoutMs:5000},
+    test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:5000},
   },SHA);
   assert.equal(result.clean,true);
   assert.equal(result.testsPassed,false);

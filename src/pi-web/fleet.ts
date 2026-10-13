@@ -359,6 +359,17 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       s.deliveryStatus.set(key,s.loadStatus);}
     finally{s.busy=false;refresh(ctx);void load(ctx);}
   }
+  async function recoverUnstarted(ctx:WorkspacePanelContext,b:LiveBinding){
+    const s=stateFor(ctx);if(s.busy||!b.sessionId)return;
+    const reason=globalThis.prompt("Pause the Workflow first. Inspect and resume ONLY this original Session if it has accepted no input. Enter your reason:");
+    if(!reason?.trim())return;
+    s.busy=true;refresh(ctx);
+    try{
+      await api(ctx,"auto.recover.unstarted",{sessionId:b.sessionId,reason:reason.trim()});
+      s.loadStatus="Original Run resumed after zero-input proof. No replacement Session was created.";
+    }catch(error){s.loadStatus="Recovery refused safely: "+String(error);}
+    finally{s.busy=false;refresh(ctx);void load(ctx);}
+  }
   function startDrag(ctx:WorkspacePanelContext,b:LiveBinding,origin:CanvasPosition,
     runs:CanvasRun[],dependencies:CanvasDependency[],rootY:number,event:PointerEvent){
     if(event.button!==0||lifetime.aborted)return;
@@ -690,6 +701,9 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
             <button ?disabled=${s.busy} @click=${()=>send("reconnect")}>Reconnect session</button>
           </div>
         </div>`:null}
+        ${selected.requestId.startsWith("auto:")&&["created","connected","configured"].includes(selected.phase)?html`
+          <div><p>Initial admission stopped. Pause the Workflow, then inspect this original Run before resuming. Accepted or unknown input is never replayed.</p>
+          <button ?disabled=${s.busy} @click=${()=>void recoverUnstarted(ctx,selected)}>Inspect and resume unstarted Run</button></div>`:null}
         ${selected.phase==="settled"?html`<div>
           <p>Agent settled. This Session is never reused. Preserve verification evidence before sealing.</p>
           <input .value=${s.evidenceRef} placeholder="Durable evidence reference"

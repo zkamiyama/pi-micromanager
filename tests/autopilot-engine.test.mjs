@@ -16,7 +16,7 @@ const profile={provider:"test-provider",model:"test-model",effort:"low"};
 const config={
   workspaces:{api:"linked-wt-api"},
   models:{implementer:profile,qc:profile,architect:profile,planner:profile},
-  test:{file:"node",args:["--test"],timeoutMs:30000},maxAttempts:3,
+  test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:30000},maxAttempts:3,
 };
 function setup(workflowDefinition=definition,settings=config){
   const dir=mkdtempSync(join(tmpdir(),"pi-mm-auto-"));
@@ -63,9 +63,9 @@ function setup(workflowDefinition=definition,settings=config){
 test("Autopilot config requires explicit profiles, unique worktrees and safe argv",()=>{
   assert.equal(parseAutopilotConfig(config).maxAttempts,3);
   assert.throws(()=>parseAutopilotConfig({...config,workspaces:{a:"same",b:"same"}}),/distinct/);
-  assert.throws(()=>parseAutopilotConfig({...config,test:{file:"",args:[]}}),/bounded/);
+  assert.throws(()=>parseAutopilotConfig({...config,test:{execution:"trusted-host",file:"",args:[]}}),/bounded/);
   assert.throws(()=>parseAutopilotConfig({...config,maxAttempts:Infinity}),/budget/);
-  assert.throws(()=>parseAutopilotConfig({...config,test:{file:"node",args:["a"],timeoutMs:999999}}),/timeout/);
+  assert.throws(()=>parseAutopilotConfig({...config,test:{execution:"trusted-host",file:"node",args:["a"],timeoutMs:999999}}),/timeout/);
 });
 test("Real transition chain: ready -> implementation -> verified QC -> passed, no implicit integration",async()=>{
   const x=setup();

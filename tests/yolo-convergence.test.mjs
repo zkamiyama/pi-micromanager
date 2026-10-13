@@ -79,7 +79,7 @@ function fixture({policy,fanout=1}={}){
     children.map(child=>[child.id,child.workspaceId]))};
   ledger.save("p","o","flow",{
     workspaces,models,
-    test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
+    test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
   });
   ledger.setStatus("p","o","flow",true,"Running YOLO");
   const paths=new Map([["wt-source",sourcePath],
@@ -277,7 +277,7 @@ test("A dependent Worktree leased by a Pi Session is not mutated by convergence"
     x.agents.reserve({projectId:"p",orchestraWorkspaceId:"o",
       workspaceId:child.workspaceId,workflowId:"another",taskId:"a",
       runId:"impl-a-1",seat:"implementer",requestId:"auto:other"});
-    await assert.rejects(x.tick(),/pending or active Pi Run/);
+    await assert.rejects(x.tick(),/active or unsealed Pi Run/);
     assert.equal(x.mergeCount,0);
   }finally{x.close();}
 });

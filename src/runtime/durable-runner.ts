@@ -31,6 +31,7 @@ export type DurableKind="implementation"|"qc"|"diagnosis"|"synthesis"|
 export interface DurableLaunch {
   reservation:Reservation;model:ModelProfile;cwd:string;
   kind:DurableKind;prompt:string;
+  assertAdmitted?:()=>void;
 }
 export interface FinalQcContract {
   taskId:string;title:string;description?:string;
@@ -265,13 +266,17 @@ export class DurableRunHost {
       const contracts=finalQc?this.options.finalContracts?.(binding):undefined;
       if(finalQc&&(!contracts||contracts.length===0||contracts.length>64))
         throw new Error("Final QC needs 1..64 host-verified source contracts");
-      const seenContracts=new Set<number>();
+      const contractBinding={...binding,sessionId};
+      const manifestSha=createHash("sha256").update(JSON.stringify(contracts??[])).digest("hex");
+      const contractLedger=this.options.ledger;
+      const seenContracts=new Set<number>(contracts?contractLedger.contractReads(contractBinding,manifestSha):[]);
       const contractTool=contracts?defineTool({name:"mm_final_qc_contract",
         description:"Return the full immutable acceptance contract for the requested original source Task.",
         parameters:Type.Object({index:Type.Integer({minimum:0,maximum:63})}),replay:"safe",
         async execute(args){
           if(!Number.isSafeInteger(args.index)||args.index>=contracts.length)
             throw new Error("Final QC source contract index out of bounds");
+          contractLedger.recordContractRead(contractBinding,manifestSha,args.index);
           seenContracts.add(args.index);
           return {output:[{type:"text" as const,text:JSON.stringify(contracts[args.index])}]};
         },
@@ -394,6 +399,7 @@ export class DurableRunHost {
     // Run reservation: unavailable auth must not strand a fresh Task in the
     // non-replayable 'reserved' phase.
     await this.validatedModels(spec.model);
+    spec.assertAdmitted?.();
     const reserved=this.options.agents.reserve(r);
     this.options.changed(reserved);
     const sid=identity(r);
@@ -405,6 +411,7 @@ export class DurableRunHost {
       provider:spec.model.provider,model:spec.model.model,
       ...(spec.model.effort?{effort:spec.model.effort}:{})});
     active.binding=current;this.options.changed(current);
+    spec.assertAdmitted?.();
     const accepted=await active.root.submit({type:"input",content:spec.prompt,
       requestId:"mm:"+sessionHash(r),whenBusy:"reject"},BACKGROUND_CONTEXT);
     if(!accepted.id)throw new Error("Durable did not commit the exact Run input");
@@ -414,6 +421,35 @@ export class DurableRunHost {
       this.options.changed(this.options.agents.update(current,"running"));
     this.supervise(active);
     return this.options.agents.get(r.projectId,r.orchestraWorkspaceId,sid);
+  }
+  /** Explicit zero-input continuation only. Read-only inspection never resumes a task. */
+  async resumeUnstarted(binding:AgentBinding,spec:DurableLaunch):Promise<AgentBinding>{
+    spec.assertAdmitted?.();
+    if(!isDurableSession(binding.sessionId)||binding.abortRequested===1||
+      !["created","connected","configured"].includes(binding.phase))
+      throw new Error("Only an attached, proved-unstarted Durable Run can be recovered");
+    if(!existsSync(this.path(this.reservation(binding))))throw new Error("Original Durable storage is missing");
+    if(identity(spec.reservation)!==binding.sessionId)throw new Error("Recovery Run identity mismatch");
+    if(binding.provider&&binding.provider!==spec.model.provider||binding.model&&binding.model!==spec.model.model||
+      binding.effort&&binding.effort!==spec.model.effort)throw new Error("Recovery model identity changed");
+    const live=await this.open(binding,spec.cwd,spec.kind,spec.model);
+    try{
+      const entries=await live.root.entries({},1,undefined,BACKGROUND_CONTEXT);
+      const inspection=await live.harness.inspect(BACKGROUND_CONTEXT);
+      if(entries.items.length||inspection.tasks.length||inspection.submissions.length||live.verified)
+        throw new Error("Durable Session has accepted input/work; zero-input continuation refused");
+      spec.assertAdmitted?.();
+      this.options.changed(this.options.agents.update(binding,"configured",spec.model));
+      const accepted=await live.root.submit({type:"input",content:spec.prompt,
+        requestId:"mm:"+sessionHash(spec.reservation),whenBusy:"reject"},BACKGROUND_CONTEXT);
+      if(!accepted.id)throw new Error("Durable did not commit the original Run input");
+      live.verified=true;
+      const current=this.options.agents.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId!);
+      if(!["running","settled","sealed"].includes(current.phase))
+        this.options.changed(this.options.agents.update(current,"running"));
+      this.supervise(live);
+      return this.options.agents.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId!);
+    }catch(error){await this.stopRun(binding).catch(()=>{});throw error;}
   }
   async reconnect(binding:AgentBinding,cwd:string,kind:DurableKind):
     Promise<"running"|"settled"|"uncertain">{

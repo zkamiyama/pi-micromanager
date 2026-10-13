@@ -168,7 +168,7 @@ test("ADR source and target must be fully stable and have durable QC evidence",a
     x.ledger.save("p","o","flow",{workspaces:{feature:"writer"},
       models:Object.fromEntries(["implementer","qc","planner","architect"]
         .map(role=>[role,{provider:"mock",model:"mock"}])),
-      test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:2});
+      test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:10000},maxAttempts:2});
     x.ledger.setStatus("p","o","flow",true,"running");
     await assert.rejects(x.promotion.stage("p","o",plan.id),/Pause Autopilot/);
     x.ledger.setStatus("p","o","flow",false,"paused");

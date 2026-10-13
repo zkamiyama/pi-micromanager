@@ -24,6 +24,8 @@ export interface RuntimeReceipt {
   idle?: boolean;
   /** True only if the current Pi Session has no prior conversational messages. */
   fresh?: boolean;
+  inputAccepted?:boolean;
+  pendingMessages?:boolean;
   /** Exact bound job, persisted final-turn state and stored report for recovery. */
   jobRunId?: string;
   turnSettled?: boolean;
@@ -100,7 +102,7 @@ export function parseRuntimeReceipt(input: unknown): RuntimeReceipt | undefined 
     if(!bounded(input.jobRunId,128)||!requestIdPattern.test(input.jobRunId))return;
     result.jobRunId=input.jobRunId;
   }
-  for(const field of ["turnSettled","turnInterrupted","hasReport"] as const){
+  for(const field of ["turnSettled","turnInterrupted","hasReport","inputAccepted","pendingMessages"] as const){
     if(input[field]===undefined)continue;
     if(typeof input[field]!=="boolean")return;
     result[field]=input[field] as boolean;

@@ -1,5 +1,7 @@
 # Quick start: test the full DAG → Pi → GitHub merge path
 
+> **Update:** [ADR-0016](adr/0016-audit-control-generation-and-proof-boundaries.md) supersedes the deferred auto-merge and test-environment behavior below. New host verification uses Linux Bubblewrap; new merges are synchronous and SHA-bound. See [migration and supported limits](AUDIT_REMEDIATION_R01_R23.md). Historical trial records remain historical evidence.
+
 After installing Micromanager, the shortest alternative to importing a DAG
 manually is **Tell Sol what to build → Plan & run**, which plans and
 automatically starts using a reusable project profile. See

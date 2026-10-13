@@ -1,5 +1,7 @@
 # One command: natural language → verified Pi DAG execution
 
+> **Update:** [ADR-0016](adr/0016-audit-control-generation-and-proof-boundaries.md) supersedes the deferred auto-merge and test-environment behavior below. New host verification uses Linux Bubblewrap; new merges are synchronous and SHA-bound. See [migration and supported limits](AUDIT_REMEDIATION_R01_R23.md). Historical trial records remain historical evidence.
+
 From **main**, install Micromanager using
 [Quickstart](QUICKSTART.md) in the PI WEB host's Pi environment.
 Use a **disposable GitHub repository** for the first run.

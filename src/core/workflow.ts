@@ -1,4 +1,5 @@
 /** Pure, deterministic workflow state machine. No model or filesystem I/O. */
+import {diagnosisTaskId,synthesisTaskId} from "./identifiers.js";
 import {validatePermissions,type WorkflowPermissions} from "./permissions.js";
 export type Role = "planner" | "implementer" | "reviewer" | "architect";
 export type TaskKind = "implementation" | "diagnosis" | "synthesis";
@@ -42,6 +43,8 @@ export interface TaskState {
   status: TaskStatus;
   attempts: number;
   qcRounds: number;
+  /** Explicit audited extension; default remains the original Workflow budget. */
+  qcBudget?:number;
   lastQc?: QCRecord;
   pendingWork?: { headSha: string; criteriaRevision: number; attempt: number };
   parentTaskId?: string;
@@ -87,6 +90,7 @@ export type WorkflowAction =
   | { type: "cancel_amendment"; amendmentId: string }
   | { type: "complete"; taskId: string }
   | { type: "resume_after_diagnosis"; amendmentId: string; decision: "rework" | "accept_pass" }
+  | { type: "extend_qc_budget";taskId:string;maxRounds:number;reason:string }
   | { type: "integrate"; taskId: string }
   | { type: "prepare_final_integration" }
   | { type: "final_merge_confirmed"; taskId:string; headSha:string; prUrl:string };
@@ -211,7 +215,7 @@ function activeRuns(instance: WorkflowInstance, role: Role): number {
 function installDiagnosis(instance: WorkflowInstance, amendment: Amendment): void {
   const target = taskById(instance, amendment.targetTaskId);
   for (const agent of amendment.agents) {
-    const id = `diag-${amendment.id}-${agent.id}`;
+    const id = diagnosisTaskId(amendment.id,agent.id);
     const spec: TaskSpec = {
       id, title: agent.title, kind: "diagnosis", role: agent.role, model: agent.model,
       dependsOn: [{ taskId: target.spec.id, gate: "qc_finalized" }],
@@ -219,10 +223,10 @@ function installDiagnosis(instance: WorkflowInstance, amendment: Amendment): voi
     instance.definition.tasks.push(spec);
     instance.tasks[id] = { spec, status: "blocked", attempts: 0, qcRounds: 0, parentTaskId: target.spec.id };
   }
-  const id = `synthesis-${amendment.id}`;
+  const id = synthesisTaskId(amendment.id);
   amendment.synthesisTaskId = id;
   const spec: TaskSpec = { id, title: "Synthesize independent diagnoses", kind: "synthesis", role: "planner",
-    dependsOn: amendment.agents.map(a => ({ taskId: `diag-${amendment.id}-${a.id}`, gate: "completed" })) };
+    dependsOn: amendment.agents.map(a => ({ taskId: diagnosisTaskId(amendment.id,a.id), gate: "completed" })) };
   instance.definition.tasks.push(spec);
   instance.tasks[id] = { spec, status: "blocked", attempts: 0, qcRounds: 0, parentTaskId: target.spec.id };
   validateDefinition(instance.definition);
@@ -233,6 +237,8 @@ function installDiagnosis(instance: WorkflowInstance, amendment: Amendment): voi
 function checkInvestigators(instance: WorkflowInstance, amendmentId: string, agents: DiagnosticAgent[]): void {
   invariant(Array.isArray(agents) && agents.length >= 1 && agents.length <= 4,
     "invalid_agents", "1..4 diagnosis agents required");
+  invariant(instance.definition.tasks.length+agents.length+1<=512,"diagnosis_capacity",
+    "Reserve enough Task slots for all diagnosis and synthesis nodes");
   const seen = new Set<string>();
   for (const agent of agents) {
     invariant(agent !== null && validId(agent.id) && !seen.has(agent.id) &&
@@ -242,7 +248,7 @@ function checkInvestigators(instance: WorkflowInstance, amendmentId: string, age
       "invalid_agents", "Each investigator requires a unique id, allowed role, model and title");
     seen.add(agent.id);
   }
-  for (const id of [...agents.map(a => "diag-" + amendmentId + "-" + a.id), "synthesis-" + amendmentId]) {
+  for (const id of [...agents.map(a => diagnosisTaskId(amendmentId,a.id)), synthesisTaskId(amendmentId)]) {
     invariant(validId(id) && !Object.hasOwn(instance.tasks, id), "invalid_id",
       "Dynamic task id collision: " + id);
   }
@@ -255,7 +261,7 @@ function noOtherPendingIntervention(instance: WorkflowInstance, taskId: string):
 function normalPostQcStatus(instance: WorkflowInstance, task: TaskState): TaskStatus {
   invariant(task.lastQc, "invalid_transition", "No finalized QC to release");
   return task.lastQc.verdict === "pass" ? "passed" :
-    task.qcRounds >= instance.definition.maxQcRounds ? "needs_human" : "ready";
+    task.qcRounds >= (task.qcBudget??instance.definition.maxQcRounds) ? "needs_human" : "ready";
 }
 
 /** One command = one immutable revision; storage enforces CAS and command idempotency. */
@@ -303,7 +309,7 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
     }
     case "request_intervention": {
       const t = taskById(instance, action.targetTaskId);
-      invariant(t.spec.kind === "implementation" && ["ready", "running", "awaiting_qc"].includes(t.status),
+      invariant(t.spec.kind === "implementation" && ["ready", "running", "awaiting_qc", "needs_human"].includes(t.status),
         "invalid_transition", "A task-scoped QC barrier needs an active or upcoming implementation");
       invariant(validId(action.interventionId) && validId(action.afterQcRunId),
         "invalid_id", "Invalid intervention/QC run ID");
@@ -312,8 +318,16 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       invariant(instance.amendments.every(a => a.id !== action.interventionId),
         "duplicate_amendment", "Intervention ID already exists");
       noOtherPendingIntervention(instance, t.spec.id);
+      invariant(instance.definition.tasks.length+5<=512,"diagnosis_capacity",
+        "Reserve Task slots for up to four investigators and synthesis before planning");
+      const exhausted=t.status==="needs_human";
+      if(exhausted){
+        invariant(t.lastQc&&(action.afterQcRunId==="next"||action.afterQcRunId===t.lastQc.runId),
+          "qc_mismatch","An exhausted Task intervention must use its current frozen QC");
+        t.status="held";
+      }
       instance.amendments.push({
-        id: action.interventionId, targetTaskId: t.spec.id, afterQcRunId: action.afterQcRunId,
+        id: action.interventionId, targetTaskId: t.spec.id, afterQcRunId: exhausted?t.lastQc!.runId:action.afterQcRunId,
         status: "planning", instruction: action.instruction.trim(), agents: [],
       });
       message = "Intervention " + action.interventionId + " requested on " + t.spec.id + "; QC transition reserved pending Sol plan";
@@ -371,7 +385,7 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
         }
         message = `QC ${action.runId} finalized (${action.verdict}); barrier ${barrier.id} ${barrier.status === "planning" ? "waiting for Sol plan" : "activated"}`;
       } else {
-        t.status = action.verdict === "pass" ? "passed" : t.qcRounds >= instance.definition.maxQcRounds ? "needs_human" : "ready";
+        t.status = action.verdict === "pass" ? "passed" : t.qcRounds >= (t.qcBudget??instance.definition.maxQcRounds) ? "needs_human" : "ready";
         message = `QC ${action.runId} finalized (${action.verdict}); status=${t.status}`;
       }
       break;
@@ -393,7 +407,7 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       invariant(action.decision === "rework" || action.decision === "accept_pass",
         "invalid_decision", "Resume decision must be rework or accept_pass");
       if (action.decision === "accept_pass") invariant(t.lastQc?.verdict === "pass", "invalid_transition", "Cannot accept a failing QC");
-      if (action.decision === "rework") invariant(t.qcRounds < instance.definition.maxQcRounds, "budget_exhausted", "QC budget exhausted; explicit budget amendment required");
+      if (action.decision === "rework") invariant(t.qcRounds < (t.qcBudget??instance.definition.maxQcRounds), "budget_exhausted", "QC budget exhausted; explicit budget amendment required");
       t.status = action.decision === "rework" ? "ready" : "passed";
       a.status = "completed";
       message = `Resolved ${a.id}; ${t.spec.id} -> ${t.status}`;
@@ -442,7 +456,7 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
     case "final_merge_confirmed": {
       const final=taskById(instance,action.taskId);
       invariant(final.spec.systemPurpose==="final-integration"&&
-        final.status==="passed"&&final.lastQc?.verdict==="pass"&&
+        ["passed","integrated"].includes(final.status)&&final.lastQc?.verdict==="pass"&&
         final.lastQc.headSha===action.headSha,"final_not_approved",
         "Only exact QC-passed final integration result may complete the Workflow");
       invariant(/^https:\/\/github\.com\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/pull\/[1-9][0-9]{0,8}$/.test(action.prUrl),
@@ -464,9 +478,25 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
         action.headSha.slice(0,12)+"; all Task integration gates completed";
       break;
     }
+    case "extend_qc_budget": {
+      const t=taskById(instance,action.taskId);
+      invariant(t.spec.kind==="implementation"&&["needs_human","held"].includes(t.status),
+        "invalid_transition","Extend QC budget only for a held or exhausted implementation");
+      invariant(Number.isSafeInteger(action.maxRounds)&&action.maxRounds<=100&&
+        action.maxRounds>(t.qcBudget??instance.definition.maxQcRounds),
+        "invalid_budget","New QC budget must increase the current limit, up to 100");
+      invariant(typeof action.reason==="string"&&!!action.reason.trim()&&action.reason.length<=1000,
+        "invalid_reason","An explicit bounded human reason is required");
+      t.qcBudget=action.maxRounds;
+      if(t.status==="needs_human")t.status="ready";
+      message="Human extended "+t.spec.id+" QC budget to "+action.maxRounds+": "+action.reason.trim();
+      break;
+    }
     case "integrate": {
       const t = taskById(instance, action.taskId);
-      invariant(t.status === "passed", "invalid_transition", "Only QC-passed tasks can integrate");
+      invariant(t.spec.systemPurpose!=="final-integration", "final_merge_required",
+        "Final integration requires exact GitHub MERGED proof, not local integration");
+      invariant(t.status === "passed" && t.lastQc?.verdict === "pass", "invalid_transition", "Only QC-passed tasks can integrate");
       t.status = "integrated";
       message = `Integrated ${t.spec.id}`;
       break;

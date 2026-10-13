@@ -1,4 +1,6 @@
 /** Per-execution Pi sessions. A role is NOT a permanent seat or reusable agent identity. */
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -82,6 +84,9 @@ export class AgentRegistry {
     // row per Task+role and cannot represent repeated QC/implementation sessions.
     this.db.exec([
       "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;",
+      "CREATE TABLE IF NOT EXISTS workspace_authority(project_id TEXT NOT NULL,workspace_id TEXT NOT NULL,",
+      "physical_key TEXT NOT NULL,PRIMARY KEY(project_id,workspace_id));",
+      "CREATE TABLE IF NOT EXISTS workspace_operations(physical_key TEXT PRIMARY KEY,owner TEXT NOT NULL,created_at TEXT NOT NULL);",
       "CREATE TABLE IF NOT EXISTS execution_runs(",
       "project_id TEXT NOT NULL,orchestra_workspace_id TEXT NOT NULL,workspace_id TEXT NOT NULL,",
       "workflow_id TEXT NOT NULL,task_id TEXT NOT NULL,run_id TEXT NOT NULL,",
@@ -144,9 +149,10 @@ export class AgentRegistry {
    * when enforcing workspace leases before reading evidence or writing ADRs. */
   hasUnsealedWorkspace(projectId:string,workspaceId:string):boolean{
     identity(projectId,"projectId");identity(workspaceId,"workspaceId");
-    return Boolean(this.db.prepare("SELECT 1 AS present FROM execution_runs "+
-      "WHERE project_id=? AND workspace_id=? AND phase NOT IN ('sealed','failed') "+
-      "LIMIT 1").get(projectId,workspaceId));
+    return Boolean(this.db.prepare("SELECT 1 AS present FROM execution_runs r LEFT JOIN workspace_authority a "+
+      "ON a.project_id=r.project_id AND a.workspace_id=r.workspace_id "+
+      "WHERE ((r.project_id=? AND r.workspace_id=?) OR a.physical_key=?) AND r.phase NOT IN ('sealed','failed') LIMIT 1")
+      .get(projectId,workspaceId,this.workspaceKey(projectId,workspaceId)));
   }
   /** Never stage an ADR inside a historical Task's implementation/QC workspace. */
   wasWorkflowWorkspace(projectId:string,orchestraWorkspaceId:string,
@@ -156,6 +162,37 @@ export class AgentRegistry {
     return Boolean(this.db.prepare("SELECT 1 FROM execution_runs WHERE "+
       "project_id=? AND orchestra_workspace_id=? AND workflow_id=? AND workspace_id=? "+
       "LIMIT 1").get(projectId,orchestraWorkspaceId,workflowId,workspaceId));
+  }
+  /** Host-resolved aliases of a checkout must contend for the same physical lease. */
+  registerWorkspacePath(p:string,w:string,path:string):void {
+    identity(p,"projectId");identity(w,"workspaceId");identity(path,"Workspace path");
+    let canonical=resolve(path);try{canonical=realpathSync(path);}catch{/* Remote host/mock authority is already resolved. */}
+    const key="path:"+canonical;
+    const old=this.db.prepare("SELECT physical_key FROM workspace_authority WHERE project_id=? AND workspace_id=?")
+      .get(p,w) as {physical_key:string}|undefined;
+    if(old&&old.physical_key!==key)throw new Error("Registered Workspace physical identity changed");
+    this.db.prepare("INSERT INTO workspace_authority VALUES(?,?,?) ON CONFLICT DO NOTHING").run(p,w,key);
+  }
+  private workspaceKey(p:string,w:string):string {
+    return (this.db.prepare("SELECT physical_key FROM workspace_authority WHERE project_id=? AND workspace_id=?")
+      .get(p,w) as {physical_key:string}|undefined)?.physical_key??JSON.stringify([p,w]);
+  }
+  acquireWorkspaceOperation(p:string,w:string,owner:string):void {
+    identity(owner,"Workspace operation owner");
+    this.db.exec("BEGIN IMMEDIATE");
+    try{
+      const key=this.workspaceKey(p,w);
+      const old=this.db.prepare("SELECT owner FROM workspace_operations WHERE physical_key=?").get(key) as {owner:string}|undefined;
+      if(old&&old.owner!==owner)throw new Error("Workspace is leased by another host operation");
+      if(this.hasUnsealedWorkspace(p,w))throw new Error("Workspace has an active or unsealed Pi Run");
+      this.db.prepare("INSERT INTO workspace_operations VALUES(?,?,?) ON CONFLICT DO NOTHING")
+        .run(key,owner,new Date().toISOString());
+      this.db.exec("COMMIT");
+    }catch(error){this.db.exec("ROLLBACK");throw error;}
+  }
+  releaseWorkspaceOperation(p:string,w:string,owner:string):void {
+    this.db.prepare("DELETE FROM workspace_operations WHERE physical_key=? AND owner=?")
+      .run(this.workspaceKey(p,w),owner);
   }
   get(projectId:string,orchestraWorkspaceId:string,sessionId:string):AgentBinding {
     identity(sessionId,"sessionId");
@@ -181,14 +218,19 @@ export class AgentRegistry {
         if(!sameReservation(previous,input)) throw new Error("Run ID already refers to a different execution");
         this.db.exec("COMMIT");return previous;
       }
+      if(this.db.prepare("SELECT 1 FROM workspace_operations WHERE physical_key=?")
+        .get(this.workspaceKey(input.projectId,input.workspaceId)))
+        throw new Error("Worktree is leased by a host Git operation");
       if(input.seat==="implementer"||input.seat==="qc"||input.seat==="architect"){
         // QC/diagnosis on a linked worktree holds a read lease. Writers may not
         // race either class of read-only reviewer, including Astra diagnoses.
         const conflicting=input.seat==="implementer"?
           "seat IN ('implementer','qc','architect')":"seat='implementer'";
-        const busy=this.db.prepare("SELECT COUNT(*) AS n FROM execution_runs WHERE project_id=? AND workspace_id=?"+
+        const busy=this.db.prepare("SELECT COUNT(*) AS n FROM execution_runs r LEFT JOIN workspace_authority a "+
+          "ON a.project_id=r.project_id AND a.workspace_id=r.workspace_id "+
+          "WHERE ((r.project_id=? AND r.workspace_id=?) OR a.physical_key=?)"+
           " AND "+conflicting+" AND phase NOT IN ('sealed','failed')")
-          .get(input.projectId,input.workspaceId) as {n:number};
+          .get(input.projectId,input.workspaceId,this.workspaceKey(input.projectId,input.workspaceId)) as {n:number};
         if(busy.n)throw new Error("Worktree is leased by an unfinished writer or QC Run");
       }
       this.db.prepare("INSERT INTO execution_runs("+

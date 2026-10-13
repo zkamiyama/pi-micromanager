@@ -34,6 +34,7 @@ function fixture(){
         const target=[...registered].find(([p])=>p===cwd);
         stdout=(target?.[1].sha??baseSha)+"\n";
       }else if(verb.startsWith("status --porcelain"))stdout=dirty?"?? dirty.txt\n":"";
+      else if(verb.startsWith("ls-files -v")||verb.startsWith("diff-files --quiet"))stdout="";
       else if(verb.startsWith("show-ref --verify --quiet")){
         exitCode=[...registered.values()].some(x=>"refs/heads/"+x.branch===args[3])?0:1;
       }else if(verb.startsWith("worktree add")){
@@ -115,7 +116,7 @@ test("Live or configured Workflows cannot be provisioned or mutated",async()=>{
     const planned=await x.manager.preview("project","orchestra","flow","api","/repo");
     const cfg={workspaces:{api:"already-linked"},models:Object.fromEntries(
       ["planner","implementer","qc","architect"].map(s=>[s,{provider:"mock",model:"mock"}])),
-      test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3};
+      test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3};
     x.ledger.save("project","orchestra","flow",cfg);
     await assert.rejects(x.manager.create("project","orchestra",planned.id),
       /already has a configured PI WEB Workspace/);
@@ -146,7 +147,7 @@ test("Automatic opt-in provisions a distinct final Worktree before its Task exis
       finalization:{workspaceId:"auto",autoMerge:true},
       publication:{remote:"origin",baseBranch:"main",draft:true},
       models:{implementer:profile,qc:profile,architect:profile,planner:profile},
-      test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
+      test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3,
     });
     const first=await x.manager.ensure("project","orchestra","flow","api","/repo");
     const final=await x.manager.ensure("project","orchestra","flow","mm-final-integration","/repo");

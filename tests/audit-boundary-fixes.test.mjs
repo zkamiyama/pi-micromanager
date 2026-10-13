@@ -13,7 +13,7 @@ const SHA="a".repeat(40),at="2026-10-13T00:00:00.000Z";
 const models=Object.fromEntries(["implementer","qc","planner","architect"]
   .map(k=>[k,{provider:"faux",model:"faux-1"}]));
 const config={models,workspaces:{api:"wt-api"},
-  test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:2};
+  test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:10000},maxAttempts:2};
 const def=(taskId="api")=>({id:"wf",title:"Audit",maxQcRounds:2,
   maxParallelByRole:{implementer:1,reviewer:1,planner:1,architect:1},
   tasks:[{id:taskId,title:"API",kind:"implementation",role:"implementer",

@@ -13,3 +13,22 @@ export function internalCommandId(raw:string):string{
   if(raw.length<=128)return raw;
   return "auto:"+createHash("sha256").update(raw).digest("hex");
 }
+
+/** Display names are independent of identity and must fit native Pi's wire limit. */
+export function sessionDisplayName(prefix:string,seat:string,taskId:string,runId:string):string{
+  const raw=[prefix,seat,taskId,runId].join(" ");
+  return raw.length<=120?raw:raw.slice(0,99)+"-"+digest(raw);
+}
+/** Keep dynamic Task IDs valid for every accepted intervention/investigator ID. */
+export function diagnosisTaskId(amendmentId:string,agentId:string):string{
+  const raw="diag-"+amendmentId+"-"+agentId;
+  return raw.length<=64?raw:raw.slice(0,43)+"-"+digest(raw);
+}
+export function synthesisTaskId(amendmentId:string):string{
+  const raw="synthesis-"+amendmentId;
+  return raw.length<=64?raw:raw.slice(0,43)+"-"+digest(raw);
+}
+export function managedBranch(scopeHash:string,workflowId:string,taskId:string):string{
+  const raw="mm/"+scopeHash+"/"+workflowId+"/"+taskId;
+  return raw.length<=119?raw:raw.slice(0,98).replace(/\/+$/,"")+"-"+digest(raw);
+}

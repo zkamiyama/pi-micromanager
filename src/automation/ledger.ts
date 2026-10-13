@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import type { Seat, AgentBinding } from "../runtime/registry.js";
 import { parseRunReport, type RunReport } from "./report.js";
+import type {LaunchJob} from "./engine.js";
 import type {WorkflowAction} from "../core/workflow.js";
 
 export interface ModelProfile { provider:string; model:string; effort?:string }
@@ -45,12 +46,14 @@ export interface AutopilotConfig {
   reviewWorkspaces?:Record<string,string>;
   models:Record<Seat,ModelProfile>;
   /** Host executes directly as argv, with no shell and no inherited secret overrides. */
-  test:{file:string;args:string[];timeoutMs:number};
+  test:{file:string;args:string[];timeoutMs:number;execution?:"sandbox"|"trusted-host"};
   maxAttempts:number;
 }
 export interface AutopilotRecord {
   projectId:string; orchestraWorkspaceId:string; workflowId:string;
   enabled:boolean; status:string; updatedAt:string; config:AutopilotConfig;
+  /** Monotone operator control/configuration generation, independent of progress text. */
+  generation:number;
 }
 export interface EvidenceReceipt {
   ref:string; runId:string; sessionId:string; kind:string; text:string; createdAt:string;
@@ -124,6 +127,9 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
     finalization={workspaceId,autoMerge:f.autoMerge};
   }
   const t=object(raw.test),file=str(t.file,256);
+  const execution=t.execution??"sandbox";
+  if(execution!=="sandbox"&&execution!=="trusted-host")
+    throw new Error("Test execution must be sandbox or explicitly trusted-host");
   if(!Array.isArray(t.args)||t.args.length>32||
     !t.args.every(x=>typeof x==="string"&&x.length<=1000))
     throw new Error("Test command must be an argv list of <=32 bounded strings");
@@ -159,10 +165,13 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
     ...(raw.reviewWorkspaces===undefined?{}:{
     reviewWorkspaces:workspaceMap(raw.reviewWorkspaces)}),
     ...(publication?{publication}:{}),
-    models,test:{file,args:t.args as string[],timeoutMs},maxAttempts};
+    models,test:{file,args:t.args as string[],timeoutMs,execution},maxAttempts};
 }
 export function automationScope(projectId:string,workspaceId:string):string {
   return JSON.stringify([str(projectId,512),str(workspaceId,512)]);
+}
+export class StaleControlError extends Error {
+  constructor(){super("Autopilot control generation changed; stale work discarded");}
 }
 export class AutopilotLedger {
   private readonly db:DatabaseSync;
@@ -183,12 +192,22 @@ export class AutopilotLedger {
         session_id TEXT NOT NULL,ref TEXT NOT NULL,kind TEXT NOT NULL,
         text TEXT NOT NULL,created_at TEXT NOT NULL,
         PRIMARY KEY(scope,workflow_id,run_id));
+      CREATE TABLE IF NOT EXISTS autopilot_contract_reads(
+        scope TEXT NOT NULL,workflow_id TEXT NOT NULL,run_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,manifest_sha TEXT NOT NULL,contract_index INTEGER NOT NULL,
+        PRIMARY KEY(scope,workflow_id,run_id,session_id,manifest_sha,contract_index));
+      CREATE TABLE IF NOT EXISTS autopilot_launches(
+        scope TEXT NOT NULL,workflow_id TEXT NOT NULL,run_id TEXT NOT NULL,
+        job_json TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(scope,workflow_id,run_id));
       CREATE TABLE IF NOT EXISTS autopilot_prepared(
         scope TEXT NOT NULL,workflow_id TEXT NOT NULL,run_id TEXT NOT NULL,
         session_id TEXT NOT NULL,kind TEXT NOT NULL,
         action_json TEXT NOT NULL,details TEXT NOT NULL,created_at TEXT NOT NULL,
         PRIMARY KEY(scope,workflow_id,run_id));
     `);
+    const columns=this.db.prepare("PRAGMA table_info(autopilots)").all() as {name:string}[];
+    if(!columns.some(c=>c.name==="generation"))
+      this.db.exec("ALTER TABLE autopilots ADD COLUMN generation INTEGER NOT NULL DEFAULT 0");
   }
   close():void{this.db.close();}
   /** Pre-Durable configurations remain on native PI WEB Sessions,
@@ -198,55 +217,107 @@ export class AutopilotLedger {
     return parseAutopilotConfig(value.runtime===undefined?
       {...value,runtime:"pi-web"}:value);
   }
-  save(projectId:string,workspaceId:string,workflowId:string,input:unknown):AutopilotRecord {
+  save(projectId:string,workspaceId:string,workflowId:string,input:unknown,
+    expectedGeneration?:number):AutopilotRecord {
     const config=parseAutopilotConfig(input),scope=automationScope(projectId,workspaceId);
     str(workflowId,128);
     const at=new Date().toISOString();
-    this.db.prepare(`INSERT INTO autopilots(scope,workflow_id,config_json,enabled,status,updated_at)
+    if(expectedGeneration!==undefined&&this.get(projectId,workspaceId,workflowId)?.generation!==expectedGeneration)
+      throw new StaleControlError();
+    const saved=this.db.prepare(`INSERT INTO autopilots(scope,workflow_id,config_json,enabled,status,updated_at)
       VALUES(?,?,?,0,'Configured. Start explicitly.',?)
       ON CONFLICT(scope,workflow_id) DO UPDATE SET config_json=excluded.config_json,
-      enabled=0,status='Configuration changed; explicit restart required',updated_at=excluded.updated_at`)
-      .run(scope,workflowId,JSON.stringify(config),at);
+      enabled=0,status='Configuration changed; explicit restart required',updated_at=excluded.updated_at,
+      generation=autopilots.generation+1
+      WHERE ? IS NULL OR autopilots.generation=?`)
+      .run(scope,workflowId,JSON.stringify(config),at,expectedGeneration??null,expectedGeneration??null);
+    if(saved.changes!==1)throw new StaleControlError();
     return this.get(projectId,workspaceId,workflowId)!;
   }
   get(projectId:string,workspaceId:string,workflowId:string):AutopilotRecord|undefined {
     const scope=automationScope(projectId,workspaceId);
-    const row=this.db.prepare(`SELECT config_json,enabled,status,updated_at FROM autopilots
+    const row=this.db.prepare(`SELECT config_json,enabled,status,updated_at,generation FROM autopilots
       WHERE scope=? AND workflow_id=?`).get(scope,workflowId) as
-      {config_json:string;enabled:number;status:string;updated_at:string}|undefined;
+      {config_json:string;enabled:number;status:string;updated_at:string;generation:number}|undefined;
     return row?{projectId,orchestraWorkspaceId:workspaceId,workflowId,
-      enabled:row.enabled===1,status:row.status,updatedAt:row.updated_at,
+      enabled:row.enabled===1,status:row.status,updatedAt:row.updated_at,generation:row.generation,
       config:this.persisted(JSON.parse(row.config_json))}:undefined;
   }
   /** Scheduler inventory, unlike the bounded UI list: every enabled workflow. */
   listEnabled():AutopilotRecord[]{
-    const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at
+    const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at,generation
       FROM autopilots WHERE enabled=1 ORDER BY updated_at ASC`).all() as
-      {scope:string;workflow_id:string;config_json:string;enabled:number;status:string;updated_at:string}[];
+      {scope:string;workflow_id:string;config_json:string;enabled:number;status:string;updated_at:string;generation:number}[];
     return rows.map(row=>{
       const [projectId,orchestraWorkspaceId]=JSON.parse(row.scope) as [string,string];
       return {projectId,orchestraWorkspaceId,workflowId:row.workflow_id,
         config:this.persisted(JSON.parse(row.config_json)),
-        enabled:true,status:row.status,updatedAt:row.updated_at};
+        enabled:true,status:row.status,updatedAt:row.updated_at,generation:row.generation};
     });
   }
   list():AutopilotRecord[]{
-    const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at
+    const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at,generation
       FROM autopilots ORDER BY updated_at DESC LIMIT 200`).all() as
-      {scope:string;workflow_id:string;config_json:string;enabled:number;status:string;updated_at:string}[];
+      {scope:string;workflow_id:string;config_json:string;enabled:number;status:string;updated_at:string;generation:number}[];
     return rows.map(row=>{
       const [projectId,orchestraWorkspaceId]=JSON.parse(row.scope) as [string,string];
       return {projectId,orchestraWorkspaceId,workflowId:row.workflow_id,
         config:this.persisted(JSON.parse(row.config_json)),
-        enabled:row.enabled===1,status:row.status,updatedAt:row.updated_at};
+        enabled:row.enabled===1,status:row.status,updatedAt:row.updated_at,generation:row.generation};
     });
   }
   setStatus(projectId:string,workspaceId:string,workflowId:string,enabled:boolean,status:string):void {
     str(status,1000);
-    const result=this.db.prepare(`UPDATE autopilots SET enabled=?,status=?,updated_at=?
+    const result=this.db.prepare(`UPDATE autopilots SET enabled=?,status=?,updated_at=?,generation=generation+1
       WHERE scope=? AND workflow_id=?`).run(enabled?1:0,status,new Date().toISOString(),
       automationScope(projectId,workspaceId),workflowId);
     if(result.changes!==1)throw new Error("Configure the workflow before starting");
+  }
+  /** A progress update cannot resurrect a paused/reconfigured Workflow. */
+  setProgress(record:AutopilotRecord,enabled:boolean,status:string):boolean {
+    str(status,1000);
+    const result=this.db.prepare(`UPDATE autopilots SET enabled=?,status=?,updated_at=?,
+      generation=generation+CASE WHEN enabled<>? THEN 1 ELSE 0 END
+      WHERE scope=? AND workflow_id=? AND generation=?`).run(
+        enabled?1:0,status,new Date().toISOString(),enabled?1:0,
+        automationScope(record.projectId,record.orchestraWorkspaceId),
+        record.workflowId,record.generation);
+    return result.changes===1;
+  }
+  assertCurrent(record:AutopilotRecord,requireEnabled=true):void {
+    const latest=this.get(record.projectId,record.orchestraWorkspaceId,record.workflowId);
+    if(!latest||latest.generation!==record.generation||(requireEnabled&&!latest.enabled))
+      throw new StaleControlError();
+  }
+  contractReads(binding:AgentBinding,manifestSha:string):number[]{
+    if(!binding.sessionId||!/^[a-f0-9]{64}$/.test(manifestSha))throw new Error("Invalid final contract identity");
+    return (this.db.prepare("SELECT contract_index AS n FROM autopilot_contract_reads WHERE scope=? AND workflow_id=? AND run_id=? AND session_id=? AND manifest_sha=? ORDER BY contract_index")
+      .all(automationScope(binding.projectId,binding.orchestraWorkspaceId),binding.workflowId,
+        binding.runId,binding.sessionId,manifestSha) as {n:number}[]).map(r=>r.n);
+  }
+  recordContractRead(binding:AgentBinding,manifestSha:string,index:number):void{
+    this.contractReads(binding,manifestSha);
+    if(!Number.isSafeInteger(index)||index<0||index>=64)throw new Error("Invalid final contract index");
+    this.db.prepare("INSERT INTO autopilot_contract_reads VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING")
+      .run(automationScope(binding.projectId,binding.orchestraWorkspaceId),binding.workflowId,
+        binding.runId,binding.sessionId,manifestSha,index);
+  }
+  /** Freeze the host-built initial input before native/Durable Session creation. */
+  recordLaunch(job:LaunchJob):void {
+    const {controlGeneration:_,...frozen}=job;
+    const json=JSON.stringify(frozen),scope=automationScope(job.projectId,job.orchestraWorkspaceId);
+    if(json.length>40000)throw new Error("Launch contract exceeds durable input budget");
+    this.db.prepare("INSERT INTO autopilot_launches VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING")
+      .run(scope,job.workflowId,job.runId,json,new Date().toISOString());
+    const stored=this.db.prepare("SELECT job_json FROM autopilot_launches WHERE scope=? AND workflow_id=? AND run_id=?")
+      .get(scope,job.workflowId,job.runId) as {job_json:string};
+    if(stored.job_json!==json)throw new Error("Initial Run contract changed after reservation");
+  }
+  launchFor(binding:AgentBinding):LaunchJob {
+    const row=this.db.prepare("SELECT job_json FROM autopilot_launches WHERE scope=? AND workflow_id=? AND run_id=?")
+      .get(automationScope(binding.projectId,binding.orchestraWorkspaceId),binding.workflowId,binding.runId) as {job_json:string}|undefined;
+    if(!row)throw new Error("No frozen initial input exists for this legacy Run; never reconstruct or replay it blindly");
+    return JSON.parse(row.job_json) as LaunchJob;
   }
   recordReport(binding:AgentBinding,value:unknown):RunReport {
     if(!binding.sessionId)throw new Error("A report requires an attached Pi Session");

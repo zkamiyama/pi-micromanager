@@ -18,7 +18,7 @@ const model={provider:"mock",model:"fixed"};
 const roles={implementer:4,reviewer:2,architect:2,planner:1};
 const policy={
   models:{implementer:model,qc:model,architect:model,planner:model},
-  workspaces:{},test:{file:"node",args:["--test"],timeoutMs:15000},maxAttempts:3,
+  workspaces:{},test:{execution:"trusted-host",file:"node",args:["--test"],timeoutMs:15000},maxAttempts:3,
 };
 function defOf(tasks,capacity=roles,id="stress"){
   return {id,title:"Adversarial execution",maxQcRounds:3,

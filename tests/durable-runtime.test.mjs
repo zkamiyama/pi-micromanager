@@ -55,7 +55,7 @@ test("New workflows default to Durable; explicit native and legacy saved configu
  try{
    const cfg={models:Object.fromEntries(["planner","qc","architect","implementer"]
      .map(role=>[role,{provider:"faux",model:"faux-1"}])),
-     workspaces:{alpha:"wt-alpha"},test:{file:"node",args:["--test"]},
+     workspaces:{alpha:"wt-alpha"},test:{execution:"trusted-host",file:"node",args:["--test"]},
      maxAttempts:3};
    assert.equal(parseAutopilotConfig(cfg).runtime,"durable");
    assert.equal(parseAutopilotConfig({...cfg,runtime:"pi-web"}).runtime,"pi-web");
@@ -311,5 +311,17 @@ test("Audit F18: missing source pages make a final-QC PASS invalid",async()=>{
   const binding=await x.durable.launch({...x.launch,reservation:r});
   await x.waitFor(()=>x.agents.getRun("p","o","workflow",r.runId)?.phase==="settled");
   assert.equal(x.ledger.report(binding),undefined);
+ }finally{await x.close();}
+});
+
+test('R14 real Durable: explicit zero-input recovery uses the original Harness after configured Pause',async()=>{
+ const x=fixture();try{
+  let checks=0;await assert.rejects(x.durable.launch({...x.launch,assertAdmitted(){if(++checks===2)throw Error('Operator paused before first input');}}),/Operator paused/);
+  const original=x.current();assert.equal(original.phase,'configured');assert.equal(x.faux.state.callCount,0);
+  await x.durable.close();x.durable=new DurableRunHost(x.options);
+  x.faux.setResponses([fauxAssistantMessage([fauxToolCall('mm_qc_report',{verdict:'pass',summary:'Recovered the exact original zero-input run'},{id:'recovered'})],{stopReason:'toolUse'}),fauxAssistantMessage('Done')]);
+  await x.durable.resumeUnstarted(original,x.launch);await x.waitFor(()=>x.current()?.phase==='settled');
+  assert.equal(x.current().sessionId,original.sessionId);assert.equal(x.reports.length,1);assert.equal(x.faux.state.callCount,2);
+  await assert.rejects(x.durable.resumeUnstarted(x.current(),x.launch),/unstarted/);
  }finally{await x.close();}
 });

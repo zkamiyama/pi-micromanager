@@ -1,5 +1,8 @@
 # pi-micromanager
 
+> **Current execution contract (ADR-0016):** host verification defaults to Linux Bubblewrap (`test.execution:"sandbox"`); there is no automatic privileged fallback. Final PR merges use synchronous exact-SHA REST requests rather than new deferred `--auto` reservations. `autoMerge:false` still observes a human merge. See [R01–R23 remediation](docs/AUDIT_REMEDIATION_R01_R23.md) for recovery, limits and migration.
+
+
 **A human-steerable control plane for Pi agent swarms.**
 
 > See everything. Hear everything. Steer anything. Welcome to Cognitive Overload!

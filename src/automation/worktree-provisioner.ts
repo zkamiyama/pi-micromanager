@@ -7,6 +7,7 @@ import {mkdirSync,realpathSync,lstatSync,existsSync} from "node:fs";
 import {dirname,join,resolve,relative,sep,isAbsolute} from "node:path";
 import type {WorkflowStore} from "../core/store.js";
 import type {AutopilotLedger} from "./ledger.js";
+import {managedBranch} from "../core/identifiers.js";
 import {automationScope} from "./ledger.js";
 import {git,requireCleanGit,type GitHost} from "./git.js";
 
@@ -35,7 +36,7 @@ function managedPath(dataRoot:string,scope:string,workflowId:string,taskId:strin
   const rel=relative(root,location);
   if(!rel||rel.startsWith("..")||rel.startsWith(sep))
     throw new Error("Managed Worktree escaped the plugin-owned directory");
-  return {location,branch:"mm/"+hash+"/"+workflowId+"/"+taskId,root};
+  return {location,branch:managedBranch(hash,workflowId,taskId),root};
 }
 function noSymlinkParents(path:string,root:string):void{
   const relativePath=relative(root,dirname(path));
@@ -176,7 +177,8 @@ export class ManagedWorktreeProvisioner {
     return {...row,stage:"created"};
   }
   async create(projectId:string,orchestraWorkspaceId:string,id:string,
-    currentProjectRoot?:string):Promise<WorktreePlan>{
+    currentProjectRoot?:string,assertAdmitted?:()=>void):Promise<WorktreePlan>{
+    assertAdmitted?.();
     const row=this.load(id);
     if(row.scope!==automationScope(projectId,orchestraWorkspaceId))
       throw new Error("Worktree plan belongs to another Orchestra");
@@ -199,6 +201,7 @@ export class ManagedWorktreeProvisioner {
     if(ref.exitCode!==1)throw new Error("Managed branch unexpectedly exists or cannot be inspected");
     // Persist reservation BEFORE the non-atomic native Git action. Never
     // repeat git worktree add after uncertain completion or a restart.
+    assertAdmitted?.();
     const reserved=this.db.prepare("UPDATE worktree_plans SET stage='reserved'"+
       " WHERE id=? AND stage='prepared'").run(id);
     if(reserved.changes!==1)throw new Error("Concurrent provisioning reservation; inspect state");
@@ -213,7 +216,8 @@ export class ManagedWorktreeProvisioner {
   /** Opt-in automatic provisioning. Reserved mutations are only inspected,
    * never replayed, including after a host restart or lost Git response. */
   async ensure(projectId:string,orchestraWorkspaceId:string,workflowId:string,
-    taskId:string,repoRoot:string):Promise<WorktreePlan>{
+    taskId:string,repoRoot:string,assertAdmitted?:()=>void):Promise<WorktreePlan>{
+    assertAdmitted?.();
     const existing=this.find(projectId,orchestraWorkspaceId,workflowId,taskId);
     if(existing?.stage==="reserved"||existing?.stage==="created")
       return this.inspect(projectId,orchestraWorkspaceId,existing.id);
@@ -221,6 +225,6 @@ export class ManagedWorktreeProvisioner {
     const prepared=existing?.stage==="prepared"&&existing.revision===revision&&
       existing.expiresAt>Date.now()?existing:
       await this.preview(projectId,orchestraWorkspaceId,workflowId,taskId,repoRoot);
-    return this.create(projectId,orchestraWorkspaceId,prepared.id,repoRoot);
+    return this.create(projectId,orchestraWorkspaceId,prepared.id,repoRoot,assertAdmitted);
   }
 }
