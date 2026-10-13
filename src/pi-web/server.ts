@@ -456,7 +456,8 @@ const plugin:PiWebServerPlugin={
             if(ready.config.managedWorktrees){
               const workspacesByTask={...ready.config.workspaces};
               const missing=Object.values(workflow.tasks).filter(t=>
-                t.spec.kind==="implementation"&&!workspacesByTask[t.spec.id]);
+                t.spec.kind==="implementation"&&
+                t.spec.systemPurpose!=="final-integration"&&!workspacesByTask[t.spec.id]);
               const needsFinal=ready.config.finalization?.workspaceId==="auto";
               if(missing.length||needsFinal){
                 for(const task of missing){
@@ -479,7 +480,8 @@ const plugin:PiWebServerPlugin={
               }
             }
             const owners=new Set<string>();
-            for(const task of Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation")){
+            for(const task of Object.values(workflow.tasks).filter(t=>
+              t.spec.kind==="implementation"&&t.spec.systemPurpose!=="final-integration")){
               const workerId=ready.config.workspaces[task.spec.id];
               if(!workerId)throw new Error("Task "+task.spec.id+" needs a linked Worktree");
               const resolved=await workspaces.resolve({projectId:p,workspaceId:workerId});
