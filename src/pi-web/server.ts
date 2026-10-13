@@ -151,6 +151,14 @@ const plugin:PiWebServerPlugin={
   const orchestraKey=(project:string,orchestraWorkspaceId:string)=>JSON.stringify([project,orchestraWorkspaceId]);
   const bridgeKey=(binding:AgentBinding)=>JSON.stringify([binding.projectId,binding.orchestraWorkspaceId,binding.sessionId]);
   function notifyRun(binding:AgentBinding):void {
+    // Engine, one-command and explicit operator sealing all converge here.
+    // Release the live Durable watcher/SQLite handle once evidence is sealed;
+    // the transcript and host evidence remain on disk for read-only history.
+    if(binding.phase==="sealed"&&isDurableSession(binding.sessionId)){
+      void durable.stopRun(binding).catch(error=>
+        host.logger.error("Sealed Pi Durable Run could not be released",
+          {runId:binding.runId,message:String(error).slice(0,400)}));
+    }
     const scope=orchestraKey(binding.projectId,binding.orchestraWorkspaceId);
     for(const viewer of viewers){
       if(viewer.scope!==scope)continue;
@@ -1055,7 +1063,6 @@ const plugin:PiWebServerPlugin={
             }
             const sealed=agents.seal(p,o,binding.sessionId!,nonempty(input.evidenceRef,512));
             notifyRun(sealed);
-            if(isDurableSession(binding.sessionId))await durable.stopRun(binding);
             const bridge=live.get(bridgeKey(binding));
             if(bridge){bridge.stop();live.delete(bridgeKey(binding));}
             return j(sealed);
