@@ -259,7 +259,7 @@ test("Orphan cleanup refuses active workflows and changed private objects",async
    assert.equal(preview.files,1);
    writeFileSync(path,Buffer.from("changed-after-preview"));
    assert.throws(()=>x.screenshots.orphanConfirm(
-     "project","orchestra","feature",preview.id),/do not match/);
+     "project","orchestra","feature",preview.id),/changed after preview|do not match/);
    assert.equal(existsSync(path),true,"Changed bytes cannot be removed");
    assert.equal(x.screenshots.preview("project","orchestra",
      "feature",pinned.id).artifact.id,pinned.id);
