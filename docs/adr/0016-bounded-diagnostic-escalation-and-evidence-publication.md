@@ -74,6 +74,18 @@ Referenced evidence remains pinned indefinitely. Native PI WEB Pi Session
 archival and Worktree GC are intentionally untouched until the host
 publishes lifecycle-safe APIs.
 
+## Editable ADR candidates from verified human decisions
+
+The Journal may suggest ADR fields **only** when a QC intervention has a
+completed human-authorized resolution, an immutable last QC record and a
+source-verified, fully resolved Workflow. It derives bounded Context,
+Alternatives, Decision placeholder and Consequences from the recorded
+human instruction, Sol's labeled *proposal* and the exact QC receipt.
+It never pretends that model text is an accepted architecture decision.
+The operator must inspect and edit the suggested fields before
+Preview/Stage. A routine Task completion without completed human review
+does not produce a suggested ADR.
+
 ## Explicit GitHub ADR Draft PR publication
 
 Once a human previews a source-attributed ADR, reviews every section,

@@ -47,7 +47,10 @@ it cannot authenticate to the user's Pi providers or GitHub account.
 2. When the Workflow is fully integrated, create a clean separate
    `docs/adr` review Worktree with an unpublished Git branch.
    Enter a self-contained ADR with context, alternatives, decision
-   and consequences. Preview, Stage and then explicitly **Publish
+   and consequences. If a previous QC investigation ended with a
+   human-confirmed resolution, use **Suggest fields from completed QC
+   decision** to prefill an editable candidate; no model-only statement
+   becomes a published decision automatically. Preview, Stage and then explicitly **Publish
    reviewed ADR as GitHub Draft PR**. Confirm the PR head/base,
    unchanged SHA and Draft state in the disposable GitHub repo.
    Review and merge the ADR PR manually.
