@@ -253,6 +253,8 @@ export class AutopilotEngine {
         if(!existing.requestId.startsWith("auto:"))
           throw new Error("Human-owned planning Run cannot be automatically adopted");
         if(existing.phase==="settled"){
+          if(existing.latestKind==="agent_settled"&&existing.latestText==="Agent interrupted")
+            throw new Error("Sol planning Run was interrupted, not completed");
           if(!this.ledger.report(existing)&&this.port.recoverReport)
             await this.port.recoverReport(existing);
           const report=this.ledger.report(existing);
