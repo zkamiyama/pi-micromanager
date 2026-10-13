@@ -166,14 +166,16 @@ function fakePluginHost(shared,options={}) {
         if(command==="symbolic-ref --quiet --short HEAD")
           return result((createdWorktrees.get(args[1])?.branch??
             (args[1]==="/repo/final"?"feature/final":"feature/api"))+"\n");
-        if(command==="remote get-url origin")
+        if(command==="remote get-url origin"||
+          command==="remote get-url --push --all origin")
           return result("https://github.com/acme/repo.git\n");
-        if(command.startsWith("ls-remote --heads origin refs/heads/")){
+        if(command.startsWith("ls-remote --heads https://github.com/acme/repo.git refs/heads/")){
           const branch=command.split(" ").at(-1);
           return result(publication.remoteSha?
             publication.remoteSha+"\t"+branch+"\n":"");
         }
-        if(command.startsWith("push --porcelain origin HEAD:refs/heads/")){
+        if(command.startsWith("push --porcelain https://github.com/acme/repo.git ")){
+          if(!command.includes(":refs/heads/"))throw Error("Missing SHA-bound refspec");
           publication.pushCount++;
           publication.remoteSha=args[1]==="/repo/final"||isManagedFinal(args[1])?FINAL:SHA;
           return result("Published mock Git branch\n");
@@ -1020,4 +1022,28 @@ test("Restarting a QC-passed finalization Workflow does not demand a second per-
    assert.equal(started.config.workspaces["mm-final-integration"],undefined,
      "The system finalizer never needs its own per-Task workspace mapping");
  }finally{await host.cleanup();}
+});
+
+test("Audit F19: manually created QC runs require linked worktree and read-only job binding",async()=>{
+  const host=fakePluginHost();
+  try{
+    await host.activate();
+    await host.request("create",definition);
+    let w=await host.request("get","wf");
+    w=await host.request("act",{workflowId:"wf",expectedRevision:w.revision,
+      commandId:"manual-start",action:{type:"start",taskId:"api"}});
+    w=await host.request("act",{workflowId:"wf",expectedRevision:w.revision,
+      commandId:"manual-done",action:{type:"implementation_finished",taskId:"api",
+        headSha:SHA,criteriaRevision:0,testsPassed:true}});
+    const manual={workflowId:"wf",taskId:"api",seat:"qc",requestId:"manual-qc",
+      provider:"local-provider",model:"exact-model"};
+    await assert.rejects(host.request("agents.create",{
+      ...manual,workspaceId:"orchestra"}),/isolated linked Git worktree/);
+    const created=await host.request("agents.create",{
+      ...manual,workspaceId:"worktree-api"});
+    assert.equal(created.phase,"configured");
+    const session=host.sessions.get(created.sessionId);
+    const configure=session.commands.find(c=>c.type==="configure");
+    assert.deepEqual(configure.job,{runId:"qc-api-1",kind:"qc"});
+  }finally{await host.cleanup();}
 });

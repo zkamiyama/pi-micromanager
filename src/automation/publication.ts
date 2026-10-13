@@ -12,7 +12,7 @@ import type {AgentRegistry} from "../runtime/registry.js";
 import type {AutopilotLedger,AutopilotRecord,PublicationConfig} from "./ledger.js";
 import {automationScope} from "./ledger.js";
 import {git,gitValue,requireAncestor,requireCleanGit,type GitHost} from "./git.js";
-import type {PermissionLedger} from "./permissions.js";
+import type {PermissionLedger,PublicationTarget} from "./permissions.js";
 import type {PermissionAction} from "../core/permissions.js";
 
 type PublicationAction="git.push"|"github.pr.create"|"github.pr.ready"|"github.pr.merge";
@@ -164,9 +164,10 @@ export class PublicationManager {
       throw new Error("GitHub CLI failed: "+result.stderr.slice(-150));
     return result.stdout.trim();
   }
-  private async remoteSha(path:string,pub:PublicationConfig,branch:string):Promise<string|undefined>{
+  private async remoteSha(path:string,target:PublicationTarget,branch:string):Promise<string|undefined>{
+    // Never re-resolve a mutable remote alias after authorization.
     const res=await git(this.options.host,path,
-      ["ls-remote","--heads",pub.remote,"refs/heads/"+branch],45000);
+      ["ls-remote","--heads",target.pushUrl,"refs/heads/"+branch],45000);
     if(res.exitCode!==0)throw new Error("Cannot inspect Git remote branch: "+res.stderr.slice(-170));
     const lines=res.stdout.trim().split("\n").filter(Boolean);
     if(lines.length>1)throw new Error("Ambiguous remote Git branch");
@@ -270,12 +271,12 @@ export class PublicationManager {
   }
   private async completeFinalPR(record:AutopilotRecord,taskId:string,
     qcRunId:string,sha:string,path:string,branch:string,repo:string,
-    destination:string):Promise<"acted"|"waiting"|"scheduled"|"checks_pending"|"none">{
+    destination:string,target:PublicationTarget):Promise<"acted"|"waiting"|"scheduled"|"checks_pending"|"none">{
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     const pub=record.config.publication!;
     if(!record.config.finalization?.autoMerge)return "none";
     const approval=this.options.permissions.ensure(p,o,w,taskId,
-      "github.pr.merge",qcRunId,sha,pub);
+      "github.pr.merge",qcRunId,sha,pub,target);
     if(approval.decision==="deny")return "none";
     if(approval.decision==="ask")return "waiting";
     const prs=await this.pullRequests(path,repo,branch);
@@ -319,8 +320,9 @@ export class PublicationManager {
       if(this.options.agents.hasUnsealedWorkspace(p,
         record.config.finalization!.workspaceId)||
         await requireCleanGit(this.options.host,path)!==sha||
-        await this.remoteSha(path,pub,branch)!==sha)
+        await this.remoteSha(path,target,branch)!==sha)
         throw new Error("Final PR source changed before Ready transition");
+      this.assertAdmitted(record);
       await this.gh(path,["pr","ready",String(number),"--repo",repo]);
       const after=await this.finalPrState(path,repo,number);
       if(after.isDraft||after.headRefOid!==sha||after.baseRefName!==pub.baseBranch)
@@ -356,13 +358,14 @@ export class PublicationManager {
     if(this.options.agents.hasUnsealedWorkspace(p,
       record.config.finalization.workspaceId)||
       await requireCleanGit(this.options.host,path)!==sha||
-      await this.remoteSha(path,pub,branch)!==sha)
+      await this.remoteSha(path,target,branch)!==sha)
       throw new Error("Final PR source was modified before scheduling merge");
     // Host verifies actual passing PR checks before requesting native GitHub
     // auto-merge, including on repos with no required-status-check rule.
     // --auto may either merge immediately or remain scheduled for required
     // reviewer approvals; only API-confirmed MERGED completes the workflow.
     // --match-head-commit protects against stale source SHA. No --admin/force.
+    this.assertAdmitted(record);
     await this.gh(path,["pr","merge",String(number),"--repo",repo,
       "--auto","--merge","--match-head-commit",sha]);
     const after=await this.finalPrState(path,repo,number);
@@ -428,7 +431,16 @@ export class PublicationManager {
         /^(main|master|develop|production|stable|release)(\/|$)/i.test(branch))
         throw new Error("Refusing to publish to a protected or invalid Git branch");
       const url=await gitValue(this.options.host,target.path,["remote","get-url",pub.remote]);
-      const repo=publicRepo(url);
+      const fetchRepo=publicRepo(url);
+      const destinations=(await gitValue(this.options.host,target.path,
+        ["remote","get-url","--push","--all",pub.remote])).split("\n").filter(Boolean);
+      if(destinations.length!==1)
+        throw new Error("Publication requires exactly one effective Git push URL");
+      const pushUrl=destinations[0]!;
+      const repo=publicRepo(pushUrl);
+      if(repo!==fetchRepo)
+        throw new Error("Git fetch and push repositories differ; reconcile destination explicitly");
+      const publicationTarget:PublicationTarget={repository:repo,sourceBranch:branch,pushUrl};
       const dest=repo+" "+pub.remote+" "+pub.baseBranch;
       if(this.options.agents.hasUnsealedWorkspace(p,workspaceId))
         throw new Error("Worker lease changed during Git publication preflight");
@@ -438,10 +450,10 @@ export class PublicationManager {
         throw new Error("Git publication destination changed after reservation");
       if(!donePush||donePush.state!=="completed"){
         const approval=this.options.permissions.ensure(p,o,w,task.spec.id,
-          "git.push",qc.runId,qc.headSha,pub);
+          "git.push",qc.runId,qc.headSha,pub,publicationTarget);
         if(approval.decision==="deny")continue;
         if(approval.decision==="ask")return "waiting";
-        const remote=await this.remoteSha(target.path,pub,branch);
+        const remote=await this.remoteSha(target.path,publicationTarget,branch);
         if(remote&&remote!==sha)
           throw new Error("Remote branch has a different commit; never force push");
         if(remote===sha){
@@ -459,18 +471,21 @@ export class PublicationManager {
           if(this.options.agents.hasUnsealedWorkspace(p,workspaceId)||
             await requireCleanGit(this.options.host,target.path)!==sha)
             throw new Error("Publication Git checkout changed immediately before push");
+          // Recheck pause after the last awaited preflight; pin the URL and source SHA.
+          this.assertAdmitted(record);
           const pushed=await git(this.options.host,target.path,
-            ["push","--porcelain",pub.remote,"HEAD:refs/heads/"+branch],120000);
+            ["push","--porcelain",publicationTarget.pushUrl,
+              sha+":refs/heads/"+branch],120000);
           if(pushed.exitCode!==0)
             throw new Error("Git push not confirmed; inspect remote before any retry");
-          const confirmed=await this.remoteSha(target.path,pub,branch);
+          const confirmed=await this.remoteSha(target.path,publicationTarget,branch);
           if(confirmed!==sha)throw new Error("Git remote did not confirm QC SHA after push");
           this.complete(receipt,"Remote HEAD="+sha);
         }
         return "acted";
       }
       const approval=this.options.permissions.ensure(p,o,w,task.spec.id,
-        "github.pr.create",qc.runId,qc.headSha,pub);
+        "github.pr.create",qc.runId,qc.headSha,pub,publicationTarget);
       if(approval.decision==="deny")continue;
       if(approval.decision==="ask")return "waiting";
       const previous=this.existing(p,o,w,task.spec.id,"github.pr.create",qc.runId);
@@ -481,7 +496,7 @@ export class PublicationManager {
         if(task.spec.systemPurpose==="final-integration"&&
           record.config.finalization?.autoMerge)
           return this.completeFinalPR(record,task.spec.id,qc.runId,sha,
-            target.path,branch,repo,dest);
+            target.path,branch,repo,dest,publicationTarget);
         continue;
       }
       // An existing identical Draft PR is proof even if the previous gh call
@@ -503,12 +518,13 @@ export class PublicationManager {
       this.assertAdmitted(record);
       if(this.options.agents.hasUnsealedWorkspace(p,workspaceId)||
         await requireCleanGit(this.options.host,target.path)!==sha||
-        await this.remoteSha(target.path,pub,branch)!==sha)
+        await this.remoteSha(target.path,publicationTarget,branch)!==sha)
         throw new Error("Publication source/remote changed before Draft PR creation");
       const title=(task.spec.title||task.spec.id).slice(0,180);
       const body="Autonomous Draft PR for Workflow "+w+", Task "+task.spec.id+
         ".\nQC Run "+qc.runId+" PASS at "+sha+".\nEvidence: "+evidence.ref+
         ".\nHuman review and merge policy remain authoritative.";
+      this.assertAdmitted(record);
       await this.gh(target.path,["pr","create","--repo",repo,
         "--head",branch,"--base",pub.baseBranch,"--draft",
         "--title",title,"--body",body]);

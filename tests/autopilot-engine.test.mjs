@@ -421,3 +421,71 @@ test("Human QC intervention arriving during async host verification wins over st
       "Sol planning may continue but cannot void the held QC evidence");
   }finally{x.close();}
 });
+
+test("Audit G02: per-Task implementer override never changes the QC model",async()=>{
+  const task={...definition.tasks[0],model:"special/implementation"};
+  const def={...definition,tasks:[task]};
+  const qcModel={provider:"independent",model:"reviewer-1",effort:"high"};
+  const x=setup(def,{...config,models:{...config.models,qc:qcModel}});
+  try{
+    await x.tick();await x.tick();
+    assert.equal(x.launches[0].model.provider,"special");
+    x.settled("impl-api-1");await x.tick();await x.tick();
+    const qc=x.launches.find(job=>job.kind==="qc");
+    assert.deepEqual(qc.model,qcModel);
+  }finally{x.close();}
+});
+test("Audit F18: final QC includes later source acceptance criteria without truncation",()=>{
+  const x=setup();
+  try{
+    const w=structuredClone(x.wf());
+    for(let i=1;i<=3;i++){
+      const id="source-"+i;
+      const spec={id,title:"Feature "+i,kind:"implementation",role:"implementer",
+        description:"x".repeat(3500),acceptanceCriteria:["ACCEPTANCE-MARKER-"+i],
+        dependsOn:[]};
+      w.tasks[id]={spec,status:"passed",attempts:1,qcRounds:1,
+        lastQc:{runId:"qc-"+id+"-1",verdict:"pass",
+          headSha:sha,criteriaRevision:0,attempt:1}};
+    }
+    const spec={id:"mm-final-integration",title:"Final",kind:"implementation",
+      role:"implementer",systemPurpose:"final-integration",dependsOn:[]};
+    const task={spec,status:"awaiting_qc",attempts:1,qcRounds:0,
+      pendingWork:{headSha:sha,attempt:1,criteriaRevision:0}};
+    const prompt=buildJobPrompt(w,task,"qc");
+    assert.match(prompt,/ACCEPTANCE-MARKER-1/);
+    assert.match(prompt,/ACCEPTANCE-MARKER-3/);
+    assert.ok(prompt.length<16000);
+  }finally{x.close();}
+});
+
+test("Audit F08: CAS conflict reuses persisted host verification, not a second test outcome",async()=>{
+  const x=setup();
+  try{
+    await x.tick();await x.tick();
+    x.settled("impl-api-1");
+    let release;
+    const verification=new Promise(resolve=>{release=resolve;});
+    x.setVerification(verification);
+    const checking=x.tick();
+    await new Promise(resolve=>setImmediate(resolve));
+    const before=x.wf();
+    x.store.act("project","orchestra","wf",before.revision,"human-hold",{
+      type:"request_intervention",interventionId:"human-hold",
+      targetTaskId:"api",afterQcRunId:"next",instruction:"Review after QC",
+    });
+    release({headSha:sha,clean:true,testsPassed:true,
+      details:"stdoutSha256=first-deterministic-capture"});
+    await checking;
+    assert.equal(x.status().enabled,true);
+    assert.equal(x.wf().tasks.api.status,"running");
+    x.setVerification({headSha:sha,clean:true,testsPassed:false,
+      details:"stdoutSha256=changed-on-a-second-run"});
+    for(let i=0;i<10&&x.wf().tasks.api.status!=="awaiting_qc";i++)await x.tick();
+    assert.equal(x.status().enabled,true);
+    assert.equal(x.wf().tasks.api.status,"awaiting_qc");
+    assert.equal(x.wf().tasks.api.pendingWork.headSha,sha);
+    assert.match(x.ledger.evidence(x.run("impl-api-1")).text,
+      /first-deterministic-capture/);
+  }finally{x.close();}
+});

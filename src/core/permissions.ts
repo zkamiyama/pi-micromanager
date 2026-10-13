@@ -10,13 +10,20 @@ export interface WorkflowPermissions {
 }
 export function permissionDecision(permissions:WorkflowPermissions|undefined,
   action:PermissionAction):PermissionDecision {
-  const specified=permissions?.actions?.[action];
-  if(specified)return specified;
+  const specified:unknown=permissions?.actions?.[action];
+  if(specified!==undefined){
+    if(specified!=="allow"&&specified!=="ask"&&specified!=="deny")
+      throw new Error("Invalid permission decision for "+action);
+    return specified;
+  }
   // A fully QC-gated finalization pipeline can merge in YOLO mode.
   // Production deployment remains an independent, human-first capability.
   if(action==="deploy.production")
     return permissions?.default==="deny"?"deny":"ask";
-  return permissions?.default??"allow";
+  const fallback:unknown=permissions?.default??"allow";
+  if(fallback!=="allow"&&fallback!=="ask"&&fallback!=="deny")
+    throw new Error("Invalid default permission decision");
+  return fallback;
 }
 export function validatePermissions(value:unknown):asserts value is WorkflowPermissions {
   if(value===undefined)return;
@@ -25,7 +32,8 @@ export function validatePermissions(value:unknown):asserts value is WorkflowPerm
   const policy=value as Record<string,unknown>;
   if(Object.keys(policy).some(k=>k!=="default"&&k!=="actions"))
     throw new Error("Unknown permission policy field");
-  if(policy.default!==undefined&&!["allow","ask","deny"].includes(String(policy.default)))
+  if(policy.default!==undefined&&
+    (typeof policy.default!=="string"||!["allow","ask","deny"].includes(policy.default)))
     throw new Error("Invalid default permission");
   if(policy.actions===undefined)return;
   if(!policy.actions||typeof policy.actions!=="object"||Array.isArray(policy.actions))

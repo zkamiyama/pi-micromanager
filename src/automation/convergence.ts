@@ -11,6 +11,7 @@ import type {WorkflowInstance,TaskState} from "../core/workflow.js";
 import type {AgentRegistry,AgentBinding} from "../runtime/registry.js";
 import type {AutopilotLedger,AutopilotRecord} from "./ledger.js";
 import {automationScope} from "./ledger.js";
+import {internalCommandId} from "../core/identifiers.js";
 import type {PermissionLedger} from "./permissions.js";
 import {git,gitSha,gitValue,requireAncestor,requireCleanGit,type GitHost} from "./git.js";
 
@@ -277,7 +278,7 @@ export class AutomaticIntegrator {
       this.ensureCurrent(record,source.spec.id,qc.runId,qc.headSha,targets[0]!.spec.id);
       const latest=this.opt.workflows.get(p,o,w);
       this.opt.workflows.act(p,o,w,latest.revision,
-        "auto:integrate:"+source.spec.id+":"+qc.runId,
+        internalCommandId("auto:integrate:"+source.spec.id+":"+qc.runId),
         {type:"integrate",taskId:source.spec.id});
       return "acted";
     }

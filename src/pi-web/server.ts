@@ -8,6 +8,7 @@ import {
   type PiWebServerPlugin, type JsonValue, type ServerPluginPeerRequestContext,
 } from "@jmfederico/pi-web/server-plugin-api";
 import { WorkflowStore } from "../core/store.js";
+import {internalRunId} from "../core/identifiers.js";
 import { WorkflowError, type WorkflowAction, type TaskState } from "../core/workflow.js";
 import { AgentRegistry, type AgentBinding, type Reservation, type Seat } from "../runtime/registry.js";
 import { PiSessionBridge } from "../runtime/session-bridge.js";
@@ -50,12 +51,12 @@ function role(value:unknown):Seat {
 function j(value:unknown):JsonValue {return value as JsonValue;}
 function plannedRunId(task:TaskState,seat:Seat):string {
   if(seat==="implementer"&&task.spec.kind==="implementation"&&task.status==="running"&&task.attempts>0)
-    return "impl-"+task.spec.id+"-"+task.attempts;
+    return internalRunId("impl",task.spec.id,task.attempts);
   if(seat==="qc"&&task.spec.kind==="implementation"&&task.status==="awaiting_qc"&&task.pendingWork)
-    return "qc-"+task.spec.id+"-"+task.pendingWork.attempt;
+    return internalRunId("qc",task.spec.id,task.pendingWork.attempt);
   if((seat==="architect"||seat==="planner"||seat==="qc")&&
     (task.spec.kind==="diagnosis"||task.spec.kind==="synthesis")&&task.status==="running"&&task.attempts>0)
-    return "task-"+task.spec.id+"-"+task.attempts;
+    return internalRunId("task",task.spec.id,task.attempts);
   throw new WorkflowError("task_not_dispatchable","The task has no admitted run for this role");
 }
 type Fanout={scope:string;send:(payload:JsonValue)=>void};
@@ -264,9 +265,10 @@ const plugin:PiWebServerPlugin={
     const resolved=await workspaces.resolve({projectId:ctx.project.id,workspaceId:targetWorkspace});
     if(resolved.project.id!==ctx.project.id||resolved.workspace.id!==targetWorkspace)
       throw new Error("Workspace belongs to a different project");
-    if(seat==="implementer"){
+    if(seat==="implementer"||seat==="qc"||seat==="architect"){
       if(resolved.workspace.isMain||resolved.workspace.provider?.metadata?.isGitWorktree!==true)
-        throw new WorkflowError("worktree_required","Select an independently linked Git worktree before launching Luna");
+        throw new WorkflowError("worktree_required",
+          "Implementation and QC Runs require an isolated linked Git worktree");
     }
     return {
       projectId:ctx.project.id,orchestraWorkspaceId:ctx.workspace.id,
@@ -290,8 +292,8 @@ const plugin:PiWebServerPlugin={
     const existing=recoveryFlights.get(key);
     if(existing)return existing;
     const flight=(async()=>{
-      const entries=agents.list(record.projectId,record.orchestraWorkspaceId,"active")
-        .filter(b=>b.workflowId===record.workflowId&&b.requestId.startsWith("auto:"));
+      const entries=agents.listWorkflow(record.projectId,record.orchestraWorkspaceId,
+        record.workflowId,"active").filter(b=>b.requestId.startsWith("auto:"));
       for(const binding of entries){
         if(host.lifetimeSignal.aborted)throw new Error("Plugin is shutting down");
         if(binding.phase!=="running"||!binding.sessionId)
@@ -331,7 +333,7 @@ const plugin:PiWebServerPlugin={
     return flight;
   }
   async function restoreEnabledAutopilots():Promise<void>{
-    for(const cfg of ledger.list().filter(x=>x.enabled)){
+    for(const cfg of ledger.listEnabled()){
       try{await reconcileWorkflow(cfg);}
       catch(error){
         ledger.setStatus(cfg.projectId,cfg.orchestraWorkspaceId,cfg.workflowId,false,
@@ -446,7 +448,7 @@ const plugin:PiWebServerPlugin={
             const fresh=ledger.get(p,o,workflowId);
             if(fresh?.enabled)return fresh;
             if(!workspaces)throw new Error("PI WEB workspace authority unavailable");
-            const manual=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
+            const manual=agents.listWorkflow(p,o,workflowId).some(b=>
               !b.requestId.startsWith("auto:")&&
               !["sealed","failed"].includes(b.phase));
             if(manual)throw new Error("Manually owned Runs are still live or unsealed; reconcile them first");
@@ -641,12 +643,12 @@ const plugin:PiWebServerPlugin={
       bootstrap=restoreEnabledAutopilots().then(()=>{
         if(host.lifetimeSignal.aborted)return;
         // Validate persisted configuration before enabling a background timer.
-        const enabled=ledger.list().filter(x=>x.enabled);
+        const enabled=ledger.listEnabled();
         automationReady=true;
         automationTimer=setInterval(()=>{
           if(host.lifetimeSignal.aborted)return;
           try{
-            for(const cfg of ledger.list().filter(x=>x.enabled))
+            for(const cfg of ledger.listEnabled())
               void autopilot!.tick(cfg);
             for(const job of quick.pending())scheduleQuick(job);
           }catch(error){
@@ -679,8 +681,7 @@ const plugin:PiWebServerPlugin={
             const input=object(ctx.input),workflowId=id(input.workflowId);
             const action=object(input.action) as unknown as WorkflowAction;
             const running=ledger.get(p,o,workflowId)?.enabled===true;
-            const automatedRuns=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
-              b.requestId.startsWith("auto:"));
+            const automatedRuns=agents.hasAutomatedRun(p,o,workflowId);
             if((running||automatedRuns)&&
               !["request_intervention","cancel_amendment","resume_after_diagnosis"].includes(action.type))
               throw new WorkflowError("autopilot_owns_transition",
@@ -710,8 +711,8 @@ const plugin:PiWebServerPlugin={
             // Retrying the exact accepted request is idempotent; starting a
             // different DAG while the same workspace runs another Autopilot
             // would race source Git/remote publication and is not allowed.
-            if(!quick.find(p,o,requestId)&&ledger.list().some(record=>
-              record.projectId===p&&record.orchestraWorkspaceId===o&&record.enabled))
+            if(!quick.find(p,o,requestId)&&ledger.listEnabled().some(record=>
+              record.projectId===p&&record.orchestraWorkspaceId===o))
               throw new Error("Another Autopilot is running in this project Workspace; pause or complete it first");
             const goal=quick.begin(p,o,input.goal,requestId);
             scheduleQuick(goal);
@@ -913,8 +914,7 @@ const plugin:PiWebServerPlugin={
             const config=parseAutopilotConfig(input.config);
             const current=ledger.get(p,o,workflowId);
             if(current?.enabled)throw new Error("Pause Autopilot before changing its configuration");
-            const active=agents.list(p,o,"active").some(b=>b.workflowId===workflowId&&
-              b.requestId.startsWith("auto:"));
+            const active=agents.hasUnsealedAutomatedRun(p,o,workflowId);
             if(active)throw new Error("Cannot reconfigure while an automated Pi Run is unsealed");
             const missing=Object.values(workflow.tasks).filter(t=>
               t.spec.kind==="implementation"&&t.spec.systemPurpose!=="final-integration"&&
@@ -970,8 +970,13 @@ const plugin:PiWebServerPlugin={
             if(checked.status!=="ok"){
               return j({...binding,notice:"Pi companion did not acknowledge probe. Reconcile session; do not respawn."});
             }
+            const manualTask=store.get(p,o,run.workflowId).tasks[run.taskId];
+            if(!manualTask)throw new Error("Manual Run Task disappeared");
             const receipt=await checked.bridge.send({
               type:"configure",requestId:randomUUID(),provider,model,...(effort?{effort}:{}),
+              job:{runId:run.runId,
+                kind:run.seat==="qc"&&manualTask.spec.kind==="implementation"?
+                  "qc":manualTask.spec.kind},
               sessionName:"MM "+run.seat+" "+run.taskId+" "+run.runId,
             });
             binding=agents.update(binding,receipt.status==="ok"?"configured":
@@ -1027,8 +1032,13 @@ const plugin:PiWebServerPlugin={
             if(!bridge?.connected)throw new Error("Reconnect this Pi Session first");
             const provider=nonempty(input.provider,120),model=nonempty(input.model);
             const effort=input.effort===undefined?undefined:nonempty(input.effort,32);
+            const manualTask=store.get(p,o,binding.workflowId).tasks[binding.taskId];
+            if(!manualTask)throw new Error("Manual Run Task disappeared");
             const receipt=await bridge.send({type:"configure",requestId:id(input.requestId),
-              provider,model,...(effort?{effort}:{})});
+              provider,model,...(effort?{effort}:{}),
+              job:{runId:binding.runId,
+                kind:binding.seat==="qc"&&manualTask.spec.kind==="implementation"?
+                  "qc":manualTask.spec.kind}});
             binding=agents.update(binding,receipt.status==="ok"?"configured":
               receipt.status==="uncertain"?"uncertain":"blocked",
               receipt.status==="ok"?{provider,model,...(effort?{effort}:{})}:undefined);
@@ -1055,7 +1065,10 @@ const plugin:PiWebServerPlugin={
             if(binding.requestId.startsWith("auto:")&&action==="newTurn")
               throw new Error("Only Autopilot may admit the initial turn of its bound Pi Session");
             let cmd:RuntimeControl;
-            if(action==="abort")cmd={type:"abort",requestId:id(input.requestId)};
+            if(action==="abort"){
+              agents.requestAbort(binding);
+              cmd={type:"abort",requestId:id(input.requestId)};
+            }
             else{
               if(action!=="newTurn"&&action!=="steer"&&action!=="followUp")
                 throw new Error("Invalid Pi message delivery mode");

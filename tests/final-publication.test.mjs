@@ -74,13 +74,14 @@ function fixture(override={}){
        if(command==="rev-parse HEAD")return output(commit+"\n");
        if(command==="status --porcelain")return output(dirty?"??dirty.txt\n":"");
        if(command==="symbolic-ref --quiet --short HEAD")return output("feature/final\n");
-       if(command==="remote get-url origin")
+       if(command==="remote get-url origin"||
+          command==="remote get-url --push --all origin")
          return output("https://github.com/acme/final-project.git\n");
        if(command==="merge-base --is-ancestor "+SOURCE+" "+FINAL)
          return output("",ancestry?0:1);
-       if(command==="ls-remote --heads origin refs/heads/feature/final")
+       if(command==="ls-remote --heads https://github.com/acme/final-project.git refs/heads/feature/final")
          return output(remoteSha?remoteSha+"\trefs/heads/feature/final\n":"");
-       if(command==="push --porcelain origin HEAD:refs/heads/feature/final"){
+       if(command==="push --porcelain https://github.com/acme/final-project.git "+FINAL+":refs/heads/feature/final"){
          pushes++;remoteSha=FINAL;return output("Pushed verified final commit\n");
        }
        throw new Error("Unexpected git "+command);

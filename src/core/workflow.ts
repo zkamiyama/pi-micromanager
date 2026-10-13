@@ -118,6 +118,9 @@ export function validateDefinition(def: WorkflowDefinition): void {
   const tasks = new Map<string, TaskSpec>();
   for (const task of def.tasks) {
     invariant(task !== null && validId(task.id) && !tasks.has(task.id), "duplicate_task", "Task IDs must be unique lowercase kebab-case");
+    invariant(!task.id.startsWith("mm-")||
+      (task.id==="mm-final-integration"&&task.systemPurpose==="final-integration"),
+      "reserved_id", "mm-* Task identities are reserved for internal Tasks");
     invariant(typeof task.title === "string" && !!task.title.trim() && task.title.length <= 200,
       "invalid_task", `Title must be 1..200 characters for ${task.id}`);
     if(task.description!==undefined)
@@ -144,6 +147,9 @@ export function validateDefinition(def: WorkflowDefinition): void {
     invariant(dep !== null && validId(dep.taskId) && tasks.has(dep.taskId), "unknown_dependency", `${task.id} depends on missing task ${dep?.taskId}`);
     invariant(gates.includes(dep.gate), "invalid_gate", `${task.id}: invalid dependency gate`);
     invariant(dep.taskId !== task.id, "cycle", `${task.id} depends on itself`);
+    const upstream=tasks.get(dep.taskId)!;
+    invariant(upstream.kind==="implementation"||dep.gate==="completed",
+      "unreachable_gate", `${task.id}: ${dep.gate} cannot be satisfied by ${upstream.kind} Task ${dep.taskId}`);
   }
   const visited = new Set<string>();
   const visiting = new Set<string>();
@@ -384,6 +390,8 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       invariant(synth.status === "done", "blocked", "Synthesis must complete before resuming work");
       const t = taskById(instance, a.targetTaskId);
       invariant(t.status === "held", "invalid_transition", "Target not held");
+      invariant(action.decision === "rework" || action.decision === "accept_pass",
+        "invalid_decision", "Resume decision must be rework or accept_pass");
       if (action.decision === "accept_pass") invariant(t.lastQc?.verdict === "pass", "invalid_transition", "Cannot accept a failing QC");
       if (action.decision === "rework") invariant(t.qcRounds < instance.definition.maxQcRounds, "budget_exhausted", "QC budget exhausted; explicit budget amendment required");
       t.status = action.decision === "rework" ? "ready" : "passed";
