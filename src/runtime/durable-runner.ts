@@ -181,7 +181,7 @@ export class DurableRunHost {
     const canonical=realpathSync(cwd);
     if(canonical!==resolve(cwd))throw new Error("Durable Worktree path is not canonical");
     const found=this.active.get(sessionId);
-    if(found)return found;
+    if(found&&!found.closed)return found;
     const opening=this.opening.get(sessionId);
     if(opening)return opening;
     const future=(async()=>{
@@ -206,7 +206,17 @@ export class DurableRunHost {
       },Date.parse(binding.createdAt));
       const provided=kind==="qc"?reports.qc:
         kind==="planning"?reports.plan:kind==="workflow_plan"?reports.proposal:reports.task;
-      registry.install(CodingTools);
+      const coding=(CodingTools.tools??[]).map(tool=>{
+        if(tool.name!=="bash")return tool;
+        return {...tool,async execute(args:never,api:never,context:never){
+          const command=String((args as {command?:string}).command??"");
+          if(!isSafeBashCommand(command))
+            throw new Error("Direct GitHub publication and dangerous Git mutations "+
+              "must use the Orchestrator's exact QC/permission gates");
+          return tool.execute(args,api,context);
+        }};
+      }) as ToolRegistration[];
+      registry.install(defineExtension({name:"micromanager-coding-tools",tools:coding}));
       registry.install(defineExtension({name:"micromanager-durable-reports",tools:[provided]}));
       const harness=await Harness.open(await openNodeSqliteStorage(rootPath),
         {models,registry,settings:{toolExecution:"sequential",
@@ -217,7 +227,7 @@ export class DurableRunHost {
            return new NodeExecutionEnv({cwd:canonical});
          }},BACKGROUND_CONTEXT);
       try{
-        const original=[...(CodingTools.tools??[])];
+        const original=[...coding];
         const read=original.find(x=>x.name==="read");
         if(!read)throw new Error("Pi Durable CodingTools lacks the safe read tool");
         // TypeBox-specific registrations share the durable ToolRegistration
@@ -337,9 +347,12 @@ export class DurableRunHost {
     action:"steer"|"followUp"|"abort",requestId:string,text?:string){
     if(binding.phase!=="running")
       throw new Error("Only running Durable conversations accept live intervention");
-    const live=await this.reconnect(binding,cwd,kind).then(()=>{
-      return this.active.get(binding.sessionId!)!;
-    });
+    let live=this.active.get(binding.sessionId!);
+    if(!live||live.closed){
+      await this.reconnect(binding,cwd,kind);
+      live=this.active.get(binding.sessionId!);
+    }
+    if(!live||live.closed)throw new Error("Durable conversation is not connected");
     if(action==="abort"){
       live.abortRequested=true;
       await live.root.abort(BACKGROUND_CONTEXT);
