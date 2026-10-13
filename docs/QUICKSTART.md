@@ -59,6 +59,9 @@ cd pi-micromanager
 npm install --no-audit --no-fund
 npm run check
 npm run doctor
+# Optional but recommended: one real model/tool turn with this Pi user's
+# OAuth/API-key credentials, disposable SQLite, no shell/file tools:
+node scripts/durable-auth-smoke.mjs openai gpt-5.5
 pwd
 ```
 
