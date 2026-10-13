@@ -8,6 +8,15 @@
 [Quickstart — disposable Pi / PI WEB → GitHub merge trial](docs/QUICKSTART.md).
 The trial is explicitly opt-in and does not touch production repositories.
 
+**New Autopilot and one-command Workflows default to [Pi Durable](docs/PI_DURABLE.md)**
+(`@earendil-works/pi-durable` 1.2.0): SQLite-backed agent turns,
+restart recovery and streamed monitoring in the PI WEB Orchestra. Existing
+saved Workflows/profiles remain on the original `pi-web` backend; select
+`"runtime": "pi-web"` explicitly for new native PI WEB sessions. Durable
+requires model credentials available to the **daemon process** (for example,
+`OPENAI_API_KEY`), not merely PI WEB's native Pi auth configuration.
+
+
 `pi-micromanager` is an experimental, intentionally small control plane built on [Pi](https://github.com/earendil-works/pi) and [PI WEB](https://github.com/jmfederico/pi-web). It aims to preserve Multi-Agent-Shogun's **flat, simultaneous observation and direct human intervention** without requiring every agent to read long organizational `AGENTS.md` role prompts.
 
 The orchestration layer is code, not another personality prompt: a validated Task DAG, explicit QC gates, bounded retries, versioned human amendments, and durable workflow state.
