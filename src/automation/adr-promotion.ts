@@ -346,8 +346,8 @@ export class AdrPromotion {
       await gitValue(this.opt.host,ws.path,["rev-parse","HEAD^"])!==baseline||
       await gitValue(this.opt.host,ws.path,["show","--pretty=format:","--name-only","HEAD"])!==relative)
       throw new Error("ADR commit ancestry/files differ from the reserved preview");
-    const tracked=await gitValue(this.opt.host,ws.path,["show","HEAD:"+relative]);
-    if(sha(tracked+"\n")!==row.sha256&&sha(tracked)!==row.sha256)
+    const tracked=await git(this.opt.host,ws.path,["show","HEAD:"+relative]);
+    if(tracked.exitCode!==0||sha(tracked.stdout)!==row.sha256)
       throw new Error("ADR published Git blob differs from exact reviewed bytes");
     this.markPublished(p,o,id,"committed",commit,null);
     // No force or overwrite: reject any existing remote ref not exactly ours.
