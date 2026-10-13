@@ -916,7 +916,8 @@ const plugin:PiWebServerPlugin={
             const active=agents.list(p,o,"active").some(b=>b.workflowId===workflowId&&
               b.requestId.startsWith("auto:"));
             if(active)throw new Error("Cannot reconfigure while an automated Pi Run is unsealed");
-            const missing=Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation"&&
+            const missing=Object.values(workflow.tasks).filter(t=>
+              t.spec.kind==="implementation"&&t.spec.systemPurpose!=="final-integration"&&
               !config.workspaces[t.spec.id]).map(t=>t.spec.id);
             if(missing.length&&!config.managedWorktrees)
               throw new WorkflowError("missing_worktrees",
