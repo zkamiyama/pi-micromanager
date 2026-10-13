@@ -13,8 +13,12 @@ The trial is explicitly opt-in and does not touch production repositories.
 restart recovery and streamed monitoring in the PI WEB Orchestra. Existing
 saved Workflows/profiles remain on the original `pi-web` backend; select
 `"runtime": "pi-web"` explicitly for new native PI WEB sessions. Durable
-requires model credentials available to the **daemon process** (for example,
-`OPENAI_API_KEY`), not merely PI WEB's native Pi auth configuration.
+uses the daemon **OS user's Pi profile** via the official
+`ModelRuntime`: existing `~/.pi/agent/auth.json` OAuth (including
+ChatGPT subscription login) or environment API keys are supported.
+Verify with `pi auth check --provider openai` as that daemon user.
+A browser-only ChatGPT login or another OS user's Pi credentials will
+not grant access.
 
 
 `pi-micromanager` is an experimental, intentionally small control plane built on [Pi](https://github.com/earendil-works/pi) and [PI WEB](https://github.com/jmfederico/pi-web). It aims to preserve Multi-Agent-Shogun's **flat, simultaneous observation and direct human intervention** without requiring every agent to read long organizational `AGENTS.md` role prompts.
