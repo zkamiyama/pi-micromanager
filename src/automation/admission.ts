@@ -1,5 +1,6 @@
 /** Validate executable contracts as a whole, before provisioning or launching. */
-import {WorkflowError,newWorkflow,applyAction,type WorkflowInstance} from "../core/workflow.js";
+import {internalRunId} from "../core/identifiers.js";
+import {WorkflowError,applyAction,type WorkflowInstance} from "../core/workflow.js";
 import {buildJobPrompt} from "./engine.js";
 import type {AutopilotConfig} from "./ledger.js";
 export function validateExecutionPlan(workflow:WorkflowInstance,config:AutopilotConfig):void {
@@ -34,6 +35,16 @@ export function validateExecutionPlan(workflow:WorkflowInstance,config:Autopilot
       if(!visit(a).has(b)&&!visit(b).has(a))
         fail("unsupported_fan_in","Independent fan-in at "+task.spec.id+
           " cannot use ff-only convergence; explicitly linearize the proposal or add a reviewed integration plan before Start");
+    }
+  }
+  const runOwners=new Map<string,string>();
+  for(const task of tasks){
+    const prefixes=task.spec.kind==="implementation"?["impl","qc"] as const:["task"] as const;
+    for(const prefix of prefixes)for(let attempt=1;attempt<=(task.spec.kind==="implementation"?config.maxAttempts:1);attempt++){
+      const run=internalRunId(prefix,task.spec.id,attempt),owner=task.spec.id+":"+prefix+":"+attempt;
+      if(runOwners.has(run)&&runOwners.get(run)!==owner)
+        fail("run_id_collision","Task identifiers compose the same Run identity: "+run);
+      runOwners.set(run,owner);
     }
   }
   for(const task of tasks){

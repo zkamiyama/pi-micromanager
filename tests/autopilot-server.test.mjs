@@ -40,7 +40,7 @@ function fakePluginHost(shared,options={}) {
   const isManagedFinal=path=>[...createdWorktrees].some(([p,t])=>
     p===path&&t.branch.endsWith("/mm-final-integration"));
   const workspace = id => ({
-    id,projectId:"project",path:managedPath(id)??(id==="orchestra"?"/repo":
+    id,projectId:"project",path:options.workspacePaths?.[id]??managedPath(id)??(id==="orchestra"?"/repo":
       id==="wt-integrated"?"/repo/integrated":
       id==="worktree-consumer"?"/repo/consumer":
       id==="worktree-final"?"/repo/final":"/repo/api"),
@@ -1080,6 +1080,7 @@ test('R14 public native API: paused configured Run resumes exactly its saved ori
   await x.request('create',residualDefinition);await x.request('auto.configure',{workflowId:residualDefinition.id,config});await x.request('auto.start',{workflowId:residualDefinition.id});
   const run=await eventually(async()=>{const rows=await x.request('agents.list',{view:'all'});return rows.find(b=>b.workflowId===residualDefinition.id&&b.phase==='configured');});
   assert.equal(x.sessions.size,1);const session=x.sessions.get(run.sessionId);assert.equal(session.commands.filter(c=>c.type==='message').length,0);
+  await assert.rejects(x.request('agents.configure',{sessionId:run.sessionId,provider:'other',model:'other',requestId:'manual-override'}),/frozen launch contract/);
   const resumed=await x.request('auto.recover.unstarted',{sessionId:run.sessionId,reason:'Inspected zero-input admission after Pause'});
   assert.equal(resumed.sessionId,run.sessionId);assert.equal(resumed.phase,'running');assert.equal(x.sessions.size,1);
   assert.equal(session.commands.filter(c=>c.type==='message').length,1);assert.match(session.commands.find(c=>c.type==='message').text,/Task ID: api/);
@@ -1087,4 +1088,12 @@ test('R14 public native API: paused configured Run resumes exactly its saved ori
   await assert.rejects(x.request('auto.recover.unstarted',{sessionId:run.sessionId,reason:'Attempt duplicate'}),/unstarted/);
   assert.equal(session.commands.filter(c=>c.type==='message').length,1);
  }finally{control?.close();await x.cleanup();}
+});
+
+test('R03 public admission: distinct Workspace IDs cannot alias the same physical code checkout',async()=>{
+ const x=fakePluginHost(undefined,{workspacePaths:{'worktree-api':'/repo/api','worktree-consumer':'/repo/./api'}});
+ try{await x.activate();await x.request('create',{...residualDefinition,tasks:[...residualDefinition.tasks,{id:'consumer',title:'Consumer',kind:'implementation',role:'implementer',dependsOn:[]}]});
+  await x.request('auto.configure',{workflowId:residualDefinition.id,config:{...config,workspaces:{api:'worktree-api',consumer:'worktree-consumer'}}});
+  await assert.rejects(x.request('auto.start',{workflowId:residualDefinition.id}),/same Worktree path/);assert.equal(x.sessions.size,0);
+ }finally{await x.cleanup();}
 });

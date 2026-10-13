@@ -165,6 +165,7 @@ export class AutomaticIntegrator {
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     const owner="git-convergence:"+createHash("sha256").update(automationScope(p,o)+w).digest("hex");
     const acquired:string[]=[];
+    const physicalKeys=new Map<string,string>();
     try{
       await preceding;
       const targets=new Set<string>();
@@ -180,16 +181,19 @@ export class AutomaticIntegrator {
         const authority=await this.opt.workspaces()?.resolve({projectId:p,workspaceId:id});
         if(!authority||authority.project.id!==p||authority.workspace.id!==id||authority.workspace.projectId!==p)
           throw new Error("Convergence Workspace authority changed");
-        this.opt.agents.registerWorkspacePath(p,id,authority.workspace.path);
+        physicalKeys.set(id,this.opt.agents.registerWorkspacePath(p,id,authority.workspace.path));
         this.opt.agents.acquireWorkspaceOperation(p,id,owner);acquired.push(id);
       }
       return await this.stepOne(record,workflow);
     }finally{
+      const retained=new Set<string>();
       for(const id of acquired){
         const uncertain=this.db.prepare("SELECT 1 FROM auto_git_convergence WHERE scope=? AND workflow_id=? AND target_workspace_id=? AND state='reserved' LIMIT 1")
           .get(automationScope(p,o),w,id);
-        if(!uncertain)this.opt.agents.releaseWorkspaceOperation(p,id,owner);
+        if(uncertain)retained.add(physicalKeys.get(id)!);
       }
+      for(const id of acquired)if(!retained.has(physicalKeys.get(id)!))
+        this.opt.agents.releaseWorkspaceOperation(p,id,owner);
       release();
     }
   }

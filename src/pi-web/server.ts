@@ -537,10 +537,10 @@ const plugin:PiWebServerPlugin={
                 resolved.workspace.id!==workerId||resolved.workspace.isMain||
                 resolved.workspace.provider?.metadata?.isGitWorktree!==true)
                 throw new Error("Task "+task.spec.id+" has no valid linked PI WEB worktree");
-              if(owners.has(resolved.workspace.path))
+              const physical=agents.registerWorkspacePath(p,workerId,resolved.workspace.path);
+              if(owners.has(physical))
                 throw new Error("Multiple implementation Tasks resolve to the same Worktree path");
-              agents.registerWorkspacePath(p,workerId,resolved.workspace.path);
-              owners.add(resolved.workspace.path);
+              owners.add(physical);
               const reviewId=ready.config.reviewWorkspaces?.[task.spec.id];
               if(reviewId){
                 const qc=await workspaces.resolve({projectId:p,workspaceId:reviewId});
@@ -557,7 +557,7 @@ const plugin:PiWebServerPlugin={
               if(final.project.id!==p||final.workspace.projectId!==p||
                 final.workspace.id!==finalId||final.workspace.isMain||
                 final.workspace.provider?.metadata?.isGitWorktree!==true||
-                owners.has(final.workspace.path))
+                owners.has(agents.registerWorkspacePath(p,finalId,final.workspace.path)))
                 throw new Error("Final integration requires an independent linked Worktree");
               agents.registerWorkspacePath(p,finalId,final.workspace.path);
               if(Object.values(ready.config.reviewWorkspaces??{}).includes(finalId))
@@ -1130,6 +1130,8 @@ const plugin:PiWebServerPlugin={
           case "agents.configure":{
             const input=object(ctx.input);
             let binding=registered(ctx,id(input.sessionId));
+            if(binding.requestId.startsWith("auto:"))
+              throw new Error("Automatic model configuration is owned by the frozen launch contract; use explicit unstarted recovery");
             if(binding.phase==="running"||binding.phase==="settled"||binding.phase==="sealed"||
               binding.phase==="uncertain"||binding.phase==="failed")
               throw new Error("Cannot configure a running, completed or uncertain execution");

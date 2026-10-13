@@ -164,7 +164,7 @@ export class AgentRegistry {
       "LIMIT 1").get(projectId,orchestraWorkspaceId,workflowId,workspaceId));
   }
   /** Host-resolved aliases of a checkout must contend for the same physical lease. */
-  registerWorkspacePath(p:string,w:string,path:string):void {
+  registerWorkspacePath(p:string,w:string,path:string):string {
     identity(p,"projectId");identity(w,"workspaceId");identity(path,"Workspace path");
     let canonical=resolve(path);try{canonical=realpathSync(path);}catch{/* Remote host/mock authority is already resolved. */}
     const key="path:"+canonical;
@@ -172,6 +172,7 @@ export class AgentRegistry {
       .get(p,w) as {physical_key:string}|undefined;
     if(old&&old.physical_key!==key)throw new Error("Registered Workspace physical identity changed");
     this.db.prepare("INSERT INTO workspace_authority VALUES(?,?,?) ON CONFLICT DO NOTHING").run(p,w,key);
+    return key;
   }
   private workspaceKey(p:string,w:string):string {
     return (this.db.prepare("SELECT physical_key FROM workspace_authority WHERE project_id=? AND workspace_id=?")

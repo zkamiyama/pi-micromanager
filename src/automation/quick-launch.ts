@@ -124,7 +124,7 @@ export class QuickLaunchLedger{
     const active=this.db.prepare("SELECT workflow_id FROM quick_goals WHERE scope=?"+
       " AND phase IN ('reserved','planning','starting','running','paused') LIMIT 1")
       .get(scope) as {workflow_id:string}|undefined;
-    if(active)throw new Error("A one-command run is already active; finish or pause it before starting another");
+    if(active)throw new Error("A one-command run is already active or paused; finish it before starting another in this Workspace");
     const token=createHash("sha256").update(scope+"|"+requestId).digest("hex").slice(0,16);
     const workflowId="quick-"+token,draftId="draft-"+token,runId="goal-"+token;
     const at=new Date().toISOString();

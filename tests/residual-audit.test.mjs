@@ -15,7 +15,7 @@ import {validateExecutionPlan} from '../dist/automation/admission.js';
 import {linearizeImplementationDag} from '../dist/automation/dag-linearization.js';
 import {QuickLaunchLedger} from '../dist/automation/quick-launch.js';
 import {requireCleanGit} from '../dist/automation/git.js';
-import {testInvocation} from '../dist/automation/test-execution.js';
+import {testInvocation,assertTestEnvironment} from '../dist/automation/test-execution.js';
 import {parseRuntimeControl,CONTROL_CHANNEL,RECEIPT_CHANNEL} from '../dist/runtime/protocol.js';
 import companion from '../dist/runtime/companion.js';
 import {buildJournal} from '../dist/automation/journal.js';
@@ -94,13 +94,18 @@ test('R06: new test configuration defaults to sandbox and trusted-host is explic
  assert.equal(parseAutopilotConfig(rawConfig).test.execution,'trusted-host');
  assert.throws(()=>parseAutopilotConfig({...config,test:{...config.test,execution:'typo'}}),/execution/);
 });
-test('R06 real Bubblewrap: no host-only file, inherited dummy secret, or host loopback interfaces',t=>{
+test('R06 real Bubblewrap: isolate files/environment or fail closed under host namespace policy',t=>{
  if(process.platform!=='linux'||!existsSync('/usr/bin/bwrap'))return t.skip('Bubblewrap unavailable on this OS; no fallback is used by production');
  const root=temp(),workspace=join(root,'repo');mkdirSync(workspace);const outside=join(root,'host-only.txt');writeFileSync(outside,'DUMMY-NOT-A-REAL-SECRET');
  try{const code=`const fs=require('fs'),os=require('os');if(process.env.AUDIT_DUMMY_SECRET)throw Error('environment leaked');if(fs.existsSync(${JSON.stringify(outside)}))throw Error('host file leaked');if(Object.keys(os.networkInterfaces()).some(k=>k!=='lo'))throw Error('host network interfaces leaked');fs.writeFileSync('/workspace/result.txt','sandbox-pass');`;
  const invocation=testInvocation({file:process.execPath,args:['-e',code],execution:'sandbox',timeoutMs:10000},workspace);
  const p=spawnSync(invocation.file,invocation.args,{cwd:invocation.cwd,encoding:'utf8',timeout:10000,env:{...process.env,AUDIT_DUMMY_SECRET:'INERT'}});
- assert.equal(p.status,0,p.stderr);assert.equal(existsSync(join(workspace,'result.txt')),true);
+ if(p.status!==0&&/bwrap: (?:loopback: Failed RTM_NEWADDR: Operation not permitted|Creating new namespace failed: Operation not permitted|setting up uid map: Permission denied)/.test(p.stderr)){
+   assert.equal(existsSync(join(workspace,'result.txt')),false);
+   assert.throws(()=>assertTestEnvironment({execution:'sandbox'},{exitCode:p.status,stderr:p.stderr}),/No unsandboxed fallback/);
+   t.diagnostic('Host kernel/AppArmor denied namespaces: verified fail-closed setup; this host did not exercise successful isolation.');return;
+  }
+  assert.equal(p.status,0,p.stderr);assert.equal(existsSync(join(workspace,'result.txt')),true);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
 function native(){const handlers={},controls={},tools={},entries=[],receipts=[],sent=[];let idle=true,thinking='off';
@@ -205,4 +210,65 @@ test('R15: retrieved final-QC contract receipts survive ledger reopen and cannot
   assert.deepEqual(ledger.contractReads(b,digest),[0,1]);assert.deepEqual(ledger.contractReads(b,'b'.repeat(64)),[]);
   assert.throws(()=>ledger.recordContractRead(b,digest,64),/index/);
  }finally{ledger.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test('R09: a valid short Task ID cannot impersonate a hashed long Run identity',()=>{
+ const long='a'.repeat(64),short=internalRunId('impl',long,1).slice(5,-2);
+ assert.equal(internalRunId('impl',long,1),internalRunId('impl',short,1));
+ const w=newWorkflow(definition([task(long),task(short)]),at);
+ assert.throws(()=>validateExecutionPlan(w,rawConfig),/same Run identity/);
+});
+test('R09: planning identity collision is rejected at the second human request',()=>{
+ const long='i'.repeat(64),short=internalRunId('plan',long).slice(5);let w=newWorkflow(definition([task('a'),task('b')]),at);
+ w=applyAction(w,{type:'request_intervention',interventionId:long,targetTaskId:'a',afterQcRunId:'next',instruction:'Inspect A'},at);
+ assert.throws(()=>applyAction(w,{type:'request_intervention',interventionId:short,targetTaskId:'b',afterQcRunId:'next',instruction:'Inspect B'},at),/already exists/);
+});
+test('R06 real Bubblewrap: deny host loopback access or refuse execution under host namespace policy',async t=>{
+ if(process.platform!=='linux'||!existsSync('/usr/bin/bwrap'))return t.skip('Bubblewrap unavailable; production sandbox mode fails closed');
+ const {createServer}=await import('node:net');const server=createServer(socket=>socket.destroy());const root=temp();
+ await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
+ try{const port=server.address().port;
+  const code=`const s=require('net').connect({host:'127.0.0.1',port:${port}});s.on('connect',()=>process.exit(7));s.on('error',()=>process.exit(0));setTimeout(()=>process.exit(0),1500);`;
+  assert.equal(spawnSync(process.execPath,['-e',code],{timeout:5000}).status,7,'inert host test service must be reachable without sandbox');
+  const invocation=testInvocation({file:process.execPath,args:['-e',code],execution:'sandbox',timeoutMs:5000},root);
+  const checked=spawnSync(invocation.file,invocation.args,{cwd:root,encoding:'utf8',timeout:5000});
+  if(checked.status!==0&&/bwrap: (?:loopback: Failed RTM_NEWADDR: Operation not permitted|Creating new namespace failed: Operation not permitted|setting up uid map: Permission denied)/.test(checked.stderr)){
+    assert.throws(()=>assertTestEnvironment({execution:'sandbox'},{exitCode:checked.status,stderr:checked.stderr}),/No unsandboxed fallback/);
+    t.diagnostic('Host namespace policy prevented sandbox creation: rejected execution, not network sharing. Successful network isolation is tested on the compatible local host.');return;
+  }
+  assert.equal(checked.status,0,checked.stderr);
+ }finally{server.closeAllConnections?.();await new Promise(resolve=>server.close(resolve));rmSync(root,{recursive:true,force:true});}
+});
+
+test('R03: an uncertain convergence operation keeps its physical lease through every alias',async()=>{
+ const {AutomaticIntegrator}=await import('../dist/automation/convergence.js');const {PermissionLedger}=await import('../dist/automation/permissions.js');
+ const root=temp(),store=new WorkflowStore(join(root,'w.sqlite')),agents=new AgentRegistry(join(root,'r.sqlite')),ledger=new AutopilotLedger(join(root,'a.sqlite')),permissions=new PermissionLedger(join(root,'p.sqlite'),store,ledger);
+ let integrator;
+ try{let w=store.create('p','o',definition([task('api'),task('left',[{taskId:'api',gate:'qc_passed'}]),task('right',[{taskId:'api',gate:'qc_passed'}])]));
+  for(const action of [{type:'start',taskId:'api'},{type:'implementation_finished',taskId:'api',headSha:SHA,criteriaRevision:0,testsPassed:true},{type:'qc_finalized',taskId:'api',runId:'qc-api-1',headSha:SHA,criteriaRevision:0,attempt:1,verdict:'pass'}])w=store.act('p','o','audit',w.revision,randomUUID(),action);
+  const r={projectId:'p',orchestraWorkspaceId:'o',workflowId:'audit',taskId:'api',runId:'qc-api-1',workspaceId:'wt-source',seat:'qc',requestId:'auto:qc'};agents.reserve(r);const b=agents.assign(r,'session-qc');agents.record(b,{kind:'agent_settled',text:'Agent settled',at:Date.now(),sequence:1});const proof=ledger.sealEvidence(b,'qc','Verified');agents.seal('p','o',b.sessionId,proof.ref);
+  ledger.save('p','o','audit',{...rawConfig,workspaces:{api:'wt-source',left:'wt-left',right:'wt-right'}});ledger.setStatus('p','o','audit',true,'running');
+  const output=(stdout='',exitCode=0)=>({stdout,stderr:'',exitCode,signal:null,stdoutTruncated:false,stderrTruncated:false});
+  const host={lifetimeSignal:new AbortController().signal,async execFile({args}){const c=args.slice(2).join(' ');
+   if(c==='rev-parse --show-toplevel')return output(root);if(c==='rev-parse HEAD')return output('b'.repeat(40));
+   if(c==='symbolic-ref --quiet --short HEAD')return output('feature/child');
+   if(c.startsWith('status ')||c.startsWith('ls-files ')||c.startsWith('diff-files '))return output();
+   if(c.startsWith('merge-base --is-ancestor'))return output('',args[4]===SHA?1:0);
+   if(c.startsWith('merge --ff-only'))throw Error('Lost merge response');throw Error('Unexpected '+c);
+  }};
+  const workspaces={async resolve({projectId,workspaceId}){
+    return {project:{id:projectId,path:root},workspace:{id:workspaceId,projectId,
+      path:root,isMain:false,provider:{metadata:{isGitWorktree:true}}}};
+  }};
+  integrator=new AutomaticIntegrator({path:join(root,'c.sqlite'),host,workflows:store,
+    agents,ledger,permissions,workspaces:()=>workspaces});
+  await assert.rejects(integrator.step(ledger.get('p','o','audit'),w),/Lost merge response/);
+  assert.throws(()=>agents.reserve({...r,seat:'implementer',workspaceId:'wt-right',taskId:'right',runId:'impl-right-1',requestId:'auto:writer'}),/host Git operation/);
+ }finally{integrator?.close();permissions.close();ledger.close();agents.close();store.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test('R06: sandbox setup refusal is a host configuration error, never an ordinary rework result',()=>{
+ assert.throws(()=>assertTestEnvironment({execution:'sandbox'}, {exitCode:1,stderr:'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted'}),/sandbox could not start/);
+ assert.doesNotThrow(()=>assertTestEnvironment({execution:'sandbox'}, {exitCode:1,stderr:'AssertionError: expected add(1,2) = 3'}));
+ assert.doesNotThrow(()=>assertTestEnvironment({execution:'trusted-host'}, {exitCode:1,stderr:'bwrap: from a trusted test log'}));
 });

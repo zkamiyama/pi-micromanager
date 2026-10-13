@@ -3,7 +3,7 @@ import { internalRunId,sessionDisplayName } from "../core/identifiers.js";
 import { randomUUID,createHash } from "node:crypto";
 import {boundedFailureDiagnostics} from "./test-diagnostics.js";
 import {requireCleanGit} from "./git.js";
-import {testInvocation} from "./test-execution.js";
+import {testInvocation,assertTestEnvironment} from "./test-execution.js";
 import { resolve } from "node:path";
 import type {
   ServerPluginActivationContext, PiWebHostPiSessionsV1,
@@ -281,6 +281,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
         unsetEnv:Object.keys(process.env).filter(key=>
           !["PATH","SystemRoot","WINDIR","COMSPEC","PATHEXT","LANG","LC_ALL","TMPDIR","TEMP","TMP"].includes(key)),
       });
+      assertTestEnvironment(config.test,result);
       const after=await snapshot(w.path);
       const clean=before.clean&&after.clean&&before.sha===after.sha;
       const testsPassed=result.exitCode===0&&!result.signal&&

@@ -1,5 +1,5 @@
 /** Pure, deterministic workflow state machine. No model or filesystem I/O. */
-import {diagnosisTaskId,synthesisTaskId} from "./identifiers.js";
+import {internalRunId,diagnosisTaskId,synthesisTaskId} from "./identifiers.js";
 import {validatePermissions,type WorkflowPermissions} from "./permissions.js";
 export type Role = "planner" | "implementer" | "reviewer" | "architect";
 export type TaskKind = "implementation" | "diagnosis" | "synthesis";
@@ -28,7 +28,7 @@ export interface WorkflowDefinition {
   maxQcRounds: number;
   maxParallelByRole: Record<Role, number>;
   tasks: TaskSpec[];
-  /** Absent policy is YOLO (allow) for supported operations; merge defaults to ask. */
+  /** Absent policy is YOLO (allow) for Git/PR operations; production deploy remains ask. */
   permissions?:WorkflowPermissions;
 }
 export interface QCRecord {
@@ -248,7 +248,12 @@ function checkInvestigators(instance: WorkflowInstance, amendmentId: string, age
       "invalid_agents", "Each investigator requires a unique id, allowed role, model and title");
     seen.add(agent.id);
   }
+  const runIds=new Set(Object.values(instance.tasks).filter(t=>t.spec.kind!=="implementation")
+    .map(t=>internalRunId("task",t.spec.id,1)));
   for (const id of [...agents.map(a => diagnosisTaskId(amendmentId,a.id)), synthesisTaskId(amendmentId)]) {
+    const runId=internalRunId("task",id,1);
+    invariant(!runIds.has(runId),"invalid_id","Dynamic Run identity collision: "+runId);
+    runIds.add(runId);
     invariant(validId(id) && !Object.hasOwn(instance.tasks, id), "invalid_id",
       "Dynamic task id collision: " + id);
   }
@@ -297,7 +302,8 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       invariant(t.spec.kind === "implementation" && ["ready", "running", "awaiting_qc"].includes(t.status),
         "invalid_transition", "Can only arm before QC finalization");
       invariant(validId(action.amendmentId) && validId(action.afterQcRunId), "invalid_id", "Invalid amendment or QC ID");
-      invariant(instance.amendments.every(a => a.id !== action.amendmentId), "duplicate_amendment", "Amendment already exists");
+      invariant(instance.amendments.every(a => a.id !== action.amendmentId&&
+        internalRunId("plan",a.id)!==internalRunId("plan",action.amendmentId)), "duplicate_amendment", "Amendment already exists");
       noOtherPendingIntervention(instance, t.spec.id);
       checkInvestigators(instance, action.amendmentId, action.agents);
       instance.amendments.push({
@@ -315,7 +321,8 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
         "invalid_id", "Invalid intervention/QC run ID");
       invariant(typeof action.instruction === "string" && action.instruction.trim().length > 0 &&
         action.instruction.length <= 4000, "invalid_instruction", "Instruction must be 1..4000 characters");
-      invariant(instance.amendments.every(a => a.id !== action.interventionId),
+      invariant(instance.amendments.every(a => a.id !== action.interventionId&&
+        internalRunId("plan",a.id)!==internalRunId("plan",action.interventionId)),
         "duplicate_amendment", "Intervention ID already exists");
       noOtherPendingIntervention(instance, t.spec.id);
       invariant(instance.definition.tasks.length+5<=512,"diagnosis_capacity",

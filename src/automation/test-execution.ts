@@ -23,3 +23,14 @@ export function testInvocation(test:AutopilotConfig["test"],cwd:string){
     "--",test.file===process.execPath?"/runtime/node":test.file,...test.args,
   ]};
 }
+
+/** Namespace/setup failure is an execution-host error, not a failed code test.
+ * Never retry outside the sandbox or advise disabling host security policy.
+ */
+export function assertTestEnvironment(test:AutopilotConfig["test"],
+  result:{exitCode:number|null;stderr:string}):void{
+  if(test.execution!=="trusted-host"&&result.exitCode!==0&&/^bwrap:/m.test(result.stderr))
+    throw new Error("Verification sandbox could not start. No unsandboxed fallback was used; "+
+      "use an execution host whose administrator permits the required namespaces. "+
+      "Details: "+result.stderr.slice(0,300));
+}

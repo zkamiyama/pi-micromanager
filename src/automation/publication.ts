@@ -1,6 +1,7 @@
 /** YOLO publication with exact QC SHA, untrusted Pi isolation boundary,
  * durable no-repeat reservations and optional workflow-scoped approvals.
- * Only host-owned argv Git/gh may publish. No merge or branch deletion. */
+ * Only host-owned Git/gh may publish or synchronously merge an exact SHA.
+ * Never force-push, bypass repository protection or delete branches. */
 import {createHash,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {mkdirSync} from "node:fs";
@@ -136,12 +137,6 @@ export class PublicationManager {
     if(result.length>500)throw new Error("Publication result exceeds 500 characters");
     this.db.prepare("UPDATE publication_operations SET state='completed',result=?,updated_at=?"+
       " WHERE id=? AND state IN ('reserved','scheduled','waiting')")
-      .run(result,new Date().toISOString(),row.id);
-  }
-  private scheduled(row:OperationRow,result:string):void{
-    if(result.length>500)throw new Error("Publication scheduling receipt exceeds 500 characters");
-    this.db.prepare("UPDATE publication_operations SET state='scheduled',result=?,updated_at=?"+
-      " WHERE id=? AND state='reserved'")
       .run(result,new Date().toISOString(),row.id);
   }
   private assertAdmitted(record:AutopilotRecord):void{
@@ -402,10 +397,6 @@ export class PublicationManager {
     if(after.state==="MERGED"){
       this.complete(receipt,after.url);
       return "acted";
-    }
-    if(after.state==="OPEN"&&after.autoMergeRequest!==null){
-      this.scheduled(receipt,after.url);
-      return "scheduled";
     }
     throw new Error("GitHub merge result is uncertain; inspect MERGED before another attempt");
   }
