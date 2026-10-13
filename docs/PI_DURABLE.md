@@ -1,8 +1,10 @@
 # Pi Durable as the default Micromanager execution engine
 
-- Status: Experimental, verified with the **real** Pi Durable 1.2.0
-  `Harness` and scripted Pi AI provider; authenticated provider/PI WEB host
-  acceptance remains outstanding
+- Status: Experimental. Verified with the **real** Pi Durable 1.2.0
+  `Harness`, authenticated Pi OAuth model/tool turns, independent
+  implementation and QC, PI WEB 1.202610.1 daemon plugin activation,
+  and a CI-gated GitHub Draft → Ready → MERGED acceptance trial.
+  Interactive browser UI and long-running daemon crash/soak remain unverified.
 - Applies to new Workflow configurations. Existing saved Workflow and
   one-command profiles without an explicit `runtime` retain their original
   `pi-web` session backend, even when a daemon restarts.
@@ -127,11 +129,40 @@ byte-for-byte clone of every Pi Coding Agent extension. Native Pi
 `auth.json` credentials **are** reused through `ModelRuntime`, but
 arbitrary third-party Pi extensions, host-owned shell identities and
 interactive approval UI are not automatically carried across. The PI WEB service must be trusted and
-configured deliberately. Initial provider-authenticated model/PI WEB
-E2E, multi-agent throughput on the real daemon and crash-soak remain
-to be verified.
+configured deliberately. Authenticated model execution, temporary daemon
+plugin activation and disposable-branch GitHub merging were tested.
+Interactive browser controls, concurrent production-daemon model load,
+cross-process crash recovery and long-running soak remain unverified.
 
 ## Test and acceptance
+
+### Live authenticated acceptance (2026-10-13)
+
+- Pi OAuth authenticated `openai/gpt-5.5` using the real Durable Harness.
+  A typed tool was called once; SQLite reopen preserved the Conversation ID
+  without another tool call.
+- The real Micromanager Autopilot adapter ran implementation, a failed QC
+  and bounded rework, independent QC PASS, final local Git integration,
+  final independent QC PASS and exact sealed Run evidence.
+- The plugin activated on an actual **PI WEB 1.202610.1 Session Daemon**
+  with isolated temporary agent, config, data and socket directories.
+- An isolated GitHub test base branch (not `main`) was used for
+  [acceptance PR #12](https://github.com/zkamiyama/pi-micromanager/pull/12).
+  GitHub confirmed `MERGED` at QC-approved SHA
+  `95c994e452f0382ffc7b1f78f833ddbce3cf6572`; actual Git ancestry
+  established that SHA is contained in the merged test base.
+- The test host's fine-grained token cannot read GitHub GraphQL check
+  rollups, but can read GitHub Actions runs. The fallback verifies an
+  exact SHA, repository, PR number, completed status and successful
+  `pull_request` workflow; missing, failed, unrelated and pending results
+  do not authorize merge.
+- Recovery tests cover restarting/reconfiguring after the final system Task
+  has been created without requiring a duplicate Worktree entry.
+
+This acceptance used real OAuth, Git, SQLite and GitHub. The Autopilot
+test used the public PI WEB host capability contract in-process, while
+a separate real Session Daemon test verified plugin activation.
+Interactive browser-driven E2E and long-running crash/soak are not claimed.
 
 For a direct, **opt-in authenticated smoke test** on the intended PI WEB
 daemon OS account, first verify `pi auth check --provider openai`, then run:
