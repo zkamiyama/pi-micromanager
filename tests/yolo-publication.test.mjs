@@ -43,7 +43,7 @@ function fixture(policy){
   ledger.setStatus("p","o","workflow",true,"running");
   const approvals=new PermissionLedger(join(dir,"perms.sqlite"),wf,ledger);
   let remoteSha=null,pr=null,pushes=0,creates=0,pushUncertain=false,prUncertain=false;
-  let headSha=SHA,worktreeDirty=false;
+  let headSha=SHA,worktreeDirty=false,pushUrl="https://github.com/acme/repo.git";
   const commands=[];
   const output=(stdout="",exitCode=0)=>({stdout,exitCode,signal:null,
     stderr:"",stdoutTruncated:false,stderrTruncated:false});
@@ -57,7 +57,7 @@ function fixture(policy){
       if(args==="status --porcelain")return output(worktreeDirty?"?? dirty.txt\n":"");
       if(args==="symbolic-ref --quiet --short HEAD")return output(BRANCH+"\n");
       if(args==="remote get-url origin")return output("https://github.com/acme/repo.git\n");
-      if(args==="remote get-url --push --all origin")return output("https://github.com/acme/repo.git\n");
+      if(args==="remote get-url --push --all origin")return output(pushUrl+"\n");
       if(args==="ls-remote --heads origin refs/heads/"+BRANCH)
         return output(remoteSha?remoteSha+"\trefs/heads/"+BRANCH+"\n":"");
       if(args==="push --porcelain origin HEAD:refs/heads/"+BRANCH){
@@ -99,6 +99,7 @@ function fixture(policy){
     losePr(){prUncertain=true;},clearPrLoss(){prUncertain=false;},
     setRemote(value){remoteSha=value;},setHead(value){headSha=value;},
     setDirty(value){worktreeDirty=value;},
+    setPushUrl(value){pushUrl=value;},
     tick(){return service.step(ledger.get("p","o","workflow"),wf.get("p","o","workflow"));},
     close(){service.close();approvals.close();ledger.close();agents.close();wf.close();
       rmSync(dir,{recursive:true,force:true});}};
@@ -231,5 +232,15 @@ test("Paused Autopilot forbids any new external side effect",async()=>{
     assert.equal(x.pushes,0);
     assert.equal(x.creates,0);
     assert.equal(x.service.list("p","o","workflow").length,0);
+  }finally{x.close();}
+});
+
+test("Audit F03: distinct push URL is rejected before any Git push",async()=>{
+  const x=fixture(undefined);
+  try{
+    x.setPushUrl("https://github.com/unreviewed/other.git");
+    await assert.rejects(x.tick(),/push URL differs/);
+    assert.equal(x.pushes,0);
+    assert.equal(x.creates,0);
   }finally{x.close();}
 });
