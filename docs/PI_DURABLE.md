@@ -152,6 +152,28 @@ It does **not** exercise the PI WEB browser, Worktrees, Git publication or
 host service restart; those still require the separately documented
 disposable-repository acceptance trial.
 
+### Authenticated Autopilot and Git Worktree acceptance (no GitHub access needed)
+
+For a wider **opt-in** acceptance test that includes Micromanager's server
+plugin, run:
+
+```sh
+node scripts/real-durable-autopilot-smoke.mjs
+```
+
+This creates an isolated Git repository and a separate linked Worktree under
+the OS temporary directory. It runs a real `openai/gpt-5.5` Pi Durable
+implementer using the current user's Pi OAuth, verifies the commit and tests,
+starts an independent real Durable QC turn through the Autopilot scheduler,
+and checks the QC PASS evidence, both sealed Run records, clean Git HEAD,
+and released Worktree leases. The host-side PI WEB v3 capability interface
+is simulated; model requests, durable conversations, SQLite, Git and host
+tests are real. It **does not** install/alter PI WEB services, use the
+browser, create remote repositories, Push, merge PRs or touch production
+worktrees. Tests can consume provider/subscription quota. Use the exact
+documented workflow to test the actual daemon, UI and GitHub permissions
+separately on a disposable repository.
+
 Run `npm run check`. The suite uses the **actual Durable 1.2.0**
 Harness, SQLite-backed Conversations, `fauxProvider` replies and
 host registry/ledger evidence, in addition to the native PI WEB mock
