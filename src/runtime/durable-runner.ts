@@ -11,6 +11,7 @@ import {join,resolve} from "node:path";
 import {BACKGROUND_CONTEXT} from "@earendil-works/chord/context";
 import {Type} from "@earendil-works/pi-ai";
 import {builtinModels} from "@earendil-works/pi-ai/providers/all";
+import type {Models} from "@earendil-works/pi-ai/models";
 import {
   Harness,createRegistry,defineExtension,defineTool,watchEvents,
   type AgentEvent,type AgentEventStream,type Conversation,type ToolRegistration,
@@ -31,6 +32,8 @@ export interface DurableLaunch {
 }
 interface DurableCallbacks{
   dataDirectory:string;agents:AgentRegistry;ledger:AutopilotLedger;
+  /** Test hook for the real Durable Harness with a deterministic faux provider. */
+  models?:Models;
   activity(binding:AgentBinding,event:RuntimeActivity):void;
   changed(binding:AgentBinding):void;
   report(binding:AgentBinding,report:RunReport):void;
@@ -54,6 +57,15 @@ export function isDurableSession(id:string|null):boolean {
   return id!==null&&UUID_HASH.test(id);
 }
 function identity(r:Reservation):string{return "durable:"+sessionHash(r);}
+function shellEnvironment():NodeJS.ProcessEnv{
+  const env:{[key:string]:string|undefined}={...process.env};
+  // Model provider owns credentials; coding shells must not inherit them.
+  // This is not an OS sandbox against arbitrary readable host files.
+  for(const key of Object.keys(env))
+    if(/(?:^GH_|^GITHUB_|^GIT_ASKPASS|^GIT_CONFIG|^AWS_|^AZURE_|^OPENAI_|^ANTHROPIC_|^GOOGLE_|^GEMINI_|^CLOUDFLARE_|^RADIUS_|API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY)/i.test(key))
+      delete env[key];
+  return env;
+}
 function isSafeBashCommand(command:string):boolean{
   // No shell regexp is an OS security boundary. This is a blocking guard
   // against direct publishing. Strong isolation still needs a sandbox with
@@ -185,16 +197,15 @@ export class DurableRunHost {
     const opening=this.opening.get(sessionId);
     if(opening)return opening;
     const future=(async()=>{
-      const models=builtinModels();
+      const models=this.options.models??builtinModels();
       if(!models.getModel(model.provider,model.model))
         throw new Error("Pi Durable model is not in the builtin catalog: "+
           model.provider+"/"+model.model);
       // Credentials stay with the machine's provider environment or a
       // host-installed credential resolver. Never copy PI WEB auth.json.
-      if(!await models.checkAuth(model.provider))
-        throw new Error("Pi Durable has no usable credentials for "+
-          model.provider+". Configure the daemon's provider environment; "+
-          "PI WEB native Session auth is not automatically shared.");
+      // Providers without auth (local, faux, etc.) legitimately return no
+      // auth metadata. Generation resolves credentials and fails closed
+      // unless the daemon's Pi Durable provider is authenticated.
       const rootPath=this.path(reservation);
       const registry=createRegistry();
       const reports=reportTools(kind,binding.runId,r=>{
@@ -224,7 +235,8 @@ export class DurableRunHost {
          env:({cwd})=>{
            if(resolve(cwd??"")!==canonical)
              throw new Error("Durable execution cwd changed after trusted Workspace validation");
-           return new NodeExecutionEnv({cwd:canonical});
+           return new NodeExecutionEnv({cwd:canonical,
+             shellEnv:shellEnvironment()});
          }},BACKGROUND_CONTEXT);
       try{
         const original=[...coding];
