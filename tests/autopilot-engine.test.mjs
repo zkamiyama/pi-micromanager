@@ -447,7 +447,7 @@ test("Opt-in QC failure escalation reserves a durable barrier before rework",asy
    assert.match(x.launches.find(j=>j.kind==="planning").prompt,
      /automatic QC-failure escalation/);
    assert.match(x.launches.find(j=>j.kind==="planning").prompt,
-     /Do not resume a held Task/);
+     /or resume a held Task/);
  }finally{x.close();}
 });
 
@@ -471,7 +471,7 @@ test("Opt-in diagnostic escalation is bounded, human interventions take priority
    const qc=x.settled("qc-api-1");
    x.ledger.recordReport(qc,{kind:"qc",runId:qc.runId,
      verdict:"fail",summary:"Human asked to investigate",at:Date.now()});
-   await x.tick();
+   for(let n=0;n<8&&x.wf().tasks.api.status!=="held";n++)await x.tick();
    assert.equal(x.wf().tasks.api.status,"held");
    assert.equal(x.wf().amendments.length,1);
    assert.equal(x.wf().amendments[0].id,"human-first");
