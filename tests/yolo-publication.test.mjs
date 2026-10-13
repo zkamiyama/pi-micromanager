@@ -44,6 +44,8 @@ function fixture(policy){
   const approvals=new PermissionLedger(join(dir,"perms.sqlite"),wf,ledger);
   let remoteSha=null,pr=null,pushes=0,creates=0,pushUncertain=false,prUncertain=false;
   let headSha=SHA,worktreeDirty=false;
+  let fetchUrl="https://github.com/acme/repo.git",pushUrl=fetchUrl;
+  let pauseDuringPreflight=false,statusChecks=0;
   const commands=[];
   const output=(stdout="",exitCode=0)=>({stdout,exitCode,signal:null,
     stderr:"",stdoutTruncated:false,stderrTruncated:false});
@@ -54,12 +56,18 @@ function fixture(policy){
       const args=req.args.slice(2).join(" ");
       if(args==="rev-parse --show-toplevel")return output("/repo/api\n");
       if(args==="rev-parse HEAD")return output(headSha+"\n");
-      if(args==="status --porcelain")return output(worktreeDirty?"?? dirty.txt\n":"");
+      if(args==="status --porcelain"){
+        statusChecks++;
+        if(pauseDuringPreflight&&statusChecks>=2)
+          ledger.setStatus("p","o","workflow",false,"Paused during Git preflight");
+        return output(worktreeDirty?"?? dirty.txt\n":"");
+      }
       if(args==="symbolic-ref --quiet --short HEAD")return output(BRANCH+"\n");
-      if(args==="remote get-url origin")return output("https://github.com/acme/repo.git\n");
-      if(args==="ls-remote --heads origin refs/heads/"+BRANCH)
+      if(args==="remote get-url origin")return output(fetchUrl+"\n");
+      if(args==="remote get-url --push --all origin")return output(pushUrl+"\n");
+      if(args==="ls-remote --heads "+pushUrl+" refs/heads/"+BRANCH)
         return output(remoteSha?remoteSha+"\trefs/heads/"+BRANCH+"\n":"");
-      if(args==="push --porcelain origin HEAD:refs/heads/"+BRANCH){
+      if(args==="push --porcelain "+pushUrl+" "+SHA+":refs/heads/"+BRANCH){
         pushes++;remoteSha=SHA;
         if(pushUncertain)throw new Error("Lost Git push response");
         return output("To github.com:acme/repo.git\n");
@@ -98,6 +106,8 @@ function fixture(policy){
     losePr(){prUncertain=true;},clearPrLoss(){prUncertain=false;},
     setRemote(value){remoteSha=value;},setHead(value){headSha=value;},
     setDirty(value){worktreeDirty=value;},
+    setPushUrl(value){pushUrl=value;},setRepo(value){fetchUrl=value;pushUrl=value;},
+    pauseDuringNextPreflight(){pauseDuringPreflight=true;statusChecks=0;},
     tick(){return service.step(ledger.get("p","o","workflow"),wf.get("p","o","workflow"));},
     close(){service.close();approvals.close();ledger.close();agents.close();wf.close();
       rmSync(dir,{recursive:true,force:true});}};
@@ -230,5 +240,43 @@ test("Paused Autopilot forbids any new external side effect",async()=>{
     assert.equal(x.pushes,0);
     assert.equal(x.creates,0);
     assert.equal(x.service.list("p","o","workflow").length,0);
+  }finally{x.close();}
+});
+
+test("Audit F03: mismatched fetch and effective push URLs prevent network side effects",async()=>{
+  const x=fixture(undefined);
+  try{
+    x.setPushUrl("https://github.com/other/repo.git");
+    await assert.rejects(x.tick(),/fetch and push repositories differ/);
+    assert.equal(x.pushes,0);
+    assert.equal(x.creates,0);
+  }finally{x.close();}
+});
+test("Audit F04: human approval is bound to actual GitHub repository and source branch",async()=>{
+  const x=fixture({actions:{"git.push":"ask"}});
+  try{
+    assert.equal(await x.tick(),"waiting");
+    const first=x.approvals.list("p","o","workflow")[0];
+    assert.deepEqual(JSON.parse(first.target),{
+      repository:"acme/repo",sourceBranch:BRANCH,
+      pushUrl:"https://github.com/acme/repo.git",
+    });
+    x.approvals.decide("p","o",first.id,"approved");
+    x.setRepo("https://github.com/other/repo.git");
+    assert.equal(await x.tick(),"waiting");
+    assert.equal(x.pushes,0);
+    const current=x.approvals.list("p","o","workflow");
+    assert.equal(current.length,2);
+    assert.notEqual(current[0].id,first.id);
+    assert.equal(JSON.parse(current[0].target).repository,"other/repo");
+  }finally{x.close();}
+});
+test("Audit F07: pausing during async Git preflight fences a new push",async()=>{
+  const x=fixture(undefined);
+  try{
+    x.pauseDuringNextPreflight();
+    await assert.rejects(x.tick(),/paused or its destination changed/);
+    assert.equal(x.pushes,0);
+    assert.equal(x.ledger.get("p","o","workflow").enabled,false);
   }finally{x.close();}
 });

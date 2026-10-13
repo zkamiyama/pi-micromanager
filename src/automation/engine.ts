@@ -1,5 +1,6 @@
 /** Durable DAG-to-Pi dispatcher. No unverified model prose advances a Task. */
 import { WorkflowError, type WorkflowInstance, type WorkflowAction, type TaskState } from "../core/workflow.js";
+import {internalRunId,internalCommandId} from "../core/identifiers.js";
 import { WorkflowStore } from "../core/store.js";
 import { AgentRegistry, type AgentBinding, type Seat } from "../runtime/registry.js";
 import { AutopilotLedger, type AutopilotConfig, type ModelProfile, type AutopilotRecord } from "./ledger.js";
@@ -43,9 +44,10 @@ function kindOf(task:TaskState):JobKind {
 }
 function expectedRunId(task:TaskState):string {
   if(task.spec.kind==="implementation"&&task.status==="awaiting_qc"&&task.pendingWork)
-    return "qc-"+task.spec.id+"-"+task.pendingWork.attempt;
-  if(task.spec.kind==="implementation")return "impl-"+task.spec.id+"-"+task.attempts;
-  return "task-"+task.spec.id+"-"+task.attempts;
+    return internalRunId("qc",task.spec.id,task.pendingWork.attempt);
+  if(task.spec.kind==="implementation")
+    return internalRunId("impl",task.spec.id,task.attempts);
+  return internalRunId("task",task.spec.id,task.attempts);
 }
 function implementationWorkspace(task:TaskState,config:AutopilotConfig):string|undefined {
   return task.spec.systemPurpose==="final-integration"?
@@ -103,7 +105,7 @@ export function buildJobPrompt(workflow:WorkflowInstance,task:TaskState,kind:Job
       .map(t=>"Source Task "+t.spec.id+": "+t.spec.title+
         "\nRequirements: "+(t.spec.description??"")+
         "\nAcceptance: "+(t.spec.acceptanceCriteria??[]).join("; ")+
-        "\nSealed QC SHA: "+(t.lastQc?.headSha??"UNVERIFIED")).join("\n").slice(0,5000):"";
+        "\nSealed QC SHA: "+(t.lastQc?.headSha??"UNVERIFIED")).join("\n"):"";
     return boundedPrompt(common+
       "This is a READ-ONLY QC session for Git SHA "+(task.pendingWork?.headSha??"UNKNOWN")+
       ". Inspect actual source and tests in the selected checkout using the read tool "+
@@ -233,7 +235,7 @@ export class AutopilotEngine {
     if(this.stopping)return;
     const p=record.projectId,o=record.orchestraWorkspaceId,workflowId=record.workflowId;
     const current=this.workflow.get(p,o,workflowId);
-    const known=this.agents.list(p,o,"all").filter(a=>a.workflowId===workflowId);
+    const known=this.agents.listWorkflow(p,o,workflowId,"all");
     // A crash after committing a Workflow action but before sealing the Run must
     // not lock its worktree forever. Only a durable command receipt authorizes seal.
     for(const binding of known.filter(b=>b.phase==="settled"&&b.requestId.startsWith("auto:"))){
@@ -247,12 +249,15 @@ export class AutopilotEngine {
     // Resolve the planner's typed proposal, even when the human QC hold was
     // armed before the QC completed.
     for(const amendment of current.amendments.filter(a=>a.status==="planning")){
-      const planRunId="plan-"+amendment.id;
+      const planRunId=internalRunId("plan",amendment.id);
       const existing=known.find(b=>b.runId===planRunId);
       if(existing){
         if(!existing.requestId.startsWith("auto:"))
           throw new Error("Human-owned planning Run cannot be automatically adopted");
         if(existing.phase==="settled"){
+          if(existing.abortRequested===1||
+            existing.latestKind==="agent_settled"&&existing.latestText==="Agent interrupted")
+            throw new Error("Interrupted planner cannot arm a human intervention");
           if(!this.ledger.report(existing)&&this.port.recoverReport)
             await this.port.recoverReport(existing);
           const report=this.ledger.report(existing);
@@ -385,7 +390,8 @@ export class AutopilotEngine {
         }
       }
       this.act(record,current,{type:"start",taskId:next.taskId},
-        "auto:start:"+workflowId+":"+next.taskId+":"+(current.tasks[next.taskId]!.attempts+1));
+        internalCommandId("auto:start:"+workflowId+":"+next.taskId+":"+
+          (current.tasks[next.taskId]!.attempts+1)));
       return;
     }
     if(next?.action==="launch"){
@@ -416,7 +422,8 @@ export class AutopilotEngine {
       await this.port.launch({projectId:p,orchestraWorkspaceId:o,workflowId,
         taskId:next.taskId,runId:next.runId,seat:next.seat,kind:next.kind,workspaceId,
         ...(requiredAncestors.length?{requiredAncestors}:{}),
-        model:task.spec.model?(()=>{
+        // A Task's implementer override must never replace its independent QC profile.
+        model:task.spec.model&&next.kind!=="qc"?(()=>{
           const raw=task.spec.model!;
           const cut=raw.indexOf("/");
           return cut>0?{...record.config.models[next.seat],provider:raw.slice(0,cut),
@@ -499,12 +506,17 @@ export class AutopilotEngine {
     if(kind!=="implementation"&&!this.ledger.report(binding)&&this.port.recoverReport)
       await this.port.recoverReport(binding);
     const report=this.ledger.report(binding);
-    if(binding.latestKind==="agent_settled"&&binding.latestText==="Agent interrupted")
+    if(binding.abortRequested===1||
+      (binding.latestKind==="agent_settled"&&binding.latestText==="Agent interrupted"))
       throw new Error("Run "+binding.runId+" was interrupted, not completed");
     if(kind!=="implementation"&&(!report||(kind==="qc"&&report.kind!=="qc")||
       (kind!=="qc"&&report.kind!=="task")))
       throw new Error("Run "+binding.runId+" settled without a valid structured "+kind+" report");
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
+    const prior=this.ledger.preparedTransition(binding);
+    if(prior&&prior.kind!==kind)throw new Error("Prepared Run kind mismatch");
+    let prepared=prior;
+    if(!prepared){
     let action:WorkflowAction,details:string;
     if(kind==="implementation"){
       const verify=await this.port.verify(binding,record.config);
@@ -534,9 +546,21 @@ export class AutopilotEngine {
       action={type:"complete",taskId:task.spec.id};
       details=kind+" report: "+report!.summary;
     }
-    if(this.stopping)return; // Do not commit a transition during plugin shutdown.
-    const evidence=this.ledger.sealEvidence(binding,kind,details.slice(0,3500));
-    this.act(record,current,action,"auto:complete:"+binding.runId);
+    if(this.stopping)return; // Do not persist a new transition during shutdown.
+    prepared=this.ledger.prepareTransition(binding,kind,action,details.slice(0,3500));
+    }
+    if(prior&&(kind==="implementation"||kind==="qc")){
+      // Revalidate HEAD without re-running potentially nondeterministic tests.
+      // Their first verified outcome was frozen before the lost CAS.
+      const sha=prior.action.type==="implementation_finished"||
+        prior.action.type==="qc_finalized"?prior.action.headSha:undefined;
+      if(!sha||!this.port.checkSnapshot)
+        throw new Error("Cannot reconcile prepared Run without Git snapshot proof");
+      await this.port.checkSnapshot(binding,sha);
+    }
+    if(this.stopping)return;
+    const evidence=this.ledger.sealEvidence(binding,kind,prepared.details);
+    this.act(record,current,prepared.action,"auto:complete:"+binding.runId);
     // Seal the settled Pi Run only AFTER authoritative workflow/evidence persist.
     const sealed=this.agents.seal(p,o,binding.sessionId!,evidence.ref);
     this.port.onTransition?.(sealed);

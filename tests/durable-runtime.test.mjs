@@ -186,3 +186,87 @@ test("Default Durable Models load stored Pi provider auth through the public SDK
    assert.ok(auth.source,"Auth resolution has provenance, without exposing it to logs");
  }finally{await x.close();}
 });
+
+test("F12: unsupported effort fails before immutable Durable reservation",async()=>{
+  const x=fixture();
+  try{
+    await assert.rejects(x.durable.launch({...x.launch,model:{
+      ...x.launch.model,effort:"typo"}}),/Unsupported Pi Durable thinking/);
+    assert.equal(x.current(),undefined);
+    x.faux.setResponses([fauxAssistantMessage("No report")]);
+    await x.durable.launch(x.launch);
+    assert.ok(x.current().sessionId.startsWith("durable:"));
+  }finally{await x.close();}
+});
+test("F06: abort intent survives lost event and Durable restart",async()=>{
+  const x=fixture(),slow=fauxProvider({tokensPerSecond:100});
+  const models=createModels();models.setProvider(slow.provider);
+  x.options.models=models;
+  const original=x.options.activity;let dropped;
+  x.options.activity=(binding,event)=>{
+    if(event.kind==="agent_settled"){dropped=event;return;}
+    original(binding,event);
+  };
+  try{
+    slow.setResponses([
+      fauxAssistantMessage([fauxToolCall("mm_qc_report",{
+        verdict:"pass",summary:"Provisional QC before abort"},{id:"pre-abort"})],
+        {stopReason:"toolUse"}),
+      fauxAssistantMessage([fauxText("Still reviewing. ".repeat(1000))]),
+    ]);
+    await x.durable.launch(x.launch);
+    await x.waitFor(()=>x.reports.length===1);
+    await x.durable.command(x.current(),x.project,"qc","abort","audit-abort");
+    await x.waitFor(()=>dropped);
+    assert.equal(dropped.text,"Agent interrupted");
+    assert.equal(x.current().abortRequested,1);
+    await x.durable.close();
+    x.options.activity=original;
+    x.durable=new DurableRunHost(x.options);
+    await x.durable.reconnect(x.current(),x.project,"qc");
+    await x.waitFor(()=>x.current().phase==="settled");
+    assert.equal(x.current().latestText,"Agent interrupted");
+    assert.equal(x.ledger.report(x.current()).verdict,"pass");
+  }finally{await x.close();}
+});
+
+test("F14: shutdown joins an opening Harness and never leaves a live Run",async()=>{
+  const x=fixture();let release,entered;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const inside=new Promise(resolve=>{entered=resolve;});
+  const original=x.durable.validatedModels.bind(x.durable);
+  let calls=0;
+  x.durable.validatedModels=async model=>{
+    calls++;
+    if(calls===2){entered();await gate;}
+    return original(model);
+  };
+  try{
+    const launching=x.durable.launch(x.launch);
+    await inside;
+    const closing=x.durable.close();
+    release();
+    await assert.rejects(launching,/shutting down|closed/);
+    await closing;
+    assert.equal(x.durable.connected("durable:unused"),false);
+    assert.equal(x.current()?.phase,"reserved");
+  }finally{release();await x.close();}
+});
+test("F13: failed input proof cannot be bypassed by a second reconnect",async()=>{
+  const x=fixture(),original=x.durable.open.bind(x.durable);
+  x.durable.open=async(...args)=>{
+    const live=await original(...args);
+    live.root.submit=async()=>{throw Error("Synthetic failure before input commit");};
+    return live;
+  };
+  try{
+    await assert.rejects(x.durable.launch(x.launch),/Synthetic failure/);
+    await x.durable.close();
+    x.durable=new DurableRunHost(x.options);
+    await assert.rejects(x.durable.reconnect(x.current(),x.project,"qc"),
+      /input receipt missing/);
+    await assert.rejects(x.durable.reconnect(x.current(),x.project,"qc"),
+      /input receipt missing/);
+    assert.equal(x.faux.state.callCount,0);
+  }finally{await x.close();}
+});

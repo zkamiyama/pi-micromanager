@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import type { Seat, AgentBinding } from "../runtime/registry.js";
 import { parseRunReport, type RunReport } from "./report.js";
+import type {WorkflowAction} from "../core/workflow.js";
 
 export interface ModelProfile { provider:string; model:string; effort?:string }
 export interface PublicationConfig {
@@ -47,6 +48,9 @@ export interface AutopilotRecord {
 }
 export interface EvidenceReceipt {
   ref:string; runId:string; sessionId:string; kind:string; text:string; createdAt:string;
+}
+export interface PreparedTransition {
+  kind:string;action:WorkflowAction;details:string;
 }
 const seats:Seat[]=["implementer","qc","architect","planner"];
 function str(value:unknown,max:number):string {
@@ -159,6 +163,11 @@ export class AutopilotLedger {
         session_id TEXT NOT NULL,ref TEXT NOT NULL,kind TEXT NOT NULL,
         text TEXT NOT NULL,created_at TEXT NOT NULL,
         PRIMARY KEY(scope,workflow_id,run_id));
+      CREATE TABLE IF NOT EXISTS autopilot_prepared(
+        scope TEXT NOT NULL,workflow_id TEXT NOT NULL,run_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,kind TEXT NOT NULL,
+        action_json TEXT NOT NULL,details TEXT NOT NULL,created_at TEXT NOT NULL,
+        PRIMARY KEY(scope,workflow_id,run_id));
     `);
   }
   close():void{this.db.close();}
@@ -188,6 +197,18 @@ export class AutopilotLedger {
     return row?{projectId,orchestraWorkspaceId:workspaceId,workflowId,
       enabled:row.enabled===1,status:row.status,updatedAt:row.updated_at,
       config:this.persisted(JSON.parse(row.config_json))}:undefined;
+  }
+  /** Scheduler inventory, unlike the bounded UI list: every enabled workflow. */
+  listEnabled():AutopilotRecord[]{
+    const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at
+      FROM autopilots WHERE enabled=1 ORDER BY updated_at ASC`).all() as
+      {scope:string;workflow_id:string;config_json:string;enabled:number;status:string;updated_at:string}[];
+    return rows.map(row=>{
+      const [projectId,orchestraWorkspaceId]=JSON.parse(row.scope) as [string,string];
+      return {projectId,orchestraWorkspaceId,workflowId:row.workflow_id,
+        config:this.persisted(JSON.parse(row.config_json)),
+        enabled:true,status:row.status,updatedAt:row.updated_at};
+    });
   }
   list():AutopilotRecord[]{
     const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at
@@ -232,6 +253,40 @@ export class AutopilotLedger {
       .get(automationScope(binding.projectId,binding.orchestraWorkspaceId),
         binding.workflowId,binding.runId,binding.sessionId) as {report_json:string}|undefined;
     return row?parseRunReport(JSON.parse(row.report_json)):undefined;
+  }
+  /** Freeze the verified transition once before a potentially conflicting
+   * Workflow CAS. Retries reuse this receipt, not nondeterministic test output. */
+  preparedTransition(binding:AgentBinding):PreparedTransition|undefined{
+    if(!binding.sessionId)return;
+    const row=this.db.prepare(`SELECT session_id,kind,action_json,details FROM autopilot_prepared
+      WHERE scope=? AND workflow_id=? AND run_id=?`).get(
+        automationScope(binding.projectId,binding.orchestraWorkspaceId),
+        binding.workflowId,binding.runId) as
+        {session_id:string;kind:string;action_json:string;details:string}|undefined;
+    if(!row)return;
+    if(row.session_id!==binding.sessionId)
+      throw new Error("Prepared transition belongs to another Pi Session");
+    return {kind:row.kind,action:JSON.parse(row.action_json) as WorkflowAction,
+      details:row.details};
+  }
+  prepareTransition(binding:AgentBinding,kind:string,action:WorkflowAction,
+    details:string):PreparedTransition{
+    if(!binding.sessionId)throw new Error("Cannot prepare unassigned Run");
+    str(kind,60);str(details,3500);
+    const old=this.preparedTransition(binding);
+    if(old){
+      if(old.kind!==kind)throw new Error("Prepared Run kind mismatch");
+      return old;
+    }
+    this.db.prepare(`INSERT INTO autopilot_prepared(
+      scope,workflow_id,run_id,session_id,kind,action_json,details,created_at)
+      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(scope,workflow_id,run_id) DO NOTHING`)
+      .run(automationScope(binding.projectId,binding.orchestraWorkspaceId),
+        binding.workflowId,binding.runId,binding.sessionId,kind,
+        JSON.stringify(action),details,new Date().toISOString());
+    const prepared=this.preparedTransition(binding);
+    if(!prepared||prepared.kind!==kind)throw new Error("Prepared Run transition conflicted");
+    return prepared;
   }
   sealEvidence(binding:AgentBinding,kind:string,text:string):EvidenceReceipt{
     if(!binding.sessionId)throw new Error("Cannot persist evidence without a Session");

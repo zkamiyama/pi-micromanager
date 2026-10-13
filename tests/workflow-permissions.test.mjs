@@ -10,6 +10,8 @@ import {AutopilotLedger} from "../dist/automation/ledger.js";
 import {PermissionLedger} from "../dist/automation/permissions.js";
 
 const HEAD="a".repeat(40);
+const TARGET={repository:"acme/repo",sourceBranch:"feature/code",
+  pushUrl:"https://github.com/acme/repo.git"};
 const workflow={id:"feature",title:"YOLO feature",maxQcRounds:3,
   maxParallelByRole:{planner:1,implementer:1,reviewer:1,architect:1},
   tasks:[{id:"code",title:"Code",role:"implementer",kind:"implementation",
@@ -70,7 +72,7 @@ test("Ask creates one durable exact QC permission request; approval is idempoten
   try{
     const pub=x.ledger.get("p","o","feature").config.publication;
     const q=()=>x.permission.ensure("p","o","feature","code","git.push",
-      "qc-code-1",HEAD,pub);
+      "qc-code-1",HEAD,pub,TARGET);
     const first=q();assert.equal(first.decision,"ask");
     assert.equal(first.approval.state,"pending");
     assert.equal(q().approval.id,first.approval.id);
@@ -91,18 +93,18 @@ test("No decision is transferable across Workflows, publication targets or chang
   try{
     const pub=x.ledger.get("p","o","feature").config.publication;
     const a=x.permission.ensure("p","o","feature","code","git.push",
-      "qc-code-1",HEAD,pub).approval;
+      "qc-code-1",HEAD,pub,TARGET).approval;
     assert.throws(()=>x.permission.decide("different","o",a.id,"approved"),
       /does not belong/);
     assert.throws(()=>x.permission.ensure("p","o","feature","code","git.push",
-      "qc-code-1","b".repeat(40),pub),/QC-passed/);
+      "qc-code-1","b".repeat(40),pub,TARGET),/QC-passed/);
     x.ledger.save("p","o","feature",{
       ...config,publication:{...pub,baseBranch:"release"},
     });
     assert.throws(()=>x.permission.decide("p","o",a.id,"approved"),
       /no longer matches/);
     const changed=x.permission.ensure("p","o","feature","code","git.push",
-      "qc-code-1",HEAD,{...pub,baseBranch:"release"});
+      "qc-code-1",HEAD,{...pub,baseBranch:"release"},TARGET);
     assert.equal(changed.decision,"ask");
     assert.notEqual(changed.approval.id,a.id);
   }finally{x.close();}
@@ -112,14 +114,14 @@ test("Deny never creates approval or authorizes a later operation",()=>{
   try{
     const pub=x.ledger.get("p","o","feature").config.publication;
     assert.deepEqual(x.permission.ensure("p","o","feature","code","git.push",
-      "qc-code-1",HEAD,pub),{decision:"deny"});
+      "qc-code-1",HEAD,pub,TARGET),{decision:"deny"});
     assert.equal(x.permission.list("p","o","feature").length,0);
     const q=x.permission.ensure("p","o","feature","code","github.pr.create",
-      "qc-code-1",HEAD,pub);
+      "qc-code-1",HEAD,pub,TARGET);
     assert.equal(q.decision,"ask");
     assert.equal(x.permission.decide("p","o",q.approval.id,"rejected").state,"rejected");
     assert.equal(x.permission.ensure("p","o","feature","code","github.pr.create",
-      "qc-code-1",HEAD,pub).decision,"deny");
+      "qc-code-1",HEAD,pub,TARGET).decision,"deny");
   }finally{x.close();}
 });
 

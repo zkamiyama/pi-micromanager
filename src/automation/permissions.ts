@@ -23,6 +23,19 @@ const ROWS="id,scope,workflow_id AS workflowId,task_id AS taskId,"+
   "action,run_id AS runId,head_sha AS headSha,target,state,fingerprint,"+
   "created_at AS createdAt,updated_at AS updatedAt";
 const supported=new Set<PermissionAction>(["git.push","github.pr.create","github.pr.merge"]);
+/** An exact host-resolved publication destination; never authorize a remote alias alone. */
+export interface PublicationTarget {
+  repository:string; sourceBranch:string; pushUrl:string;
+}
+function publicationTarget(raw:unknown):PublicationTarget {
+  if(!raw||typeof raw!=="object"||Array.isArray(raw))throw new Error("Invalid publication target");
+  const p=raw as Record<string,unknown>;
+  if(typeof p.repository!=="string"||!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(p.repository)||
+     typeof p.sourceBranch!=="string"||!p.sourceBranch||
+     typeof p.pushUrl!=="string"||!p.pushUrl)
+    throw new Error("Invalid publication target");
+  return {repository:p.repository,sourceBranch:p.sourceBranch,pushUrl:p.pushUrl};
+}
 function commitSubject(taskId:string,runId:string,revision:number,workspaceId:string):string{
   return createHash("sha256").update(JSON.stringify([
     "git.commit",taskId,runId,revision,workspaceId])).digest("hex");
@@ -34,9 +47,10 @@ function integrationSubject(sourceId:string,runId:string,sha:string,
     .digest("hex");
 }
 function subject(action:PermissionAction,taskId:string,runId:string,
-  sha:string,pub:PublicationConfig):string{
+  sha:string,pub:PublicationConfig,target:PublicationTarget):string{
   return createHash("sha256").update(JSON.stringify([
-    action,taskId,runId,sha,pub.remote,pub.baseBranch,pub.draft])).digest("hex");
+    action,taskId,runId,sha,pub.remote,pub.baseBranch,pub.draft,
+    target.repository,target.sourceBranch,target.pushUrl])).digest("hex");
 }
 export class PermissionLedger {
   private readonly db:DatabaseSync;
@@ -140,7 +154,7 @@ export class PermissionLedger {
   }
   ensure(p:string,o:string,workflowId:string,taskId:string,
     action:PermissionAction,runId:string,headSha:string,
-    publication:PublicationConfig):PermissionOutcome{
+    publication:PublicationConfig,target:PublicationTarget):PermissionOutcome{
     if(!supported.has(action))throw new Error("Unsupported autonomously gated operation");
     const workflow=this.workflows.get(p,o,workflowId);
     const task=workflow.tasks[taskId];
@@ -151,20 +165,21 @@ export class PermissionLedger {
       throw new Error("Approval subject must be the currently QC-passed Task commit");
     const decision=permissionDecision(workflow.definition.permissions,action);
     if(decision!=="ask")return {decision};
-    const scope=automationScope(p,o),fingerprint=subject(action,taskId,runId,headSha,publication);
+    const canonical=publicationTarget(target);
+    const scope=automationScope(p,o),fingerprint=subject(action,taskId,runId,headSha,publication,canonical);
     const existing=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
       " WHERE scope=? AND workflow_id=? AND task_id=? AND action=? AND fingerprint=?")
       .get(scope,workflowId,taskId,action,fingerprint) as ApprovalRow|undefined;
     if(existing)return {decision:existing.state==="approved"?"allow":
       existing.state==="rejected"?"deny":"ask",approval:existing};
     const id=randomUUID(),at=new Date().toISOString();
-    const target=publication.remote+":"+publication.baseBranch;
+    const targetText=JSON.stringify(canonical);
     this.db.prepare(`INSERT INTO workflow_approvals(
       id,scope,workflow_id,task_id,action,run_id,head_sha,target,
       fingerprint,state,created_at,updated_at)
       VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?)
       ON CONFLICT(scope,workflow_id,task_id,action,fingerprint) DO NOTHING`)
-      .run(id,scope,workflowId,taskId,action,runId,headSha,target,fingerprint,at,at);
+      .run(id,scope,workflowId,taskId,action,runId,headSha,targetText,fingerprint,at,at);
     const row=this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
       " WHERE scope=? AND workflow_id=? AND task_id=? AND action=? AND fingerprint=?")
       .get(scope,workflowId,taskId,action,fingerprint) as unknown as ApprovalRow;
@@ -213,7 +228,8 @@ export class PermissionLedger {
       const pub=config.publication;
       if(!pub||!task||!["passed","integrated"].includes(task.status)||
         task.lastQc?.runId!==row.runId||task.lastQc.headSha!==row.headSha||
-        subject(row.action,row.taskId,row.runId,row.headSha,pub)!==row.fingerprint)
+        subject(row.action,row.taskId,row.runId,row.headSha,pub,
+          publicationTarget(JSON.parse(row.target)))!==row.fingerprint)
         throw new Error("Approval no longer matches the exact Workflow QC commit and publication target");
     }
     if(permissionDecision(workflow.definition.permissions,row.action)!=="ask")

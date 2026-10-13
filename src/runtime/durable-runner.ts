@@ -43,7 +43,7 @@ interface DurableCallbacks{
 type Active={
   harness:Awaited<ReturnType<typeof Harness.open>>;
   root:Conversation;stream:AgentEventStream;binding:AgentBinding;
-  closed:boolean;stopped:boolean;seq:number;text:string;abortRequested:boolean;
+  closed:boolean;stopped:boolean;verified:boolean;seq:number;text:string;abortRequested:boolean;
 };
 const UUID_HASH=/^durable:([a-f0-9]{64})$/;
 const readonlyKinds=new Set<DurableKind>(["qc","diagnosis","synthesis","planning","workflow_plan"]);
@@ -198,6 +198,11 @@ export class DurableRunHost {
     return this.modelsPromise;
   }
   private async validatedModels(model:ModelProfile):Promise<Models>{
+    // Reject deterministic config errors before reserving a one-shot Run.
+    // Otherwise an unsupported effort strands an unstarted immutable ID.
+    const levels=new Set(["off","minimal","low","medium","high","xhigh","max"]);
+    if(model.effort!==undefined&&!levels.has(model.effort))
+      throw new Error("Unsupported Pi Durable thinking level: "+model.effort);
     const models=await this.configuredModels();
     if(!models.getModel(model.provider,model.model))
       throw new Error("Pi Durable model is not in the configured Pi catalog: "+
@@ -244,6 +249,7 @@ export class DurableRunHost {
     if(opening)return opening;
     const future=(async()=>{
       const models=await this.validatedModels(model);
+      if(this.closing)throw new Error("Durable host shutting down during open");
       const rootPath=this.path(reservation);
       const registry=createRegistry();
       const reports=reportTools(kind,binding.runId,r=>{
@@ -279,6 +285,7 @@ export class DurableRunHost {
              shellEnv:shellEnvironment()});
          }},BACKGROUND_CONTEXT);
       try{
+        if(this.closing)throw new Error("Durable host shutting down during Harness open");
         const original=[...coding];
         const read=original.find(x=>x.name==="read");
         if(!read)throw new Error("Pi Durable CodingTools lacks the safe read tool");
@@ -305,7 +312,7 @@ export class DurableRunHost {
         const root=await harness.root(BACKGROUND_CONTEXT,{agent});
         const stream=await watchEvents(harness,root.id,BACKGROUND_CONTEXT);
         const live:Active={harness,root,stream,binding,closed:false,stopped:false,
-          seq:0,text:"",abortRequested:false};
+          verified:false,seq:0,text:"",abortRequested:false};
         stream.start(async events=>{
           if(live.closed)return;
           for(const event of events){
@@ -319,6 +326,7 @@ export class DurableRunHost {
             this.options.activity(current,value.event);
           }
         });
+        if(this.closing)throw new Error("Durable host shutting down during open");
         this.active.set(sessionId,live);
         return live;
       }catch(error){await harness.close(BACKGROUND_CONTEXT).catch(()=>{});throw error;}
@@ -338,7 +346,8 @@ export class DurableRunHost {
       if(!current||current.phase==="sealed"||current.phase==="settled"||
         current.phase==="failed")return;
       this.options.activity(current,{kind:"agent_settled",at:Date.now(),
-        sequence:++live.seq,text:live.abortRequested?"Agent interrupted":"Agent settled"});
+        sequence:++live.seq,text:current.abortRequested===1||
+          live.abortRequested?"Agent interrupted":"Agent settled"});
       this.options.wake(current);
     }).catch(error=>{
       if(live.closed||this.closing)return;
@@ -362,6 +371,7 @@ export class DurableRunHost {
     this.options.changed(reserved);
     const sid=identity(r);
     const active=await this.open(reserved,spec.cwd,spec.kind,spec.model);
+    if(this.closing)throw new Error("Durable host closed before Run admission");
     let current=this.options.agents.assign(r,sid);
     this.options.changed(current);
     current=this.options.agents.update(current,"configured",{
@@ -371,6 +381,7 @@ export class DurableRunHost {
     const accepted=await active.root.submit({type:"input",content:spec.prompt,
       requestId:"mm:"+sessionHash(r),whenBusy:"reject"},BACKGROUND_CONTEXT);
     if(!accepted.id)throw new Error("Durable did not commit the exact Run input");
+    active.verified=true;
     current=this.options.agents.get(r.projectId,r.orchestraWorkspaceId,sid);
     if(current.phase!=="settled"&&current.phase!=="running")
       this.options.changed(this.options.agents.update(current,"running"));
@@ -384,8 +395,13 @@ export class DurableRunHost {
     // The initial watch snapshot predates the first submit. Do not re-read
     // that stale pre-submit snapshot when a live owned Harness is already
     // supervising the same Run. No second Harness may open the same SQLite.
-    if(this.connected(binding.sessionId!))
+    if(this.connected(binding.sessionId!)){
+      // A failed first reconnect must not convert an unverified cached Harness
+      // into an apparently healthy session on the second reconnect.
+      if(!this.active.get(binding.sessionId!)?.verified)
+        throw new Error("Durable reconnect is not yet verified");
       return binding.phase==="settled"?"settled":"running";
+    }
     const manifest=this.path(this.reservation(binding));
     if(!existsSync(manifest))
       throw new Error("Durable storage missing; do not create a replacement Run");
@@ -395,6 +411,7 @@ export class DurableRunHost {
       provider:binding.provider,model:binding.model,
       ...(binding.effort?{effort:binding.effort}:{})
     });
+    try{
     const snap=live.stream.snapshot;
     if(!snap.entries.some(e=>e.kind==="pi.user")&&!snap.run)
       throw new Error("Durable input receipt missing; refusing to declare settlement");
@@ -415,8 +432,15 @@ export class DurableRunHost {
     if(uncertain)
       throw new Error("Interrupted non-replay-safe Durable Tool requires human reconciliation");
     live.harness.resume();
+    live.verified=true;
     this.supervise(live);
     return live.stream.snapshot.run?"running":"settled";
+    }catch(error){
+      // Stop and remove a partially recovered Harness. It did not prove an
+      // input receipt or safe replay state and must not be cached as connected.
+      await this.stopRun(binding).catch(()=>{});
+      throw error;
+    }
   }
   async command(binding:AgentBinding,cwd:string,kind:DurableKind,
     action:"steer"|"followUp"|"abort",requestId:string,text?:string){
@@ -429,6 +453,9 @@ export class DurableRunHost {
     }
     if(!live||live.closed)throw new Error("Durable conversation is not connected");
     if(action==="abort"){
+      // Write the intent before the non-atomic interrupt signal. A daemon
+      // restart must never reinterpret an aborted run as successful.
+      this.options.changed(this.options.agents.requestAbort(binding));
       live.abortRequested=true;
       await live.root.abort(BACKGROUND_CONTEXT);
     }else{
@@ -449,6 +476,9 @@ export class DurableRunHost {
   }
   async close():Promise<void>{
     this.closing=true;
+    // An opening Harness is not in active yet. Join it before closing handles,
+    // otherwise it can become live AFTER close() has already returned.
+    await Promise.allSettled([...this.opening.values()]);
     await Promise.allSettled([...this.active.values()].map(async live=>{
       live.closed=true;await live.stream.stop();await live.harness.close(BACKGROUND_CONTEXT);
     }));

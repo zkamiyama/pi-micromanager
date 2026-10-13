@@ -29,6 +29,8 @@ export interface AgentBinding {
   latestKind: string | null;
   latestText: string | null;
   evidenceRef: string | null;
+  /** Durable abort intent; sticky even if the terminal event is lost on restart. */
+  abortRequested: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -50,6 +52,7 @@ const fields = [
   "run_id AS runId", "seat", "request_id AS requestId", "session_id AS sessionId",
   "phase", "provider", "model", "effort", "latest_kind AS latestKind",
   "latest_text AS latestText", "evidence_ref AS evidenceRef",
+  "abort_requested AS abortRequested",
   "created_at AS createdAt", "updated_at AS updatedAt",
 ].join(",");
 const terminalPhases: BindingPhase[] = ["settled","sealed","failed"];
@@ -85,6 +88,7 @@ export class AgentRegistry {
       "seat TEXT NOT NULL,request_id TEXT NOT NULL,session_id TEXT UNIQUE,",
       "phase TEXT NOT NULL,provider TEXT,model TEXT,effort TEXT,",
       "latest_kind TEXT,latest_text TEXT,evidence_ref TEXT,",
+      "abort_requested INTEGER NOT NULL DEFAULT 0,",
       "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,",
       "PRIMARY KEY(project_id,orchestra_workspace_id,workflow_id,run_id),",
       "UNIQUE(project_id,orchestra_workspace_id,workflow_id,request_id));",
@@ -97,6 +101,10 @@ export class AgentRegistry {
       "CREATE INDEX IF NOT EXISTS execution_activity_session ON",
       "execution_activity(project_id,orchestra_workspace_id,session_id,id);",
     ].join(" "));
+    // SQLite stores created by pre-abort-intent versions remain readable.
+    const columns=this.db.prepare("PRAGMA table_info(execution_runs)").all() as {name:string}[];
+    if(!columns.some(row=>row.name==="abort_requested"))
+      this.db.exec("ALTER TABLE execution_runs ADD COLUMN abort_requested INTEGER NOT NULL DEFAULT 0");
   }
   close():void {this.db.close();}
   list(projectId:string,orchestraWorkspaceId:string, view:"active"|"history"|"all"="active"):AgentBinding[] {
@@ -105,6 +113,32 @@ export class AgentRegistry {
       view==="history" ? " AND phase IN ('settled','sealed','failed')" : "";
     return this.db.prepare("SELECT "+fields+" FROM execution_runs WHERE project_id=? AND orchestra_workspace_id=?"+
       where+" ORDER BY updated_at DESC LIMIT 200").all(projectId,orchestraWorkspaceId) as unknown as AgentBinding[];
+  }
+  /** Workflow-owned execution queries must never use the UI's 200-row limit. */
+  listWorkflow(projectId:string,orchestraWorkspaceId:string,workflowId:string,
+    view:"active"|"history"|"all"="all"):AgentBinding[]{
+    identity(projectId,"projectId");identity(orchestraWorkspaceId,"orchestraWorkspaceId");
+    identity(workflowId,"workflowId");
+    const where=view==="active"?" AND phase NOT IN ('settled','sealed','failed')":
+      view==="history"?" AND phase IN ('settled','sealed','failed')":"";
+    return this.db.prepare("SELECT "+fields+" FROM execution_runs WHERE project_id=?"+
+      " AND orchestra_workspace_id=? AND workflow_id=?"+where+
+      " ORDER BY updated_at DESC").all(projectId,orchestraWorkspaceId,workflowId) as
+      unknown as AgentBinding[];
+  }
+  hasAutomatedRun(projectId:string,orchestraWorkspaceId:string,workflowId:string):boolean{
+    return this.hasAutomatedRunWhere(projectId,orchestraWorkspaceId,workflowId,false);
+  }
+  hasUnsealedAutomatedRun(projectId:string,orchestraWorkspaceId:string,workflowId:string):boolean{
+    return this.hasAutomatedRunWhere(projectId,orchestraWorkspaceId,workflowId,true);
+  }
+  private hasAutomatedRunWhere(p:string,o:string,w:string,unsealed:boolean):boolean{
+    identity(p,"projectId");identity(o,"orchestraWorkspaceId");identity(w,"workflowId");
+    return Boolean(this.db.prepare("SELECT 1 AS present FROM execution_runs WHERE"+
+      " project_id=? AND orchestra_workspace_id=? AND workflow_id=?"+
+      " AND request_id LIKE 'auto:%'"+
+      (unsealed?" AND phase NOT IN ('sealed','failed')":"")+
+      " LIMIT 1").get(p,o,w));
   }
   /** Unbounded SQL existence check; never depend on the 200-item UI listing
    * when enforcing workspace leases before reading evidence or writing ADRs. */
@@ -187,6 +221,19 @@ export class AgentRegistry {
       " WHERE session_id=? AND phase NOT IN ('settled','sealed','failed')")
       .run(phase,detail?.provider??null,detail?.model??null,detail?.effort??null,
         new Date().toISOString(),binding.sessionId);
+    return this.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId);
+  }
+  /** Record a durable, fail-closed abort intent BEFORE asking the agent to abort.
+   * It must survive a lost settlement event and a server restart. */
+  requestAbort(binding:AgentBinding):AgentBinding{
+    if(!binding.sessionId)throw new Error("Cannot abort an unassigned Run");
+    const current=this.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId);
+    if(["settled","sealed","failed"].includes(current.phase))
+      throw new Error("Cannot abort a completed Run");
+    const changed=this.db.prepare("UPDATE execution_runs SET abort_requested=1,updated_at=?"+
+      " WHERE session_id=? AND phase NOT IN ('settled','sealed','failed')")
+      .run(new Date().toISOString(),binding.sessionId);
+    if(changed.changes!==1)throw new Error("Abort reservation changed during request");
     return this.get(binding.projectId,binding.orchestraWorkspaceId,binding.sessionId);
   }
   /** Pi agent_settled ends one execution; later stages always spawn a new session. */
