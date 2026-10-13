@@ -1,5 +1,6 @@
 /** Public PI WEB Host API adapter for the deterministic Autopilot engine. */
 import { randomUUID,createHash } from "node:crypto";
+import {boundedFailureDiagnostics} from "./test-diagnostics.js";
 import { resolve } from "node:path";
 import type {
   ServerPluginActivationContext, PiWebHostPiSessionsV1,
@@ -207,6 +208,10 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       const result=await host.execFile({
         file:config.test.file,args:config.test.args,cwd:w.path,
         timeoutMs:config.test.timeoutMs,signal:host.lifetimeSignal,
+        // Test code is not an OS sandbox: at least prevent accidental
+        // provider and publication credentials from environment inheritance.
+        unsetEnv:Object.keys(process.env).filter(key=>
+          /(?:^GH_|^GITHUB_|^AWS_|^AZURE_|^OPENAI_|^ANTHROPIC_|^GOOGLE_|^GEMINI_|API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY)/i.test(key)),
       });
       const after=await snapshot(w.path);
       const clean=before.clean&&after.clean&&before.sha===after.sha;
@@ -222,7 +227,8 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
         " stdoutSha256="+createHash("sha256").update(result.stdout).digest("hex")+
         " stderrBytes="+Buffer.byteLength(result.stderr)+
         " stderrSha256="+createHash("sha256").update(result.stderr).digest("hex");
-      return {headSha:after.sha,clean,testsPassed,details};
+      const actionable=testsPassed?"":" redactedFailure="+boundedFailureDiagnostics(result.stdout,result.stderr);
+      return {headSha:after.sha,clean,testsPassed,details:details+actionable};
     },
     onTransition:notify,
   };

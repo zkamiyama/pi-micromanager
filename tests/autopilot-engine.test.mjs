@@ -489,3 +489,56 @@ test("Audit F08: CAS conflict reuses persisted host verification, not a second t
       /first-deterministic-capture/);
   }finally{x.close();}
 });
+
+test("Audit F18: paged final-QC prompt keeps source contracts retrievable beyond text budget",()=>{
+ const def={...definition,id:"paging-wf",tasks:Array.from({length:8},(_,i)=>({
+   id:"source-"+i,title:"Source "+i,kind:"implementation",role:"implementer",
+   description:"D".repeat(3900),acceptanceCriteria:["Acceptance "+i],dependsOn:[],
+ }))};
+ const x=setup();
+ try{
+  const w=structuredClone(x.wf());
+  w.tasks=Object.fromEntries(def.tasks.map(t=>[t.id,{
+    spec:t,status:"passed",attempts:1,qcRounds:1,
+    lastQc:{runId:"qc-"+t.id+"-1",headSha:sha,
+      criteriaRevision:0,attempt:1,verdict:"pass"},
+  }]));
+  w.tasks["mm-final-integration"]={
+    spec:{id:"mm-final-integration",title:"Final",kind:"implementation",
+      role:"implementer",systemPurpose:"final-integration",dependsOn:[]},
+    status:"awaiting_qc",attempts:1,qcRounds:0,
+    pendingWork:{headSha:sha,criteriaRevision:0,attempt:1},
+  };
+  assert.throws(()=>buildJobPrompt(w,w.tasks["mm-final-integration"],"qc"),/Unsafe automatic prompt length/);
+  const prompt=buildJobPrompt(w,w.tasks["mm-final-integration"],"qc",[],true);
+  assert.ok(prompt.length<16000);
+  assert.match(prompt,/mm_final_qc_contract/);
+  assert.match(prompt,/index 0 through 7/);
+ }finally{x.close();}
+});
+
+test("G06: per-workflow admission quota limits new sessions without stranding running tasks",()=>{
+ const x=setup();
+ try{
+  const w=structuredClone(x.wf());
+  const t=structuredClone(w.tasks.api);t.spec.id="other";t.spec.title="Other";
+  w.tasks.other=t;w.definition.tasks.push(t.spec);
+  const capped={...config,workspaces:{api:"wt-api",other:"wt-other"},
+    maxConcurrentRuns:1};
+  assert.deepEqual(planNext(w,[],capped),{action:"start",taskId:"api"});
+  w.tasks.api.status="running";w.tasks.api.attempts=1;
+  assert.deepEqual(planNext(w,[],capped),{
+    action:"launch",taskId:"api",kind:"implementation",
+    runId:"impl-api-1",seat:"implementer"});
+  assert.equal(planNext(w,[{workflowId:"wf",seat:"implementer",runId:"impl-api-1",
+    phase:"running",taskId:"api"}],capped),undefined);
+ }finally{x.close();}
+});
+test("G06: configured runtime and managed Worktree budgets are finite",()=>{
+ for(const [field,value] of [["maxConcurrentRuns",0],["maxConcurrentRuns",33],
+    ["maxManagedWorktrees",0],["maxManagedWorktrees",65]]){
+  assert.throws(()=>parseAutopilotConfig({...config,[field]:value}),/must be/);
+ }
+ assert.equal(parseAutopilotConfig({...config,maxConcurrentRuns:2,
+   maxManagedWorktrees:16}).maxConcurrentRuns,2);
+});

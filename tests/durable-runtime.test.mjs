@@ -270,3 +270,46 @@ test("F13: failed input proof cannot be bypassed by a second reconnect",async()=
     assert.equal(x.faux.state.callCount,0);
   }finally{await x.close();}
 });
+
+test("Audit F18: Durable final QC must fetch every full source contract before PASS",async()=>{
+ const x=fixture();
+ const r={...x.r,taskId:"mm-final-integration",runId:"qc-mm-final-integration-1"};
+ const contracts=[
+  {taskId:"a",title:"Source A",description:"A".repeat(3900),
+   acceptanceCriteria:["A contract"],qcSha:"a".repeat(40)},
+  {taskId:"b",title:"Source B",description:"B".repeat(3900),
+   acceptanceCriteria:["B contract"],qcSha:"b".repeat(40)},
+ ];
+ x.options.finalContracts=()=>contracts;
+ try{
+  x.faux.setResponses([
+   fauxAssistantMessage([fauxToolCall("mm_final_qc_contract",{index:0},{id:"page-0"})],{stopReason:"toolUse"}),
+   fauxAssistantMessage([fauxToolCall("mm_final_qc_contract",{index:1},{id:"page-1"})],{stopReason:"toolUse"}),
+   fauxAssistantMessage([fauxToolCall("mm_qc_report",{verdict:"pass",summary:"Reviewed A and B"},{id:"qc-final"})],{stopReason:"toolUse"}),
+   fauxAssistantMessage([fauxText("Final review done.")]),
+  ]);
+  const binding=await x.durable.launch({...x.launch,reservation:r,
+    prompt:"Use mm_final_qc_contract for every index; then report PASS."});
+  await x.waitFor(()=>x.agents.getRun("p","o","workflow",r.runId)?.phase==="settled");
+  assert.equal(x.ledger.report(binding)?.kind,"qc",JSON.stringify({calls:x.faux.state.callCount,events:x.events.map(x=>x.event.kind+":"+x.event.text),reports:x.reports}));
+  assert.equal(x.ledger.report(binding)?.verdict,"pass");
+  assert.equal(x.reports.length,1);
+ }finally{await x.close();}
+});
+test("Audit F18: missing source pages make a final-QC PASS invalid",async()=>{
+ const x=fixture();
+ const r={...x.r,taskId:"mm-final-integration",runId:"qc-mm-final-integration-1"};
+ x.options.finalContracts=()=>[
+  {taskId:"a",title:"A",qcSha:"a".repeat(40)},
+  {taskId:"b",title:"B",qcSha:"b".repeat(40)},
+ ];
+ try{
+  x.faux.setResponses([
+   fauxAssistantMessage([fauxToolCall("mm_qc_report",{verdict:"pass",summary:"Not checked"},{id:"early-qc"})],{stopReason:"toolUse"}),
+   fauxAssistantMessage([fauxText("Terminated.")]),
+  ]);
+  const binding=await x.durable.launch({...x.launch,reservation:r});
+  await x.waitFor(()=>x.agents.getRun("p","o","workflow",r.runId)?.phase==="settled");
+  assert.equal(x.ledger.report(binding),undefined);
+ }finally{await x.close();}
+});

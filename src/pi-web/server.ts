@@ -15,6 +15,7 @@ import { PiSessionBridge } from "../runtime/session-bridge.js";
 import { type RuntimeActivity, type RuntimeControl } from "../runtime/protocol.js";
 import { AutopilotLedger, parseAutopilotConfig } from "../automation/ledger.js";
 import { QuickLaunchLedger, type QuickGoal } from "../automation/quick-launch.js";
+import {linearizeImplementationDag} from "../automation/dag-linearization.js";
 import { AutopilotEngine } from "../automation/engine.js";
 import { createHostExecutor } from "../automation/host-port.js";
 import { DurableRunHost,isDurableSession,type DurableKind } from "../runtime/durable-runner.js";
@@ -118,6 +119,22 @@ const plugin:PiWebServerPlugin={
   const quickFlights=new Map<string,Promise<void>>();
   const durable=new DurableRunHost({
     dataDirectory:host.dataDirectory,agents,ledger,
+    finalContracts:binding=>{
+      const workflow=store.get(binding.projectId,binding.orchestraWorkspaceId,binding.workflowId);
+      const final=workflow.tasks[binding.taskId];
+      if(final?.spec.systemPurpose!=="final-integration"||
+        final.status!=="awaiting_qc")
+        throw new Error("Final QC contract request is not bound to an awaiting final Task");
+      return Object.values(workflow.tasks).filter(t=>t.spec.kind==="implementation"&&
+        t.spec.systemPurpose!=="final-integration").map(t=>{
+          if(!t.lastQc||t.lastQc.verdict!=="pass"||
+            !["passed","integrated"].includes(t.status))
+            throw new Error("Unverified source in final QC contract set");
+          return {taskId:t.spec.id,title:t.spec.title,qcSha:t.lastQc.headSha,
+            ...(t.spec.description?{description:t.spec.description}:{}),
+            ...(t.spec.acceptanceCriteria?{acceptanceCriteria:t.spec.acceptanceCriteria}:{})};
+        });
+    },
     activity:emit,changed:notifyRun,
     report:(binding,report)=>{
       ledger.recordReport(binding,report);
@@ -456,6 +473,11 @@ const plugin:PiWebServerPlugin={
             // never mutates Git. Prepare ALL Worktrees before starting a Pi Run.
             let ready=configured;
             if(ready.config.managedWorktrees){
+              const needed=Object.values(workflow.tasks).filter(t=>
+                t.spec.kind==="implementation"&&t.spec.systemPurpose!=="final-integration").length+
+                (ready.config.finalization?.workspaceId==="auto"?1:0);
+              if(needed>(ready.config.maxManagedWorktrees??32))
+                throw new Error("Managed Worktree budget exceeded before Git mutation: "+needed);
               const workspacesByTask={...ready.config.workspaces};
               const missing=Object.values(workflow.tasks).filter(t=>
                 t.spec.kind==="implementation"&&
@@ -585,8 +607,10 @@ const plugin:PiWebServerPlugin={
       if(quick.find(p,o,current.requestId)?.phase==="cancelled")return;
       // Ignore model-authored permissions; freeze the operator's reviewed
       // policy and assign a deterministic, collision-resistant Workflow ID.
-      const def={...report.definition,id:current.workflowId,
+      const proposed={...report.definition,id:current.workflowId,
         permissions:current.profile.permissions};
+      const def=current.profile.config.convergenceMode==="linearized"?
+        linearizeImplementationDag(proposed):proposed;
       store.create(p,o,def); // Idempotent if we crashed after the DB commit.
       if(run.phase==="settled"){
         const evidence=ledger.sealEvidence(run,"one-command-proposal",
