@@ -227,3 +227,105 @@ test("ADR preview quota bounds repeated proposals but does not mutate Git",async
       "Read-only ADR previews must not create files or change Git");
   }finally{x.close();}
 });
+
+test("Explicit reviewed ADR publication commits exact file, pushes only new branch and opens Draft PR",async()=>{
+ const x=fixture();
+ try{
+   const bare=join(x.home,"remote.git");
+   execFileSync("git",["init","--bare",bare],{encoding:"utf8"});
+   cmd(x.main,"remote","add","origin",bare);
+   const cfg={models:Object.fromEntries(["planner","implementer","qc","architect"]
+       .map(role=>[role,{provider:"mock",model:"exact"}])),
+     workspaces:{feature:"review-worker"},
+     publication:{remote:"origin",baseBranch:"main",draft:true},
+     test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3};
+   x.ledger.save("p","o","flow",cfg);
+   const original=x.opts.host.execFile.bind(x.opts.host),gh=[];
+   x.opts.host.execFile=async input=>{
+     if(input.file==="gh"){
+       gh.push([...input.args]);
+       return {exitCode:0,signal:null,stdout:"https://github.com/acme/adr-repo/pull/7\n",
+         stderr:"",stdoutTruncated:false,stderrTruncated:false};
+     }
+     if(input.file==="git"&&input.args.slice(-3).join(" ")==="remote get-url origin")
+       return {exitCode:0,signal:null,stdout:"https://github.com/acme/adr-repo.git\n",
+         stderr:"",stdoutTruncated:false,stderrTruncated:false};
+     return original(input);
+   };
+   const plan=await x.promotion.preview("p","o","flow","adr-review",fields);
+   await x.promotion.stage("p","o",plan.id);
+   const before=cmd(x.target,"rev-parse","HEAD");
+   const published=await x.promotion.publish("p","o",plan.id);
+   assert.equal(published.state,"published");
+   assert.equal(published.url,"https://github.com/acme/adr-repo/pull/7");
+   const after=cmd(x.target,"rev-parse","HEAD");
+   assert.notEqual(after,before);
+   assert.equal(cmd(x.target,"rev-parse","HEAD^"),before);
+   assert.equal(cmd(x.target,"show","--pretty=format:","--name-only","HEAD"),
+     "docs/adr/"+fields.filename);
+   assert.equal(readFileSync(join(x.target,"docs","adr",fields.filename),"utf8"),plan.content);
+   assert.equal(cmd(x.target,"status","--porcelain"),"");
+   assert.equal(cmd(x.target,"ls-remote","--heads","origin","refs/heads/docs/review")
+     .split(/\s+/)[0],after);
+   assert.equal(gh.length,1);
+   assert.ok(gh[0].includes("--draft"));
+   assert.ok(!gh[0].includes("--admin")&&!gh[0].includes("--auto"));
+   assert.equal((await x.promotion.publish("p","o",plan.id)).url,published.url);
+   assert.equal(gh.length,1,"Repeated Publish must never create a duplicate PR");
+ }finally{x.close();}
+});
+
+test("ADR PR fails closed before any Git write on a changed or dirty review target",async()=>{
+ const x=fixture();
+ try{
+   x.ledger.save("p","o","flow",{models:Object.fromEntries(
+     ["planner","implementer","qc","architect"].map(role=>[role,{
+       provider:"mock",model:"exact"}])),
+     workspaces:{feature:"review-worker"},
+     publication:{remote:"origin",baseBranch:"main",draft:true},
+     test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3});
+   const plan=await x.promotion.preview("p","o","flow","adr-review",fields);
+   await x.promotion.stage("p","o",plan.id);
+   writeFileSync(join(x.target,"unrelated.txt"),"unauthorized change");
+   await assert.rejects(x.promotion.publish("p","o",plan.id),/only the exact new untracked ADR/);
+   assert.equal(cmd(x.target,"rev-parse","HEAD"),x.baseline);
+   assert.equal(x.promotion.publication("p","o",plan.id),null);
+ }finally{x.close();}
+});
+
+test("Uncertain Git commit stops rather than repeating it or creating a PR",async()=>{
+ const x=fixture();
+ try{
+   const bare=join(x.home,"remote.git");
+   execFileSync("git",["init","--bare",bare],{encoding:"utf8"});
+   cmd(x.main,"remote","add","origin",bare);
+   x.ledger.save("p","o","flow",{models:Object.fromEntries(
+     ["planner","implementer","qc","architect"].map(role=>[role,{
+       provider:"mock",model:"exact"}])),
+     workspaces:{feature:"review-worker"},
+     publication:{remote:"origin",baseBranch:"main",draft:true},
+     test:{file:"node",args:["--test"],timeoutMs:10000},maxAttempts:3});
+   const plan=await x.promotion.preview("p","o","flow","adr-review",fields);
+   await x.promotion.stage("p","o",plan.id);
+   const original=x.opts.host.execFile.bind(x.opts.host);
+   let commitCalls=0;
+   x.opts.host.execFile=async input=>{
+     if(input.file==="git"&&input.args.includes("commit")){
+       commitCalls++;
+       await original(input); // Git may have succeeded before the response was lost
+       throw new Error("lost commit response");
+     }
+     if(input.file==="git"&&input.args.slice(-3).join(" ")==="remote get-url origin")
+       return {exitCode:0,signal:null,stdout:"https://github.com/acme/adr-repo.git\n",
+         stderr:"",stdoutTruncated:false,stderrTruncated:false};
+     if(input.file==="gh")throw new Error("PR must never be created");
+     return original(input);
+   };
+   await assert.rejects(x.promotion.publish("p","o",plan.id),/lost commit response/);
+   const state=x.promotion.publication("p","o",plan.id);
+   assert.equal(state.state,"reserved_commit");
+   assert.equal(cmd(x.target,"rev-parse","HEAD^"),x.baseline);
+   assert.equal((await x.promotion.publish("p","o",plan.id)).state,"reserved_commit");
+   assert.equal(commitCalls,1,"No reexecution of uncertain commit");
+ }finally{x.close();}
+});
