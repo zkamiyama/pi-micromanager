@@ -37,6 +37,7 @@ interface State {
   adrFields:AdrFields;
   adrStatus:string;
   adrDraft?:AdrDraft;
+  adrPublication?:{id:string;state:string;branch:string;headSha:string|null;url:string|null};
   screenshotRunId:string;
   screenshotPath:string;
   screenshotStatus:string;
@@ -188,7 +189,7 @@ const plugin: PiWebPlugin = {
              state.approvalRequests=[];state.publishedOperations=[];state.convergenceReceipts=[];
              state.permissionStatus="Select Load permissions to review current requests";
             delete state.screenshotPreview;
-            delete state.adrDraft;state.adrStatus="";
+            delete state.adrDraft;delete state.adrPublication;state.adrStatus="";
             state.screenshotRunId="";state.screenshotStatus="";
             delete state.selectedTaskId;delete state.worktreePlan;
             state.worktreeTaskId="";state.worktreeStatus="";
@@ -468,7 +469,7 @@ const plugin: PiWebPlugin = {
       try{
         let input:unknown;
         if(command==="preview"){
-          delete state.adrDraft;
+          delete state.adrDraft;delete state.adrPublication;
           input={workflowId,targetWorkspaceId:state.adrTargetWorkspaceId.trim(),
             fields:state.adrFields};
         }else if(command==="latest")input={workflowId};
@@ -486,6 +487,28 @@ const plugin: PiWebPlugin = {
           "evidence links before staging.";
       }catch(error){state.adrStatus="ADR operation refused: "+String(error);}
       finally{state.busy=false;context.host.requestRender();}
+    }
+    async function adrPublicationCommand(context:WorkspacePanelContext,
+      action:"publish"|"publication"){
+      const state=stateFor(context),id=state.adrDraft?.id;
+      if(!id||state.busy)return;
+      state.busy=true;
+      state.adrStatus=action==="publish"?
+        "Committing only the reviewed ADR, pushing its isolated branch and creating a Draft PR…":
+        "Checking the last durable ADR GitHub operation…";
+      context.host.requestRender();
+      try{
+        const operation=await send(context,"auto.adr."+action,{draftId:id}) as
+          {id:string;state:string;branch:string;headSha:string|null;url:string|null}|null;
+        if(operation)state.adrPublication=operation;
+        state.adrStatus=!operation?"No ADR publication receipt.":
+          operation.state==="published"&&operation.url?
+            "GitHub Draft PR created. Review and merge it in GitHub; this action never auto-merges.":
+            "ADR operation "+operation.state+". If uncertain, inspect Git/GitHub manually before retrying.";
+      }catch(error){
+        state.adrStatus="ADR operation stopped safely: "+String(error)+
+          ". Inspect the durable publication receipt; do not blindly retry Git mutations.";
+      }finally{state.busy=false;context.host.requestRender();}
     }
     async function captureScreenshot(context:WorkspacePanelContext){
       const state=stateFor(context),workflowId=state.selected?.definition.id;
@@ -1347,7 +1370,9 @@ const plugin: PiWebPlugin = {
                       <summary>Propose a verified architecture decision (ADR)</summary>
                       <p>This is a human-authored ADR proposal grounded in sealed QC
                         evidence and screenshot SHA references. All Tasks must first
-                        be integrated/completed. No Git commit, Push or PR is automatic.</p>
+                        be integrated/completed. Preview and local staging do not publish.
+                        An explicit Publish click commits only this reviewed file and opens
+                        a GitHub <strong>Draft PR</strong>; merging is never automatic.</p>
                       <label>Separate, clean review Worktree ID
                         <input maxlength="128" .value=${state.adrTargetWorkspaceId}
                           ?disabled=${state.busy}
@@ -1396,7 +1421,20 @@ const plugin: PiWebPlugin = {
                           <button ?disabled=${state.busy}
                             @click=${()=>void adrCommand(context,"inspect")}>
                             Inspect staged/reserved file</button>
+                          <button ?disabled=${state.busy||state.adrDraft.state!=="staged"||
+                            (state.adrPublication?.state!==undefined&&
+                              state.adrPublication.state!=="published")}
+                            @click=${()=>void adrPublicationCommand(context,"publish")}>
+                            Publish reviewed ADR as GitHub Draft PR</button>
+                          <button ?disabled=${state.busy}
+                            @click=${()=>void adrPublicationCommand(context,"publication")}>
+                            Inspect GitHub operation</button>
                         </div>
+                        ${state.adrPublication?html`<p>GitHub publication: ${state.adrPublication.state}
+                          · ${state.adrPublication.branch}
+                          ${state.adrPublication.url?html` ·
+                            <a href=${state.adrPublication.url} target="_blank"
+                              rel="noreferrer noopener">Open Draft PR</a>`:null}</p>`:null}
                       </div>`:null}
                       <p role="status" aria-live="polite">${state.adrStatus}</p>
                     </details>
