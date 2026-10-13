@@ -470,6 +470,8 @@ export class PublicationManager {
             await requireCleanGit(this.options.host,target.path)!==sha)
             throw new Error("Publication Git checkout changed immediately before push");
           await this.verifiedPushDestination(target.path,pub,url);
+          // Every asynchronous preflight can race an operator pause.
+          this.assertAdmitted(record);
           const pushed=await git(this.options.host,target.path,
             ["push","--porcelain",pub.remote,"HEAD:refs/heads/"+branch],120000);
           if(pushed.exitCode!==0)
