@@ -19,10 +19,13 @@ save configuration **and explicitly Start Autopilot**.
 - PI WEB compatible with Browser API v4 and Server Plugin API v3,
   whose Git Workspace provider is enabled. Sources for
   `v1.202610.1` were reviewed in [ADR-0014](adr/0014-automatic-worktree-discovery.md).
-- Pi installed with an authenticated **provider/model** usable by the
-  session daemon's own Pi profile. The model used for QC must be able to
-  call the `mm_qc_report` extension tool. Pi extension resources must be
-  loaded for the spawned sessions.
+- **Default: Pi Durable 1.2.0** needs provider/model IDs in its built-in
+  model catalog and provider credentials accessible to the **PI WEB daemon
+  process** (for example `OPENAI_API_KEY`). Native PI WEB Pi credentials
+  and `auth.json` are **not** automatically inherited. To use the original
+  native Pi Session backend, explicitly set `"runtime": "pi-web"`, install
+  the Pi companion extension and use its authenticated session profile.
+  Both backends must support the structured QC report tool.
 - Working `gh auth login` and Git remote push credentials **for the
   session daemon OS user**, not only for a different shell, container or
   browser user. The disposable target repository must allow pull requests,
@@ -70,10 +73,10 @@ systemctl --user restart pi-web-sessiond
 ```
 
 Reload the browser after the daemon restarts. A browser reload alone
-does not activate a new server-plugin entry. The package declares both
-a PI WEB browser/server entry and the Pi-native companion in
-`package.json`; make sure the installed Pi profile has the latter
-enabled (not filtered out). Check **Settings → PI WEB plugins** for an
+does not activate a new server-plugin entry. The package declares both a PI WEB browser/server entry and the Pi-native
+companion in `package.json`; the companion is only required for the
+explicit `"runtime": "pi-web"` compatibility mode. Check **Settings →
+PI WEB plugins** for an
 active, non-error state and `pi-web logs` if activation fails.
 
 ## 3. Create a disposable target GitHub repository
@@ -130,8 +133,10 @@ register Task Worktrees manually.
 2. Under **Autopilot → configuration (JSON)** paste
    [`examples/trial.autopilot.json`](../examples/trial.autopilot.json).
    Replace all `REPLACE_WITH_PI_PROVIDER` and `REPLACE_WITH_PI_MODEL`
-   placeholders with **exact provider/model IDs actually authenticated in
-   Pi on the PI WEB machine**. All four roles are required.
+   placeholders with **exact Pi Durable-compatible provider/model IDs**
+   that the daemon can authenticate using its environment. All four
+   roles are required. Set `"runtime": "pi-web"` to test the native
+   compatibility backend instead.
 3. Inspect `publication.remote="origin"`, `baseBranch="main"`,
    `finalization.autoMerge=true`, `managedWorktrees=true`,
    `workspaces={}`, and `test.file="node"` with `args=["--test"]`.
