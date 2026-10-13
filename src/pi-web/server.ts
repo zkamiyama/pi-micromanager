@@ -331,7 +331,7 @@ const plugin:PiWebServerPlugin={
     return flight;
   }
   async function restoreEnabledAutopilots():Promise<void>{
-    for(const cfg of ledger.list().filter(x=>x.enabled)){
+    for(const cfg of ledger.listEnabled()){
       try{await reconcileWorkflow(cfg);}
       catch(error){
         ledger.setStatus(cfg.projectId,cfg.orchestraWorkspaceId,cfg.workflowId,false,
@@ -641,12 +641,12 @@ const plugin:PiWebServerPlugin={
       bootstrap=restoreEnabledAutopilots().then(()=>{
         if(host.lifetimeSignal.aborted)return;
         // Validate persisted configuration before enabling a background timer.
-        const enabled=ledger.list().filter(x=>x.enabled);
+        const enabled=ledger.listEnabled();
         automationReady=true;
         automationTimer=setInterval(()=>{
           if(host.lifetimeSignal.aborted)return;
           try{
-            for(const cfg of ledger.list().filter(x=>x.enabled))
+            for(const cfg of ledger.listEnabled())
               void autopilot!.tick(cfg);
             for(const job of quick.pending())scheduleQuick(job);
           }catch(error){
@@ -679,8 +679,7 @@ const plugin:PiWebServerPlugin={
             const input=object(ctx.input),workflowId=id(input.workflowId);
             const action=object(input.action) as unknown as WorkflowAction;
             const running=ledger.get(p,o,workflowId)?.enabled===true;
-            const automatedRuns=agents.list(p,o,"all").some(b=>b.workflowId===workflowId&&
-              b.requestId.startsWith("auto:"));
+            const automatedRuns=agents.hasAutomatedRun(p,o,workflowId);
             if((running||automatedRuns)&&
               !["request_intervention","cancel_amendment","resume_after_diagnosis"].includes(action.type))
               throw new WorkflowError("autopilot_owns_transition",
