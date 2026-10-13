@@ -49,12 +49,24 @@ export function parseQuickProfile(value:unknown):QuickProfile{
   // rather than blindly accepting a permission map proposed by Sol.
   return {config,permissions};
 }
+function persistedProfile(raw:unknown):QuickProfile{
+  if(!raw||typeof raw!=="object"||Array.isArray(raw))
+    throw new Error("Invalid persisted project profile");
+  const value=raw as Record<string,unknown>,config=value.config;
+  if(!config||typeof config!=="object"||Array.isArray(config))
+    throw new Error("Invalid persisted Autopilot configuration");
+  const original=config as Record<string,unknown>;
+  // Legacy per-project quick profiles, not only active Workflow records,
+  // must keep their native PI WEB session semantics on upgrades.
+  return parseQuickProfile(original.runtime===undefined?
+    {...value,config:{...original,runtime:"pi-web"}}:value);
+}
 function rowToGoal(row:QuickRow):QuickGoal{
   const [projectId,orchestraWorkspaceId]=JSON.parse(row.scope) as [string,string];
   return {requestId:row.request_id,projectId,orchestraWorkspaceId,
     workflowId:row.workflow_id,draftWorkflowId:row.draft_workflow_id,
     runId:row.run_id,goal:row.goal,
-    profile:parseQuickProfile(JSON.parse(row.profile_json)),
+    profile:persistedProfile(JSON.parse(row.profile_json)),
     phase:row.phase,message:row.message,createdAt:row.created_at,updatedAt:row.updated_at};
 }
 export class QuickLaunchLedger{
@@ -79,7 +91,7 @@ export class QuickLaunchLedger{
   profile(p:string,o:string):QuickProfile|null{
     const row=this.db.prepare("SELECT profile_json FROM quick_profiles WHERE scope=?")
       .get(automationScope(p,o)) as {profile_json:string}|undefined;
-    return row?parseQuickProfile(JSON.parse(row.profile_json)):null;
+    return row?persistedProfile(JSON.parse(row.profile_json)):null;
   }
   saveProfile(p:string,o:string,input:unknown):QuickProfile{
     const profile=parseQuickProfile(input),scope=automationScope(p,o);
