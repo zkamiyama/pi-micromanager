@@ -106,6 +106,16 @@ export class AgentRegistry {
     return this.db.prepare("SELECT "+fields+" FROM execution_runs WHERE project_id=? AND orchestra_workspace_id=?"+
       where+" ORDER BY updated_at DESC LIMIT 200").all(projectId,orchestraWorkspaceId) as unknown as AgentBinding[];
   }
+  /** Control-plane ownership check must never use the paginated history UI. */
+  hasAutomatedRun(projectId:string,orchestraWorkspaceId:string,workflowId:string):boolean{
+    identity(projectId,"projectId");
+    identity(orchestraWorkspaceId,"orchestraWorkspaceId");
+    identity(workflowId,"workflowId");
+    return Boolean(this.db.prepare("SELECT 1 FROM execution_runs WHERE "+
+      "project_id=? AND orchestra_workspace_id=? AND workflow_id=? "+
+      "AND substr(request_id,1,5)='auto:' LIMIT 1")
+      .get(projectId,orchestraWorkspaceId,workflowId));
+  }
   /** Unbounded SQL existence check; never depend on the 200-item UI listing
    * when enforcing workspace leases before reading evidence or writing ADRs. */
   hasUnsealedWorkspace(projectId:string,workspaceId:string):boolean{
