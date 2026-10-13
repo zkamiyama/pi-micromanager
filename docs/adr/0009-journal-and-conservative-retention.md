@@ -1,6 +1,6 @@
 # ADR-0009: Evidence-linked Journal and conservative activity retention
 
-- Status: Accepted; bounded Journal and confirmed activity retention implemented
+- Status: Accepted; bounded Journal and confirmed activity retention implemented; screenshot orphan GC extended by ADR-0016
 - Date: 2026-10-09
 - Extends: ADR-0003, ADR-0006, ADR-0007
 
@@ -65,3 +65,20 @@ security/retention review.
 Mock-host tests and disposable **real Git CLI** integration tests increase
 confidence, but an authenticated real-provider/PI WEB-host E2E remains pending
 under the user's deferred trial plan.
+
+## Addendum (ADR-0016): Private orphan image cleanup
+
+A second, explicitly confirmed operation now inspects only **plugin-owned**
+content-addressed screenshot blob directories. Files must be older than
+24 hours, have a filename matching their SHA-256 bytes and be **absent**
+from the scoped `screenshot_evidence` table. The target Workflow must be
+completely resolved, all Runs inactive, and no Autopilot active. Preview
+stores a 10-minute fingerprint of the exact bounded orphan set; Confirm
+revalidates the manifest and reserves the operation **before** unlink.
+Changes or ambiguous crashes stop safely, and referenced QC/screenshot
+objects stay pinned.
+
+The new cleanup is **not** general session/worktree GC, hot/warm/permanent
+retention, thumbnail optimization or removal of authoritative evidence.
+The PI WEB public host session capability still lacks archive/delete.
+See [ADR-0016](0016-bounded-diagnostic-escalation-and-evidence-publication.md).

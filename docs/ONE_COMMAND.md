@@ -30,7 +30,20 @@ it to `"allow"` **deliberately**, after checking the destination.
 GitHub CI and branch protection remain authoritative. Production
 deployment remains `deny`.
 
+Optional first-time toggles:
+- **Escalate failed QC to independent diagnosis**: adds bounded
+  `diagnosticEscalation` (default threshold 2, at most one escalation per
+  Task). Read-only Sol/investigator/synthesis Runs are launched only after a
+  real failed QC; the human must still explicitly resume held work.
+- **Automatically import committed QC screenshots**: sets
+  `captureQcScreenshots:true` and imports up to eight existing Git-tracked
+  `screenshots/*.png/.jpg` files per sealed QC Run. It never takes a new
+  browser screenshot.
+
 Click **Save project setup** once. No Pi Session or Git change occurs.
+For a completed Workflow, Journal also permits a reviewed ADR Draft PR
+and preview-confirmed cleanup of only aged private **orphan** image blobs.
+See [ADR-0016](adr/0016-bounded-diagnostic-escalation-and-evidence-publication.md).
 
 ## Everyday use: one action
 

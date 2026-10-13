@@ -1,6 +1,6 @@
 # ADR-0010: Immutable QC screenshots and reviewed target-repository ADR staging
 
-- Status: Accepted for opt-in evidence capture and staging; native screenshot generation / PR publishing remain separate
+- Status: Accepted; extended by ADR-0016 with Git-tracked auto-import, explicit Draft PR publication and orphan GC; native browser screenshot generation remains separate
 - Date: 2026-10-09
 - Related: ADR-0003, ADR-0007, ADR-0008, ADR-0009
 
@@ -99,3 +99,29 @@ security, branch protection and code review policy.
   unverified/deferred.
 - This is a meaningful ADR **staging** path, not automated GitHub PR creation
   or knowledge promotion without a human review.
+
+## Addendum (ADR-0016): Confirmed GitHub Draft PR
+
+The original **Staging** procedure above is still non-publishing.
+After reviewing and staging the exact file, a **separate explicit
+Publish reviewed ADR as GitHub Draft PR** button now uses durable
+`adr_pr_publications` receipts. The host verifies that no other
+local Git changes exist, reserves each mutation, commits only the
+approved ADR file, proves exact parent SHA/file bytes, refuses to
+overwrite remote refs, and requires an exact GitHub Draft PR
+`url/headRefName/headRefOid/baseRefName/isDraft/state` response before
+recording `published`.
+
+The operation never merges. A lost response remains `reserved_*`
+and requires operator reconciliation; repeated Publish cannot silently
+duplicate a Git or GitHub action. It requires operator-configured
+Git identity, GitHub authentication and publication target.
+
+Separately, `captureQcScreenshots:true` discovers only valid,
+pre-existing, committed QC images. The control plane does **not**
+silently invoke screen-capture permissions in a browser. The
+Journal also has a preview-confirm **24h orphan-only** private
+blob cleanup; referenced evidence is never eligible.
+
+See [ADR-0016](0016-bounded-diagnostic-escalation-and-evidence-publication.md)
+and [ISSUE_ACCEPTANCE](../ISSUE_ACCEPTANCE.md).
