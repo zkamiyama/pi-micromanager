@@ -110,6 +110,7 @@ const plugin:PiWebServerPlugin={
   let automationReady=false;
   const recoveryFlights=new Map<string,Promise<void>>();
   const quickFlights=new Map<string,Promise<void>>();
+  const screenshotFlights=new Map<string,Promise<void>>();
   function scheduleAutopilot(projectId:string,workspaceId:string,workflowId:string):void {
     if(host.lifetimeSignal.aborted||!automationReady)return;
     const cfg=ledger.get(projectId,workspaceId,workflowId);
@@ -126,6 +127,24 @@ const plugin:PiWebServerPlugin={
       try{viewer.send(j({type:"run_changed",workflowId:binding.workflowId,
         runId:binding.runId,phase:binding.phase}));}
       catch{viewers.delete(viewer);}
+    }
+    if(binding.phase==="sealed"&&binding.seat==="qc"&&
+      binding.requestId.startsWith("auto:")&&!host.lifetimeSignal.aborted&&
+      ledger.get(binding.projectId,binding.orchestraWorkspaceId,binding.workflowId)
+        ?.config.captureQcScreenshots){
+      const key=JSON.stringify([binding.projectId,binding.orchestraWorkspaceId,
+        binding.workflowId,binding.runId]);
+      if(!screenshotFlights.has(key)){
+        const flight=screenshots.captureTracked(binding.projectId,
+          binding.orchestraWorkspaceId,binding.workflowId,binding.runId)
+          .then(records=>{if(records.length)host.logger.info(
+            "Imported Git-tracked QC screenshots",{runId:binding.runId,count:records.length});})
+          .catch(error=>host.logger.warn("QC screenshot import skipped safely",
+            {runId:binding.runId,message:String(error).slice(0,300)}));
+        screenshotFlights.set(key,flight);
+        void flight.finally(()=>{if(screenshotFlights.get(key)===flight)
+          screenshotFlights.delete(key);}).catch(()=>{});
+      }
     }
   }
   function emit(binding:AgentBinding,event:RuntimeActivity):void {
@@ -1003,9 +1022,11 @@ const plugin:PiWebServerPlugin={
       // our lifetime signal, so hosted Pi operations fail closed if interrupted.
       const drained=autopilot?.stop();
       const quickDrain=Promise.allSettled([...quickFlights.values()]);
+      const screenshotDrain=Promise.allSettled([...screenshotFlights.values()]);
       if(bootstrap)await bootstrap;
       if(drained)await drained;
       await quickDrain;
+      await screenshotDrain;
       for(const bridge of live.values())bridge.stop();
       live.clear();viewers.clear();convergence.close();publisher.close();permissions.close();adr.close();screenshots.close();retention.close();provisioner.close();integration.close();quick.close();ledger.close();agents.close();store.close();
     },
