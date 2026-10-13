@@ -8,7 +8,7 @@ import {fauxProvider,fauxToolCall,fauxAssistantMessage,fauxText}
   from "@earendil-works/pi-ai/providers/faux";
 import {AgentRegistry} from "../dist/runtime/registry.js";
 import {AutopilotLedger,parseAutopilotConfig} from "../dist/automation/ledger.js";
-import {DurableRunHost,isDurableSession,durableActivity} from "../dist/runtime/durable-runner.js";
+import {DurableRunHost,isDurableSession,durableActivity,isSafeBashCommand} from "../dist/runtime/durable-runner.js";
 
 function fixture(){
  const home=mkdtempSync(join(tmpdir(),"mm-durable-real-"));
@@ -120,4 +120,19 @@ test("Durable real Harness rejects unsupported models without allocating Pi Sess
    assert.equal(x.current().sessionId,null);
    assert.equal(x.faux.state.callCount,0);
  }finally{await x.close();}
+});
+
+test("Only the final integration Durable worker may request local Git merges",()=>{
+  assert.equal(isSafeBashCommand("git merge --no-ff deadbeef"),false);
+  assert.equal(isSafeBashCommand("git merge --no-ff deadbeef",true),true);
+  assert.equal(isSafeBashCommand("git merge --abort",true),true);
+  assert.equal(isSafeBashCommand("git add . && git commit -m integrate",true),true);
+  for(const blocked of [
+    "git push origin main","git fetch origin","git pull origin main",
+    "git remote add other https://github.com/example/repo",
+    "git reset --hard HEAD~1","gh pr create --fill",
+  ]){
+    assert.equal(isSafeBashCommand(blocked,true),false,blocked);
+    assert.equal(isSafeBashCommand(blocked),false,blocked);
+  }
 });
