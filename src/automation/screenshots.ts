@@ -5,7 +5,7 @@
 import {createHash,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {mkdirSync,existsSync,lstatSync,realpathSync,openSync,closeSync,
-  fstatSync,readFileSync,writeFileSync,constants} from "node:fs";
+  fstatSync,readFileSync,writeFileSync,unlinkSync,readdirSync,statSync,constants} from "node:fs";
 import {dirname,join,resolve,sep} from "node:path";
 import type {PiWebHostWorkspacesV1} from "@jmfederico/pi-web/server-plugin-api";
 import type {WorkflowStore} from "../core/store.js";
@@ -32,6 +32,12 @@ export interface ScreenshotArtifact {
 export interface ScreenshotPreview {
   artifact:ScreenshotArtifact;dataUrl:string|null;inlineLimit:number;
 }
+export interface ScreenshotOrphanPreview {
+  id:string;workflowId:string;files:number;bytes:number;
+  expiresAt:number;state:"prepared"|"reserved"|"completed";
+}
+const ORPHAN_MIN_AGE=24*60*60*1000,GC_PREVIEW_TTL=10*60*1000;
+const OBJECT_NAME=/^[0-9a-f]{64}\.(?:png|jpg)$/;
 interface ArtifactRow extends ScreenshotArtifact {scope:string;object_path:string}
 interface EvidenceOptions {
   path:string;dataDirectory:string;workflows:WorkflowStore;
@@ -92,7 +98,11 @@ export class ScreenshotEvidence {
       created_at TEXT NOT NULL,
       UNIQUE(scope,workflow_id,run_id,relative_path));
       CREATE INDEX IF NOT EXISTS screenshot_evidence_scoped
-      ON screenshot_evidence(scope,workflow_id,created_at);`);
+      ON screenshot_evidence(scope,workflow_id,created_at);
+      CREATE TABLE IF NOT EXISTS screenshot_orphan_gc(
+        id TEXT PRIMARY KEY,scope TEXT NOT NULL,workflow_id TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,fingerprint TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,state TEXT NOT NULL);`);
   }
   close():void{this.db.close();}
   list(projectId:string,orchestraWorkspaceId:string,workflowId:string):ScreenshotArtifact[]{
@@ -238,6 +248,103 @@ export class ScreenshotEvidence {
         workflowId,runId,path));
     }
     return records;
+  }
+  private objectDirectory(p:string,o:string,workflowId:string):string{
+    const scope=automationScope(p,o);
+    const owner=createHash("sha256").update(JSON.stringify([scope,workflowId]))
+      .digest("hex").slice(0,32);
+    return join(this.options.dataDirectory,"screenshot-objects",owner);
+  }
+  /** Preview only plugin-owned orphan blobs. Never prune referenced QC
+   * evidence, hosted Pi Sessions, Git Worktrees, or ADR references.
+   * A 24h age boundary prevents racing an interrupted capture. */
+  private orphanManifest(p:string,o:string,workflowId:string,now:number){
+    const workflow=this.options.workflows.get(p,o,workflowId);
+    if(this.options.ledger.get(p,o,workflowId)?.enabled||
+      Object.values(workflow.tasks).some(t=>t.status!=="done"&&t.status!=="integrated")||
+      workflow.amendments.some(a=>a.status!=="cancelled"&&a.status!=="completed")||
+      this.options.agents.list(p,o,"active").some(b=>b.workflowId===workflowId))
+      throw new Error("Orphan cleanup requires a finished, inactive Workflow");
+    const root=this.objectDirectory(p,o,workflowId),scope=automationScope(p,o);
+    if(!existsSync(root))return [] as Array<{name:string;sha:string;bytes:number}>;
+    if(lstatSync(root).isSymbolicLink()||!lstatSync(root).isDirectory()||
+      realpathSync(root)!==root)
+      throw new Error("Screenshot orphan directory has an unsafe filesystem type");
+    const entries=readdirSync(root,{withFileTypes:true});
+    if(entries.length>512)throw new Error("Too many screenshot objects for bounded orphan scan");
+    const candidates:Array<{name:string;sha:string;bytes:number}>=[];
+    for(const entry of entries){
+      if(!entry.isFile()||!OBJECT_NAME.test(entry.name))continue;
+      const file=join(root,entry.name),info=lstatSync(file);
+      if(info.isSymbolicLink()||!info.isFile()||info.size<1||info.size>MAX_IMAGE)
+        throw new Error("Unsafe private screenshot object discovered");
+      if(info.mtimeMs>now-ORPHAN_MIN_AGE)continue;
+      const used=this.db.prepare("SELECT 1 AS present FROM screenshot_evidence"+
+        " WHERE scope=? AND workflow_id=? AND object_path=?")
+        .get(scope,workflowId,file) as {present:number}|undefined;
+      if(used)continue;
+      const bytes=readFileSync(file);
+      const digest=createHash("sha256").update(bytes).digest("hex");
+      if(digest!==entry.name.slice(0,64)||bytes.length!==info.size)
+        throw new Error("Orphan file bytes do not match content-addressed filename");
+      candidates.push({name:entry.name,sha:digest,bytes:info.size});
+    }
+    if(candidates.length>32)throw new Error("Too many orphan objects for one review");
+    return candidates.sort((a,b)=>a.name.localeCompare(b.name));
+  }
+  orphanPreview(p:string,o:string,workflowId:string,now=Date.now()):ScreenshotOrphanPreview{
+    const files=this.orphanManifest(p,o,workflowId,now);
+    const at=new Date().toISOString(),id=randomUUID(),
+      digest=createHash("sha256").update(JSON.stringify(files)).digest("hex");
+    const scope=automationScope(p,o);
+    this.db.prepare("DELETE FROM screenshot_orphan_gc WHERE state='prepared' AND expires_at<?")
+      .run(now);
+    const active=this.db.prepare("SELECT COUNT(*) AS total FROM screenshot_orphan_gc"+
+      " WHERE scope=? AND workflow_id=? AND state='prepared' AND expires_at>=?")
+      .get(scope,workflowId,now) as {total:number};
+    if(active.total>=4)throw new Error("Too many pending orphan cleanup previews");
+    this.db.prepare("INSERT INTO screenshot_orphan_gc"+
+      "(id,scope,workflow_id,manifest_json,fingerprint,expires_at,state)"+
+      " VALUES(?,?,?,?,?,?,'prepared')").run(
+        id,scope,workflowId,JSON.stringify(files),digest,now+GC_PREVIEW_TTL);
+    return {id,workflowId,files:files.length,bytes:files.reduce((n,f)=>n+f.bytes,0),
+      expiresAt:now+GC_PREVIEW_TTL,state:"prepared"};
+  }
+  /** Exact reviewed manifest only. Any changed object, active Run or
+   * referenced evidence makes the confirmation fail before unlink. */
+  orphanConfirm(p:string,o:string,workflowId:string,id:string,
+    now=Date.now()):ScreenshotOrphanPreview{
+    if(!/^[0-9a-f-]{36}$/.test(id))throw new Error("Invalid orphan cleanup receipt");
+    const scope=automationScope(p,o);
+    const row=this.db.prepare("SELECT manifest_json,fingerprint,expires_at,state"+
+      " FROM screenshot_orphan_gc WHERE id=? AND scope=? AND workflow_id=?")
+      .get(id,scope,workflowId) as {manifest_json:string;fingerprint:string;
+        expires_at:number;state:string}|undefined;
+    if(!row)throw new Error("Unknown orphan cleanup preview");
+    const entries=JSON.parse(row.manifest_json) as Array<{name:string;sha:string;bytes:number}>;
+    const info={id,workflowId,files:entries.length,
+      bytes:entries.reduce((sum,x)=>sum+x.bytes,0),expiresAt:row.expires_at};
+    if(row.state==="completed")return {...info,state:"completed"};
+    if(row.state!=="prepared"||now>row.expires_at)
+      throw new Error("Orphan preview expired or needs manual reconciliation");
+    const current=this.orphanManifest(p,o,workflowId,now);
+    if(createHash("sha256").update(JSON.stringify(current)).digest("hex")!==row.fingerprint)
+      throw new Error("Private screenshot orphan set changed after preview");
+    const res=this.db.prepare("UPDATE screenshot_orphan_gc SET state='reserved'"+
+      " WHERE id=? AND state='prepared'").run(id);
+    if(res.changes!==1)throw new Error("Concurrent orphan cleanup is reserved");
+    const root=this.objectDirectory(p,o,workflowId);
+    for(const file of current){
+      this.options.host.lifetimeSignal.throwIfAborted();
+      const path=join(root,file.name),meta=lstatSync(path);
+      if(!meta.isFile()||meta.isSymbolicLink()||meta.size!==file.bytes||
+        createHash("sha256").update(readFileSync(path)).digest("hex")!==file.sha)
+        throw new Error("Orphan bytes changed after confirmation reservation");
+      unlinkSync(path);
+    }
+    this.db.prepare("UPDATE screenshot_orphan_gc SET state='completed' WHERE id=?")
+      .run(id);
+    return {...info,state:"completed"};
   }
   preview(projectId:string,orchestraWorkspaceId:string,
     workflowId:string,id:string):ScreenshotPreview{
