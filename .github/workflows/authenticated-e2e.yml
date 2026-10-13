@@ -1,37 +1,41 @@
-# Deliberately MANUAL; must never run unreviewed PR code with provider credentials.
-name: Authenticated Durable E2E
+name: Authenticated compatibility smoke (manual)
 on:
   workflow_dispatch:
     inputs:
       provider:
-        description: Pi provider available on the preauthenticated runner
-        required: true
+        description: Exact provider already authenticated on the dedicated runner
         type: string
+        required: true
       model:
-        description: Exact Pi model ID
-        required: true
+        description: Exact model approved for this test
         type: string
+        required: true
 permissions:
   contents: read
+concurrency:
+  group: authenticated-pi-e2e
+  cancel-in-progress: false
 jobs:
   smoke:
-    # Set up a restricted runner dedicated to testing; do not give it push credentials.
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: [self-hosted, linux, pi-authenticated]
     environment: authenticated-pi-e2e
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
-      - run: npm ci --no-audit --no-fund
-      - run: npm run check
-      - name: Real Pi authenticated tool turn plus durable restore
+          package-manager-cache: false
+      - run: npm ci --no-audit --no-fund && npm run check
+      - name: Real model turn and Durable resume (not OS-isolation certification)
         env:
           PI_PROVIDER: ${{ inputs.provider }}
           PI_MODEL: ${{ inputs.model }}
-        run: node scripts/durable-auth-smoke.mjs "$PI_PROVIDER" "$PI_MODEL"
-      - name: Disposable Git worktree implementation then independent QC
+        run: node scripts/durable-auth-smoke.mjs
+      - name: Disposable compatibility coding and QC (no remote publication)
         env:
           PI_PROVIDER: ${{ inputs.provider }}
           PI_MODEL: ${{ inputs.model }}
