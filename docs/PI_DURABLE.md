@@ -68,14 +68,24 @@ checks and exact `MERGED` confirmation are unchanged.
 
 ## Credentials: important difference
 
-**PI WEB-native model authentication is not automatically shared with
-Pi Durable.** Its `Models` provider runtime resolves credentials using
-the PI WEB daemon's environment and available provider backends. Configure
-a real authenticated model for every role using Pi Durable-compatible
-provider/model IDs (not just a PI WEB UI display label). For example,
-an OpenAI provider may use `OPENAI_API_KEY`, available to the daemon's
-own process. Store the secret in your host's secret manager or
-service configuration, never in the Workflow JSON, Git repo or browser.
+**Pi Durable now uses Pi's official `ModelRuntime` from
+`@earendil-works/pi-coding-agent`.** It reads the authenticated Pi CLI
+profile (normally `~/.pi/agent/auth.json`) of the **PI WEB daemon's
+operating-system user**, including subscription OAuth, and uses Pi's
+lock-aware refresh flow. An already logged-in `pi` account can therefore
+power Durable without copying an access token or adding an API key.
+Provider credentials never enter Micromanager's Run SQLite registry,
+Git repository, browser profile or events.
+
+Check readiness **as the daemon user** with
+`pi auth check --provider openai`. For a subscription-authorized model,
+use its exact provider/model ID (for example `openai/gpt-5.5` when
+available in that user's installed Pi catalog). Other providers can
+use their Pi auth.json entries or daemon-environment API keys.
+Browser-only ChatGPT login, a different Linux user's Pi profile, or
+PI WEB-managed credentials outside the daemon's Pi profile are **not**
+automatically shared. Authentication failure stops a new Run instead of
+silently choosing another provider or exposing credentials.
 
 The worker tool execution environment removes inherited
 provider/CI/GitHub token variables. This is **not an OS sandbox**:
@@ -113,10 +123,10 @@ PI WEB native Pi in the first-time setup form. Manually created
 `agents.create` sessions stay PI WEB-native for now.
 
 The Durable backend uses its own tool registry; it is not a
-byte-for-byte clone of every Pi Coding Agent extension. Provider OAuth
-stored only in native `auth.json`, arbitrary third-party Pi extensions,
-host-owned shell identities, and interactive approval UI are not
-automatically carried across. The PI WEB service must be trusted and
+byte-for-byte clone of every Pi Coding Agent extension. Native Pi
+`auth.json` credentials **are** reused through `ModelRuntime`, but
+arbitrary third-party Pi extensions, host-owned shell identities and
+interactive approval UI are not automatically carried across. The PI WEB service must be trusted and
 configured deliberately. Initial provider-authenticated model/PI WEB
 E2E, multi-agent throughput on the real daemon and crash-soak remain
 to be verified.
@@ -133,7 +143,7 @@ legacy compatibility. It does **not** claim real provider authentication.
 
 For an authorized E2E, follow [Quickstart](QUICKSTART.md), use a
 **disposable** GitHub repository, run one implementation and one QC
-with a real Durable-compatible provider key on the daemon, inspect both
+with the daemon user's authenticated Pi profile, inspect both
 Orchestra Durable cards, send one steer/follow-up, test daemon restart
 while idle and running, and verify GitHub exact merged SHA. Test native
 fallback separately. Do not use production for the initial test.
