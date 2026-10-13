@@ -9,7 +9,7 @@ import {fauxProvider,fauxToolCall,fauxAssistantMessage,fauxText}
   from "@earendil-works/pi-ai/providers/faux";
 import {AgentRegistry} from "../dist/runtime/registry.js";
 import {AutopilotLedger,parseAutopilotConfig} from "../dist/automation/ledger.js";
-import {DurableRunHost,isDurableSession,durableActivity,isSafeBashCommand} from "../dist/runtime/durable-runner.js";
+import {DurableRunHost,isDurableSession,durableActivity,isSafeBashCommand,createDurableModels} from "../dist/runtime/durable-runner.js";
 
 function fixture(){
  const home=mkdtempSync(join(tmpdir(),"mm-durable-real-"));
@@ -166,5 +166,23 @@ test("Durable SQLite conversation can be reopened without replaying an already s
    assert.equal(x.current().sessionId,oldSession);
    assert.equal(x.ledger.report(x.current())?.kind,"qc");
    assert.equal(x.faux.state.callCount,2,"Never duplicate model turns on settled recovery");
+ }finally{await x.close();}
+});
+
+test("Default Durable Models load stored Pi provider auth through the public SDK",async()=>{
+ const x=fixture();
+ try{
+   // An isolated synthetic credential store proves integration without reading
+   // or logging a real user's ~/.pi/agent/auth.json in automated tests.
+   const authFile=join(x.data,"synthetic-pi-auth.json");
+   writeFileSync(authFile,JSON.stringify({openai:{
+     type:"api_key",key:"unit-test-only-not-a-real-credential",
+   }}),{mode:0o600});
+   const models=await createDurableModels(authFile);
+   assert.ok(models.getModel("openai","gpt-5.5"),
+     "The installed Pi coding-agent catalog is available to Durable");
+   const auth=await models.getAuth("openai");
+   assert.ok(auth,"The same Pi credential store resolves model auth");
+   assert.ok(auth.source,"Auth resolution has provenance, without exposing it to logs");
  }finally{await x.close();}
 });
