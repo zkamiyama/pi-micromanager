@@ -1,5 +1,6 @@
-/** Human-authored, evidence-backed ADR drafts staged in an explicit non-main
- * linked Git Worktree. Never commits, pushes, merges or publishes a PR. */
+/** Human-authored, evidence-backed ADR drafts in an isolated Git Worktree.
+ * Preview/stage are local; explicit Publish opens a GitHub Draft PR only.
+ * Every uncertain Git/GitHub action is reserved before execution. */
 import {createHash,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {dirname,join,resolve,sep} from "node:path";
@@ -11,7 +12,7 @@ import type {AgentRegistry} from "../runtime/registry.js";
 import type {AutopilotLedger} from "./ledger.js";
 import {automationScope} from "./ledger.js";
 import type {ScreenshotEvidence} from "./screenshots.js";
-import {gitValue,requireCleanGit,type GitHost} from "./git.js";
+import {git,gitHead,gitSha,gitValue,inspectedGitRoot,requireCleanGit,type GitHost} from "./git.js";
 
 const ADR_NAME=/^\d{4}-[a-z][a-z0-9-]{0,63}\.md$/;
 const TTL=10*60*1000;
@@ -23,6 +24,11 @@ export interface AdrDraft{
   id:string;workflowId:string;targetWorkspaceId:string;filename:string;
   targetHead:string;workflowRevision:number;sourceDigest:string;
   sha256:string;content:string;expiresAt:number;state:"prepared"|"reserved"|"staged";
+}
+export interface AdrPublishedPr {
+  id:string;state:"reserved_commit"|"committed"|"reserved_push"|"pushed"|
+    "reserved_pr"|"published";
+  branch:string;headSha:string|null;url:string|null;
 }
 interface AdrRow extends AdrDraft{scope:string;target_path:string;created_at:string}
 interface AdrOptions {
@@ -75,7 +81,11 @@ export class AdrPromotion {
       content TEXT NOT NULL,expires_at INTEGER NOT NULL,state TEXT NOT NULL,
       target_path TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS adr_drafts_workflow
-      ON adr_drafts(scope,workflow_id,created_at);`);
+      ON adr_drafts(scope,workflow_id,created_at);
+      CREATE TABLE IF NOT EXISTS adr_pr_publications(
+        draft_id TEXT PRIMARY KEY,scope TEXT NOT NULL,
+        state TEXT NOT NULL,branch TEXT NOT NULL,
+        head_sha TEXT,pr_url TEXT,created_at TEXT NOT NULL);`);
   }
   close():void{this.db.close();}
   private row(p:string,o:string,id:string):AdrRow {
@@ -249,6 +259,127 @@ export class AdrPromotion {
       row.state="staged";
     }
     return this.view(row);
+  }
+  private published(p:string,o:string,id:string):AdrPublishedPr|null{
+    const row=this.db.prepare("SELECT state,branch,head_sha AS headSha,pr_url AS url "+
+      "FROM adr_pr_publications WHERE scope=? AND draft_id=?")
+      .get(automationScope(p,o),id) as AdrPublishedPr|undefined;
+    return row??null;
+  }
+  /** Read-only recovery view: no Git write or PR retry. */
+  publication(p:string,o:string,id:string):AdrPublishedPr|null{
+    this.row(p,o,id);
+    return this.published(p,o,id);
+  }
+  private markPublished(p:string,o:string,id:string,state:AdrPublishedPr["state"],
+    headSha:string|null,url:string|null):void{
+    const changed=this.db.prepare("UPDATE adr_pr_publications SET state=?,head_sha=?,pr_url=?"+
+      " WHERE scope=? AND draft_id=?").run(state,headSha,url,automationScope(p,o),id);
+    if(changed.changes!==1)throw new Error("ADR publication receipt was lost");
+  }
+  private async gh(path:string,args:string[]):Promise<string>{
+    const result=await this.opt.host.execFile({
+      file:"gh",args,cwd:path,timeoutMs:45000,
+      signal:this.opt.host.lifetimeSignal,
+      unsetEnv:["GH_REPO","GH_HOST","GIT_DIR","GIT_WORK_TREE","GIT_INDEX_FILE"],
+    });
+    if(result.exitCode!==0||result.signal||result.stdoutTruncated||result.stderrTruncated)
+      throw new Error("GitHub CLI refused ADR publication: "+result.stderr.slice(-250));
+    return result.stdout.trim();
+  }
+  /** After an explicitly reviewed ADR is staged, publish a SHA-bound Draft
+   * PR. A lost commit/push/gh response is not retried blindly; inspect the
+   * receipt and repository manually. This never auto-merges. */
+  async publish(p:string,o:string,id:string):Promise<AdrPublishedPr>{
+    const row=this.row(p,o,id);
+    if(row.state!=="staged")throw new Error("ADR must be fully staged and reviewed first");
+    this.inspect(p,o,id);
+    const current=this.published(p,o,id);
+    if(current)return current;
+    const proof=this.evidence(p,o,row.workflowId);
+    if(proof.sourceDigest!==row.sourceDigest||
+      proof.workflow.revision!==row.workflowRevision)
+      throw new Error("ADR source evidence changed since preview; do not publish");
+    const config=this.opt.ledger.get(p,o,row.workflowId)?.config;
+    if(!config?.publication)throw new Error("Reviewed ADR requires an explicit publication remote and base branch");
+    const api=this.opt.workspaces();
+    if(!api)throw new Error("PI WEB Workspaces capability unavailable");
+    if(this.opt.agents.hasUnsealedWorkspace(p,row.targetWorkspaceId)||
+      this.opt.agents.wasWorkflowWorkspace(p,o,row.workflowId,row.targetWorkspaceId))
+      throw new Error("ADR review Worktree is leased by a Pi Run");
+    const resolved=await api.resolve({projectId:p,workspaceId:row.targetWorkspaceId});
+    const ws=resolved.workspace;
+    if(resolved.project.id!==p||ws.projectId!==p||ws.id!==row.targetWorkspaceId||
+      ws.isMain||ws.provider?.metadata?.isGitWorktree!==true)
+      throw new Error("ADR review Workspace authority mismatch");
+    await inspectedGitRoot(this.opt.host,ws.path);
+    const branch=await gitValue(this.opt.host,ws.path,["symbolic-ref","--quiet","--short","HEAD"]);
+    if(!branch||/^(main|master|develop|production|stable|release)(\/|$)/i.test(branch)||
+      !/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,118}$/.test(branch)||
+      branch.includes("..")||branch.includes("//")||branch.endsWith(".lock"))
+      throw new Error("ADR PR must use a safe non-protected review branch");
+    const baseline=await gitHead(this.opt.host,ws.path);
+    if(baseline!==row.targetHead)throw new Error("ADR Git branch HEAD moved since preview");
+    const relative="docs/adr/"+row.filename;
+    const status=await gitValue(this.opt.host,ws.path,["status","--porcelain","--untracked-files=all"]);
+    if(status!=="?? "+relative)
+      throw new Error("ADR review checkout must contain only the exact new untracked ADR file");
+    const remote=await gitValue(this.opt.host,ws.path,["remote","get-url",config.publication.remote]);
+    const match=remote.match(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+?)(?:\.git)?\/?$/);
+    if(!match)throw new Error("ADR publication requires a verified github.com remote");
+    const githubRepo=match[1]!;
+    this.opt.host.lifetimeSignal.throwIfAborted();
+    // The reservation is committed before any non-idempotent git add/commit.
+    this.db.prepare("INSERT INTO adr_pr_publications "+
+      "(draft_id,scope,state,branch,head_sha,pr_url,created_at) "+
+      "VALUES(?,?,'reserved_commit',?,NULL,NULL,?)")
+      .run(id,automationScope(p,o),branch,new Date().toISOString());
+    await gitValue(this.opt.host,ws.path,["add","--",relative]);
+    const staged=await gitValue(this.opt.host,ws.path,["diff","--cached","--name-only"]);
+    if(staged!==relative)
+      throw new Error("ADR index contains additional staged paths; inspect manually");
+    const tag="mm-adr:"+id;
+    await gitValue(this.opt.host,ws.path,["commit","-m",
+      "docs(adr): "+row.filename+" ["+tag+"]","--only","--",relative]);
+    const commit=await gitHead(this.opt.host,ws.path);
+    if(!gitSha(commit)||commit===baseline||
+      await gitValue(this.opt.host,ws.path,["rev-parse","HEAD^"])!==baseline||
+      await gitValue(this.opt.host,ws.path,["show","--pretty=format:","--name-only","HEAD"])!==relative)
+      throw new Error("ADR commit ancestry/files differ from the reserved preview");
+    const tracked=await gitValue(this.opt.host,ws.path,["show","HEAD:"+relative]);
+    if(sha(tracked+"\n")!==row.sha256&&sha(tracked)!==row.sha256)
+      throw new Error("ADR published Git blob differs from exact reviewed bytes");
+    this.markPublished(p,o,id,"committed",commit,null);
+    // No force or overwrite: reject any existing remote ref not exactly ours.
+    const remoteRef="refs/heads/"+branch;
+    const check=async()=>{
+      const response=await gitValue(this.opt.host,ws.path,[
+        "ls-remote","--heads",config.publication!.remote,remoteRef]);
+      const match=response.match(/^([a-f0-9]{40,64})\s+refs\/heads\/.+$/);
+      if(response&&!match)throw new Error("Malformed ADR remote branch state");
+      return match?.[1]??null;
+    };
+    if(await check()!==null)
+      throw new Error("ADR remote branch already exists; refusing to overwrite");
+    this.markPublished(p,o,id,"reserved_push",commit,null);
+    await gitValue(this.opt.host,ws.path,["push","--porcelain",
+      config.publication.remote,"HEAD:"+remoteRef]);
+    if(await check()!==commit)
+      throw new Error("GitHub did not confirm exact ADR remote branch SHA");
+    this.markPublished(p,o,id,"pushed",commit,null);
+    this.markPublished(p,o,id,"reserved_pr",commit,null);
+    const url=await this.gh(ws.path,["pr","create","--repo",githubRepo,
+      "--base",config.publication.baseBranch,"--head",branch,"--draft",
+      "--title","docs: "+row.filename,
+      "--body","Reviewed, evidence-backed ADR from Workflow "+row.workflowId+
+        ". Source revision "+row.workflowRevision+
+        "; reviewed SHA256 "+row.sha256+
+        ". Human PR review and GitHub branch protections remain authoritative."]);
+    const expected="https://github.com/"+githubRepo+"/pull/";
+    if(!url.startsWith(expected)||!/\/[1-9][0-9]{0,8}$/.test(url.slice(expected.length-1)))
+      throw new Error("GitHub did not return a matching ADR Draft PR URL");
+    this.markPublished(p,o,id,"published",commit,url);
+    return this.published(p,o,id)!;
   }
   async stage(p:string,o:string,id:string):Promise<AdrDraft> {
     const row=this.row(p,o,id);
