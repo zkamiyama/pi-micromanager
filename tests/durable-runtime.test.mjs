@@ -136,3 +136,26 @@ test("Only the final integration Durable worker may request local Git merges",()
     assert.equal(isSafeBashCommand(blocked),false,blocked);
   }
 });
+
+test("Durable SQLite conversation can be reopened without replaying an already settled turn",async()=>{
+ const x=fixture();
+ try{
+   x.faux.setResponses([
+     fauxAssistantMessage([fauxToolCall("mm_qc_report",
+       {verdict:"pass",summary:"Persisted across host recreation"},
+       {id:"report-restart"})],{stopReason:"toolUse"}),
+     fauxAssistantMessage([fauxText("Done.")]),
+   ]);
+   await x.durable.launch(x.launch);
+   await x.waitFor(()=>x.current()?.phase==="settled");
+   assert.equal(x.faux.state.callCount,2);
+   const oldSession=x.current().sessionId;
+   await x.durable.close();
+   x.durable=new DurableRunHost(x.options);
+   const status=await x.durable.reconnect(x.current(),x.project,"qc");
+   assert.equal(status,"settled");
+   assert.equal(x.current().sessionId,oldSession);
+   assert.equal(x.ledger.report(x.current())?.kind,"qc");
+   assert.equal(x.faux.state.callCount,2,"Never duplicate model turns on settled recovery");
+ }finally{await x.close();}
+});
