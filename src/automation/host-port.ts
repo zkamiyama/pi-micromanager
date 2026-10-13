@@ -9,6 +9,8 @@ import type { WorkflowStore } from "../core/store.js";
 import type { TaskState } from "../core/workflow.js";
 import type { AgentBinding, AgentRegistry, Reservation, Seat } from "../runtime/registry.js";
 import type { PiSessionBridge } from "../runtime/session-bridge.js";
+import type { DurableRunHost } from "../runtime/durable-runner.js";
+import type { AgentRuntime } from "./ledger.js";
 import type { ExecutorPort, LaunchJob } from "./engine.js";
 
 // Prevent Git environment inherited from a Pi/PI WEB host from redirecting
@@ -22,6 +24,10 @@ export interface HostPortOptions {
   host:ServerPluginActivationContext;
   workflows:WorkflowStore;
   agents:AgentRegistry;
+  /** Production routes new Workflows to Durable; legacy fixtures and
+   * persisted pi-web profiles keep the host-native session path. */
+  durable?:DurableRunHost;
+  getRuntime?(p:string,o:string,w:string):AgentRuntime;
   getSessions():PiWebHostPiSessionsV1|undefined;
   getWorkspaces():PiWebHostWorkspacesV1|undefined;
   probe(binding:AgentBinding):Promise<{bridge:PiSessionBridge;status:string}>;
@@ -66,10 +72,10 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
     recoverReport:options.replaySettledReport,
     async launch(job:LaunchJob){
       assertActive();
-      const sessions=options.getSessions();
-      if(!sessions)throw new Error("Pi sessions capability unavailable");
+      let executablePath:string;
       if(job.kind==="implementation"||job.kind==="qc"||job.kind==="diagnosis"){
         const w=await linkedWorktree(job.projectId,job.workspaceId);
+        executablePath=w.path;
         const before=await snapshot(w.path);
         if(!before.clean)throw new Error("Dirty Worktree; refusing automated Pi launch");
         if(job.kind!=="implementation"&&before.sha!==job.headSha)
@@ -85,7 +91,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
             }
           }
         }
-      }else await workspace(job.projectId,job.workspaceId);
+      }else executablePath=(await workspace(job.projectId,job.workspaceId)).path;
       assertActive();
       const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
       const task=current.tasks[job.taskId];
@@ -105,6 +111,13 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort {
       if(agents.getRun(job.projectId,job.orchestraWorkspaceId,job.workflowId,job.runId))
         throw new Error("Already reserved: never create the same one-shot Run twice");
       assertActive();
+      if(options.durable&&options.getRuntime?.(job.projectId,job.orchestraWorkspaceId,
+        job.workflowId)==="durable"){
+        return options.durable.launch({reservation,kind:job.kind,model:job.model,
+          cwd:executablePath,prompt:job.prompt});
+      }
+      const sessions=options.getSessions();
+      if(!sessions)throw new Error("PI WEB native Pi sessions capability unavailable");
       notify(agents.reserve(reservation));
       // Any uncertain sessions.create response intentionally leaves this durable
       // reservation untouched; operator reconciliation is required.
