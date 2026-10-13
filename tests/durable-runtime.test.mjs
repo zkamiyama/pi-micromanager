@@ -316,7 +316,7 @@ test("Audit F18: missing source pages make a final-QC PASS invalid",async()=>{
 
 test('R14 real Durable: explicit zero-input recovery uses the original Harness after configured Pause',async()=>{
  const x=fixture();try{
-  let checks=0;await assert.rejects(x.durable.launch({...x.launch,assertAdmitted(){if(++checks===2)throw Error('Operator paused before first input');}}),/Operator paused/);
+  await assert.rejects(x.durable.launch({...x.launch,assertAdmitted(){if(x.current()?.phase==='configured')throw Error('Operator paused before first input');}}),/Operator paused/);
   const original=x.current();assert.equal(original.phase,'configured');assert.equal(x.faux.state.callCount,0);
   await x.durable.close();x.durable=new DurableRunHost(x.options);
   x.faux.setResponses([fauxAssistantMessage([fauxToolCall('mm_qc_report',{verdict:'pass',summary:'Recovered the exact original zero-input run'},{id:'recovered'})],{stopReason:'toolUse'}),fauxAssistantMessage('Done')]);

@@ -8,7 +8,7 @@ import {Type} from "@earendil-works/pi-ai";
 import {ModelRuntime} from "@earendil-works/pi-coding-agent";
 import type {Models} from "@earendil-works/pi-ai/models";
 import type {ModelThinkingLevel} from "@earendil-works/pi-ai";
-import {Harness,createRegistry,defineExtension,defineTool,watchEvents,hook,GenerationTask,ToolTask,
+import {Harness,createRegistry,defineExtension,defineTool,watchEvents,
   type AgentEvent,type AgentEventStream,type Conversation,type ToolRegistration} from "@earendil-works/pi-durable";
 import {CodingTools} from "@earendil-works/pi-durable/tools";
 import {NodeExecutionEnv} from "@earendil-works/pi-durable/env/node";
@@ -22,6 +22,7 @@ import {productionPolicy,assertProductionModel} from "../security/policy.js";
 import {productionTools} from "./production-tools.js";
 import {sandboxExec,inspectSandboxWorkspace} from "../security/sandbox.js";
 import {reportTools} from "./durable-reports.js";
+import {withModelBudget} from "../security/model-boundary.js";
 import {RunSafetyLedger,DEFAULT_LIMITS,classifyInputOutcomes,type RunLimits} from "../security/run-safety.js";
 
 export type DurableKind="implementation"|"qc"|"diagnosis"|"synthesis"|"planning"|"workflow_plan";
@@ -178,12 +179,20 @@ export class DurableRunHost {
       }) as ToolRegistration[];
       registry.install(defineExtension({name:"micromanager-coding-tools",tools:coding}));
       registry.install(defineExtension({name:"micromanager-durable-reports",tools:[provided,...(contractTool?[contractTool]:[]),...discovery]}));
-      registry.install(defineExtension({name:"micromanager-run-budget",hooks:[
-        hook(GenerationTask,{beforeRequest:()=>{this.safety.consume(key,"model");}}),
-        hook(ToolTask,{beforeTool:()=>{this.safety.consume(key,"tool");}}),
-      ]}));
+      // Enforce at the actual executable boundary; hook exceptions can be
+      // swallowed by the public SDK's observational hook dispatcher.
+      const budgetedTools=(tools:readonly ToolRegistration[])=>tools.map(tool=>({
+        ...tool,async execute(args:never,api:never,context:never){
+          thisHost.safety.consume(key,"tool");
+          return tool.execute(args,api,context);
+        },
+      })) as ToolRegistration[];
+      const thisHost=this;
+      registry.install(defineExtension({name:"micromanager-coding-tools",tools:budgetedTools(coding)}));
+      registry.install(defineExtension({name:"micromanager-durable-reports",
+        tools:budgetedTools([provided,...(contractTool?[contractTool]:[]),...discovery])}));
       const harness=await Harness.open(await openNodeSqliteStorage(this.path(r)),{
-        models,registry,settings:{toolExecution:"sequential",compaction:{enabled:false},
+        models:withModelBudget(models,()=>this.safety.consume(key,"model")),registry,settings:{toolExecution:"sequential",compaction:{enabled:false},
           stream:{maxRetries:0,timeoutMs:120_000},retry:{maxRetries:2},
           progress:{partialIntervalMs:100,outputIntervalMs:100}},
         env:({cwd})=>{

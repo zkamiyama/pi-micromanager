@@ -111,14 +111,14 @@ test('S05: source symlinks, hardlinks and file quotas are rejected before any sa
 });
 test('Production isolation success: host file, environment and Git metadata are absent',async t=>{
  if(!await sandboxAvailable(t))return;const x=repository(),secret=join(x.root,'host-private');writeFileSync(secret,'synthetic');
- try{const code=`const fs=require('node:fs');console.log(JSON.stringify({outside:fs.existsSync(${JSON.stringify(secret)}),git:fs.readFileSync('/workspace/.git','utf8'),home:process.env.HOME,token:process.env.MM_SYNTHETIC_TOKEN??null}));`;
+ try{const code=`const fs=require('node:fs');console.log(JSON.stringify({outside:fs.existsSync(${JSON.stringify(secret)}),git:(()=>{try{return fs.readFileSync('/workspace/.git','utf8')}catch(e){if(e.code==='EACCES'||e.code==='EPERM')return '';throw e}})(),home:process.env.HOME,token:process.env.MM_SYNTHETIC_TOKEN??null}));`;
  process.env.MM_SYNTHETIC_TOKEN='test-only';const r=await sandboxExec(x.wt,['/runtime/node','-e',code],true,limits);delete process.env.MM_SYNTHETIC_TOKEN;
  assert.equal(r.exitCode,0,r.stderr);assert.deepEqual(JSON.parse(r.stdout),{outside:false,git:'',home:'/tmp',token:null});
  const write=await sandboxExec(x.wt,['/runtime/node','-e',FILE_SERVICE],true,limits,undefined,JSON.stringify({op:'write',path:'source.txt',content:'bad'}));assert.notEqual(write.exitCode,0);assert.equal(readFileSync(join(x.wt,'source.txt'),'utf8'),'baseline\n');
  }finally{delete process.env.MM_SYNTHETIC_TOKEN;rmSync(x.root,{recursive:true,force:true});}
 });
 test('Production isolation success: a reachable host-loopback service cannot be reached by the worker',async t=>{
- if(!await sandboxAvailable(t))return;const root=temp(),server=createServer(s=>s.end('fixture'));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ if(!await sandboxAvailable(t))return;const root=temp(),server=createServer(s=>{s.on('error',()=>{});s.end('fixture');});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  try{const port=server.address().port;await new Promise((resolve,reject)=>{const c=connect(port,'127.0.0.1',()=>{c.destroy();resolve();});c.on('error',reject);});
  const code=`const c=require('node:net').connect(${port},'127.0.0.1');c.on('connect',()=>process.exit(2));c.on('error',()=>process.exit(0));setTimeout(()=>process.exit(0),250);`;
  const r=await sandboxExec(root,['/runtime/node','-e',code],false,limits);assert.equal(r.exitCode,0,r.stderr);
