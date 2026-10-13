@@ -28,6 +28,8 @@ export interface AutopilotConfig {
   finalization?:FinalizationConfig;
   /** Explicit permission to create missing linked Worktrees when Autopilot starts. */
   managedWorktrees?:true;
+  /** Opt-in import of existing Git-tracked screenshots after sealed QC. */
+  captureQcScreenshots?:true;
   /** Configured publication target enables YOLO push + Draft PR creation.
    * Legacy saved configurations without this field never acquire new network effects. */
   publication?:PublicationConfig;
@@ -78,6 +80,9 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   if(raw.managedWorktrees!==undefined&&raw.managedWorktrees!==true)
     throw new Error("managedWorktrees must be true when configured");
   const managedWorktrees=raw.managedWorktrees===true;
+  if(raw.captureQcScreenshots!==undefined&&raw.captureQcScreenshots!==true)
+    throw new Error("captureQcScreenshots must be true when configured");
+  const captureQcScreenshots=raw.captureQcScreenshots===true;
   const workspaces=workspaceMap(raw.workspaces??(managedWorktrees?{}:undefined));
   // A single modifying Worktree shared across Tasks is never safe, even when
   // the current workflow happens to dispatch those Tasks sequentially.
@@ -139,6 +144,7 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   if(finalization&&!publication)
     throw new Error("Final integration requires a configured GitHub publication destination");
   return {workspaces, ...(managedWorktrees?{managedWorktrees:true as const}:{}),
+    ...(captureQcScreenshots?{captureQcScreenshots:true as const}:{}),
     ...(diagnosticEscalation?{diagnosticEscalation}:{}),
     ...(finalization?{finalization}:{}),
     ...(raw.reviewWorkspaces===undefined?{}:{
