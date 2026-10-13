@@ -164,6 +164,15 @@ export class PublicationManager {
       throw new Error("GitHub CLI failed: "+result.stderr.slice(-150));
     return result.stdout.trim();
   }
+  /** Git can have distinct fetch and push destinations. Never publish solely
+   * on a verified fetch URL when push is configured elsewhere. */
+  private async verifiedPushDestination(path:string,pub:PublicationConfig,fetchUrl:string):Promise<void>{
+    const urls=await gitValue(this.options.host,path,
+      ["remote","get-url","--push","--all",pub.remote]);
+    const candidates=urls.split("\n").map(x=>x.trim()).filter(Boolean);
+    if(candidates.length!==1||candidates[0]!==fetchUrl)
+      throw new Error("Git push URL differs from the single verified fetch destination; refuse publication");
+  }
   private async remoteSha(path:string,pub:PublicationConfig,branch:string):Promise<string|undefined>{
     const res=await git(this.options.host,path,
       ["ls-remote","--heads",pub.remote,"refs/heads/"+branch],45000);
@@ -429,6 +438,7 @@ export class PublicationManager {
         throw new Error("Refusing to publish to a protected or invalid Git branch");
       const url=await gitValue(this.options.host,target.path,["remote","get-url",pub.remote]);
       const repo=publicRepo(url);
+      await this.verifiedPushDestination(target.path,pub,url);
       const dest=repo+" "+pub.remote+" "+pub.baseBranch;
       if(this.options.agents.hasUnsealedWorkspace(p,workspaceId))
         throw new Error("Worker lease changed during Git publication preflight");
@@ -459,6 +469,7 @@ export class PublicationManager {
           if(this.options.agents.hasUnsealedWorkspace(p,workspaceId)||
             await requireCleanGit(this.options.host,target.path)!==sha)
             throw new Error("Publication Git checkout changed immediately before push");
+          await this.verifiedPushDestination(target.path,pub,url);
           const pushed=await git(this.options.host,target.path,
             ["push","--porcelain",pub.remote,"HEAD:refs/heads/"+branch],120000);
           if(pushed.exitCode!==0)
