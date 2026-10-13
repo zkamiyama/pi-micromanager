@@ -9,7 +9,7 @@ import {DatabaseSync} from "node:sqlite";
 import {WorkflowStore} from "../dist/core/store.js";
 import {AgentRegistry} from "../dist/runtime/registry.js";
 import {AutopilotLedger} from "../dist/automation/ledger.js";
-import {AdrPromotion} from "../dist/automation/adr-promotion.js";
+import {AdrPromotion,suggestAdrFromVerifiedIntervention} from "../dist/automation/adr-promotion.js";
 
 const fields={filename:"0010-feature-auth.md",title:"Safe API contract",
   context:"Token rotation must preserve compatible clients.",
@@ -339,4 +339,33 @@ test("Uncertain Git commit stops rather than repeating it or creating a PR",asyn
    assert.equal((await x.promotion.publish("p","o",plan.id)).state,"reserved_commit");
    assert.equal(commitCalls,1,"No reexecution of uncertain commit");
  }finally{x.close();}
+});
+
+test("ADR suggestions require human-resolved QC provenance, never model-only claims",()=>{
+ const now=new Date().toISOString();
+ const flow={definition,revision:12,
+   tasks:{feature:{spec:definition.tasks[0],status:"integrated",attempts:1,
+     qcRounds:1,lastQc:{runId:"qc-feature-1",verdict:"pass",
+       headSha:"a".repeat(40),criteriaRevision:0,attempt:1}}},
+   amendments:[{id:"investigate",targetTaskId:"feature",afterQcRunId:"qc-feature-1",
+     status:"completed",instruction:"Review backward compatibility",
+     planRationale:"Compare compatibility adapter and strict validation",
+     agents:[{id:"audit",role:"architect",title:"Design audit",model:"p/m"}]}],
+   events:[{revision:12,type:"resume_after_diagnosis",
+     message:"Resolved investigate; feature -> passed",at:now}],
+   createdAt:now,updatedAt:now};
+ const candidate=suggestAdrFromVerifiedIntervention(flow);
+ assert.ok(candidate);
+ assert.equal(candidate.filename,"0199-feature-review.md");
+ assert.match(candidate.context,/qc-feature-1/);
+ assert.match(candidate.options,/compatibility adapter/);
+ assert.match(candidate.decision,/Human-authorized/);
+ assert.match(candidate.decision,/Review and write the actual architecture decision/);
+ const unresolved=structuredClone(flow);
+ unresolved.amendments[0].status="activated";
+ assert.equal(suggestAdrFromVerifiedIntervention(unresolved),null);
+ const routine=structuredClone(flow);
+ routine.amendments=[];
+ assert.equal(suggestAdrFromVerifiedIntervention(routine),null,
+   "Routine completion cannot invent an architectural decision");
 });
