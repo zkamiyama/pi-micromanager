@@ -172,6 +172,7 @@ export class DurableRunHost {
   private readonly opening=new Map<string,Promise<Active>>();
   private closing=false;
   constructor(private readonly options:DurableCallbacks){}
+  connected(id:string):boolean{return this.active.get(id)?.closed===false;}
   private path(reservation:Reservation):string{
     const home=resolve(this.options.dataDirectory),directory=join(home,"durable-runs");
     mkdirSync(directory,{recursive:true,mode:0o700});
