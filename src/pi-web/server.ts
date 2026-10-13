@@ -910,7 +910,9 @@ const plugin:PiWebServerPlugin={
             const input=ctx.input===null?{}:object(ctx.input);
             const view=input.view==="history"?"history":input.view==="all"?"all":"active";
             return j(agents.list(p,o,view).map(b=>({
-              ...b,connected:Boolean(b.sessionId&&live.get(bridgeKey(b))?.connected),
+              ...b,connected:Boolean(b.sessionId&&
+                 (isDurableSession(b.sessionId)?durable.connected(b.sessionId):
+                   live.get(bridgeKey(b))?.connected)),
             })));
           }
           case "agents.history":{
