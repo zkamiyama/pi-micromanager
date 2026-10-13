@@ -421,3 +421,75 @@ test("Human QC intervention arriving during async host verification wins over st
       "Sol planning may continue but cannot void the held QC evidence");
   }finally{x.close();}
 });
+
+test("Opt-in QC failure escalation reserves a durable barrier before rework",async()=>{
+ const settings={...config,diagnosticEscalation:{afterFailures:1,maxPerTask:1}};
+ const x=setup(definition,settings);
+ try{
+   await x.tick();await x.tick();
+   x.settled("impl-api-1");await x.tick();await x.tick();
+   const first=x.settled("qc-api-1");
+   x.ledger.recordReport(first,{kind:"qc",runId:first.runId,
+     verdict:"fail",summary:"Contract mismatch",at:Date.now()});
+   await x.tick();
+   const w=x.wf();
+   assert.equal(w.tasks.api.status,"held");
+   assert.equal(w.tasks.api.lastQc.verdict,"fail");
+   assert.equal(w.amendments.length,1);
+   assert.match(w.amendments[0].id,/^auto-diag-[0-9a-f]{20}$/);
+   assert.equal(w.amendments[0].status,"planning");
+   assert.equal(w.amendments[0].afterQcRunId,"qc-api-1");
+   assert.equal(x.run("qc-api-1").phase,"sealed");
+   for(let n=0;n<3;n++)await x.tick();
+   assert.equal(x.launches.filter(j=>j.kind==="implementation").length,1,
+     "Failed Task must never launch rework before the investigation and human decision");
+   assert.equal(x.launches.filter(j=>j.kind==="planning").length,1);
+   assert.match(x.launches.find(j=>j.kind==="planning").prompt,
+     /automatic QC-failure escalation/);
+   assert.match(x.launches.find(j=>j.kind==="planning").prompt,
+     /Do not resume a held Task/);
+ }finally{x.close();}
+});
+
+test("Opt-in diagnostic escalation is bounded, human interventions take priority",async()=>{
+ for(const input of [
+  {...config,diagnosticEscalation:{afterFailures:0,maxPerTask:1}},
+  {...config,diagnosticEscalation:{afterFailures:4,maxPerTask:1}},
+  {...config,diagnosticEscalation:{afterFailures:1,maxPerTask:4}},
+  {...config,diagnosticEscalation:{afterFailures:1,maxPerTask:1,unsafe:"yes"}},
+ ])assert.throws(()=>parseAutopilotConfig(input),/escalation/i);
+ const settings={...config,diagnosticEscalation:{afterFailures:1,maxPerTask:1}};
+ const x=setup(definition,settings);
+ try{
+   await x.tick();await x.tick();
+   x.settled("impl-api-1");await x.tick();await x.tick();
+   const current=x.wf();
+   x.store.act("project","orchestra","wf",current.revision,"human-first",{
+     type:"request_intervention",interventionId:"human-first",targetTaskId:"api",
+     afterQcRunId:"next",instruction:"Human independently requested inspection",
+   });
+   const qc=x.settled("qc-api-1");
+   x.ledger.recordReport(qc,{kind:"qc",runId:qc.runId,
+     verdict:"fail",summary:"Human asked to investigate",at:Date.now()});
+   await x.tick();
+   assert.equal(x.wf().tasks.api.status,"held");
+   assert.equal(x.wf().amendments.length,1);
+   assert.equal(x.wf().amendments[0].id,"human-first");
+   assert.equal(x.wf().amendments[0].status,"planning");
+ }finally{x.close();}
+});
+
+test("Opt-in escalation threshold does not change first failed QC under threshold",async()=>{
+ const settings={...config,diagnosticEscalation:{afterFailures:2,maxPerTask:1}};
+ const x=setup(definition,settings);
+ try{
+   await x.tick();await x.tick();
+   x.settled("impl-api-1");await x.tick();await x.tick();
+   const qc=x.settled("qc-api-1");
+   x.ledger.recordReport(qc,{kind:"qc",runId:qc.runId,
+     verdict:"fail",summary:"Failed first round",at:Date.now()});
+   await x.tick();
+   assert.equal(x.wf().tasks.api.status,"ready");
+   assert.equal(x.wf().amendments.length,0);
+ }finally{x.close();}
+});
