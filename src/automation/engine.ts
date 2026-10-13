@@ -1,4 +1,5 @@
 /** Durable DAG-to-Pi dispatcher. No unverified model prose advances a Task. */
+import {createHash} from "node:crypto";
 import { WorkflowError, type WorkflowInstance, type WorkflowAction, type TaskState } from "../core/workflow.js";
 import { WorkflowStore } from "../core/store.js";
 import { AgentRegistry, type AgentBinding, type Seat } from "../runtime/registry.js";
@@ -263,7 +264,9 @@ export class AutopilotEngine {
         continue;
       const roles=record.config.models;
       const prompt=boundedPrompt(
-        "You are Sol, planning a human-requested Task-scoped QC investigation. READ ONLY. "+
+        "You are Sol, planning a "+(amendment.id.startsWith("auto-diag-")?
+          "configured automatic QC-failure escalation":"human-requested")+
+        " Task-scoped QC investigation. READ ONLY. "+
         "Workflow "+current.definition.title+"; target Task "+target.spec.id+" ("+target.spec.title+"). "+
         "Human instruction: "+(amendment.instruction??"")+". "+
         "Propose 1..4 independent investigators and call mm_plan_intervention once. "+
@@ -486,6 +489,7 @@ export class AutopilotEngine {
       throw new Error("Run "+binding.runId+" settled without a valid structured "+kind+" report");
     const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
     let action:WorkflowAction,details:string;
+    let authorizedCurrent=current;
     if(kind==="implementation"){
       const verify=await this.port.verify(binding,record.config);
       if(!verify.clean)throw new Error("Uncommitted files in "+binding.runId+"; manual reconciliation required");
@@ -499,6 +503,30 @@ export class AutopilotEngine {
         throw new Error("QC snapshot changed; no verdict can be finalized");
       const modelVerdict=report!.kind==="qc"?report!.verdict:"inconclusive";
       const verdict=!verify.testsPassed?"fail":modelVerdict;
+      const escalation=record.config.diagnosticEscalation;
+      if(escalation&&verdict==="fail"&&
+        task.spec.systemPurpose!=="final-integration"&&
+        task.qcRounds+1>=escalation.afterFailures&&
+        current.amendments.filter(a=>a.targetTaskId===task.spec.id&&
+          a.id.startsWith("auto-diag-")&&a.status!=="cancelled").length<
+          escalation.maxPerTask&&
+        !current.amendments.some(a=>a.targetTaskId===task.spec.id&&
+          ["planning","armed","activated"].includes(a.status))){
+        const token=createHash("sha256").update(JSON.stringify([
+          p,o,w,task.spec.id,binding.runId])).digest("hex").slice(0,20);
+        const interventionId="auto-diag-"+token;
+        // Reserve the barrier in the same durable Workflow store before
+        // finalizing QC. On lost response, the next tick observes this
+        // exact amendment and cannot duplicate the model plan.
+        authorizedCurrent=this.act(record,current,{
+          type:"request_intervention",interventionId,
+          targetTaskId:task.spec.id,afterQcRunId:binding.runId,
+          instruction:"QC failed for Task "+task.spec.id+
+            " at verified SHA "+pending.headSha+
+            ". Independently investigate the failure, compare remedies, "+
+            "and synthesize a read-only recommendation. Do not resume code.",
+        },"auto:escalate:"+binding.runId);
+      }
       action={type:"qc_finalized",taskId:task.spec.id,runId:binding.runId,
         headSha:pending.headSha,criteriaRevision:pending.criteriaRevision,
         attempt:pending.attempt,verdict};
@@ -516,7 +544,7 @@ export class AutopilotEngine {
     }
     if(this.stopping)return; // Do not commit a transition during plugin shutdown.
     const evidence=this.ledger.sealEvidence(binding,kind,details.slice(0,3500));
-    this.act(record,current,action,"auto:complete:"+binding.runId);
+    this.act(record,authorizedCurrent,action,"auto:complete:"+binding.runId);
     // Seal the settled Pi Run only AFTER authoritative workflow/evidence persist.
     const sealed=this.agents.seal(p,o,binding.sessionId!,evidence.ref);
     this.port.onTransition?.(sealed);
