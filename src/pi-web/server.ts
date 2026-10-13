@@ -913,8 +913,7 @@ const plugin:PiWebServerPlugin={
             const config=parseAutopilotConfig(input.config);
             const current=ledger.get(p,o,workflowId);
             if(current?.enabled)throw new Error("Pause Autopilot before changing its configuration");
-            const active=agents.list(p,o,"active").some(b=>b.workflowId===workflowId&&
-              b.requestId.startsWith("auto:"));
+            const active=agents.hasUnsealedAutomatedRun(p,o,workflowId);
             if(active)throw new Error("Cannot reconfigure while an automated Pi Run is unsealed");
             const missing=Object.values(workflow.tasks).filter(t=>
               t.spec.kind==="implementation"&&t.spec.systemPurpose!=="final-integration"&&
