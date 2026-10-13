@@ -12,6 +12,7 @@ import {BACKGROUND_CONTEXT} from "@earendil-works/chord/context";
 import {Type} from "@earendil-works/pi-ai";
 import {builtinModels} from "@earendil-works/pi-ai/providers/all";
 import type {Models} from "@earendil-works/pi-ai/models";
+import type {ModelThinkingLevel} from "@earendil-works/pi-ai";
 import {
   Harness,createRegistry,defineExtension,defineTool,watchEvents,
   type AgentEvent,type AgentEventStream,type Conversation,type ToolRegistration,
@@ -219,6 +220,7 @@ export class DurableRunHost {
       const provided=kind==="qc"?reports.qc:
         kind==="planning"?reports.plan:kind==="workflow_plan"?reports.proposal:reports.task;
       const coding=(CodingTools.tools??[]).map(tool=>{
+        if(tool.name==="read")return {...tool,replay:"safe" as const};
         if(tool.name!=="bash")return tool;
         return {...tool,async execute(args:never,api:never,context:never){
           const command=String((args as {command?:string}).command??"");
@@ -247,8 +249,13 @@ export class DurableRunHost {
         // interface but inferred schema unions are not homogeneous arrays.
         const tools:ToolRegistration[]=(kind==="implementation"?
           original:[read,provided]) as ToolRegistration[];
+        const effort=model.effort;
+        const levels=new Set<string>(["off","minimal","low","medium","high","xhigh","max"]);
+        if(effort!==undefined&&!levels.has(effort))
+          throw new Error("Unsupported Pi Durable thinking level: "+effort);
         const agent={
           model:{provider:model.provider,modelId:model.model},
+          ...(effort?{thinkingLevel:effort as ModelThinkingLevel}:{}),
           cwd:canonical,tools,
           modelTools:tools,
           instructions:kind==="implementation"?
@@ -354,9 +361,18 @@ export class DurableRunHost {
     // behind the operator's back. Pi Durable marks non-replay-safe tools as
     // interrupted; the current implementation errs on the conservative side.
     const inspection=await live.harness.inspect(BACKGROUND_CONTEXT);
-    const uncertain=inspection.tasks.some(t=>t.record.kind==="pi.tool"&&
-      t.state.kind!=="completing");
-    if(uncertain)throw new Error("Interrupted Durable Tool requires human reconciliation");
+    const uncertain=inspection.tasks.some(task=>{
+      if(task.record.kind!=="pi.tool"||
+        task.record.state.status==="terminal"||
+        task.record.state.status==="completing")return false;
+      const checkpoint=task.record.state.checkpoint as
+        {phase?:string;replay?:string}|undefined;
+      // No committed tool intent means it did not run. Otherwise replay
+      // only tools whose exact persisted intent explicitly allows it.
+      return checkpoint?.phase==="execute"&&checkpoint.replay!=="safe";
+    });
+    if(uncertain)
+      throw new Error("Interrupted non-replay-safe Durable Tool requires human reconciliation");
     live.harness.resume();
     this.supervise(live);
     return live.stream.snapshot.run?"running":"settled";
