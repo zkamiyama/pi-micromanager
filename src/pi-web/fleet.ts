@@ -25,6 +25,7 @@ interface GridState {
   history:LiveBinding[];
   workflows:WorkflowInstance[];
   selectedSessionId:string;
+  focusedInspector:boolean;
   workflowId:string;
   taskId:string;
   targetWorkspaceId:string;
@@ -69,7 +70,8 @@ function stateFor(ctx:WorkspacePanelContext):GridState{
     let stored:string|null=null;
     try{if(typeof localStorage!=="undefined")stored=localStorage.getItem(canvasStorageKey(k));}catch{}
     const preferences=parseCanvasPreferences(stored);
-    s={active:[],history:[],workflows:[],selectedSessionId:"",workflowId:"",taskId:"",
+    s={active:[],history:[],workflows:[],selectedSessionId:"",focusedInspector:false,
+      workflowId:"",taskId:"",
       targetWorkspaceId:ctx.workspace.id,provider:"openai-codex",model:"",effort:"",
       evidenceRef:"",
       density:{planner:"expanded",implementer:"compact",qc:"expanded",architect:"expanded"},
@@ -659,8 +661,16 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         ${s.history.map(b=>html`<button @click=${()=>focus(ctx,b)}>
           ${b.taskId} / ${b.runId} · ${b.phase}</button>`)}
       </details>
-      ${selected?html`<section class="mm-f-inspector">
-        <h3>${selected.taskId} · ${selected.runId}</h3>
+      ${selected?html`<section class=${"mm-f-inspector "+(s.focusedInspector?"mm-f-inspector-focused":"")}
+        aria-label=${"Run details for "+selected.runId}>
+        <div class="mm-f-inspector-header">
+          <h3>${selected.taskId} · ${selected.runId}</h3>
+          <button type="button" aria-pressed=${s.focusedInspector?"true":"false"}
+            aria-label=${(s.focusedInspector?"Restore normal":"Focus expanded")+" inspector for "+selected.runId}
+            @click=${()=>{s.focusedInspector=!s.focusedInspector;refresh(ctx);}}>
+            ${s.focusedInspector?"Return to canvas view":"Focus inspector"}
+          </button>
+        </div>
         <small>${selected.phase} · Session ${selected.sessionId??"not yet created"} · ${selected.workspaceId}</small>
         <div class="mm-f-activity">${(s.activity.get(selected.sessionId??"")??[]).map(event=>
           html`<p><small>${event.kind}</small> ${event.text}</p>`)}</div>
@@ -733,6 +743,12 @@ const css=`
   .mm-f-card p{margin:3px 0;overflow-wrap:anywhere;white-space:pre-wrap;}
   .mm-f-inspector{border:1px solid var(--pi-accent-border);border-radius:8px;padding:10px;margin:14px 0;}
   .mm-f-inspector h3{margin:0 0 4px;} .mm-f-inspector textarea{display:block;margin:8px 0;}
+  .mm-f-inspector-header{display:flex;align-items:center;justify-content:space-between;
+    flex-wrap:wrap;gap:8px;}
+  .mm-f-inspector-focused{width:100%;min-height:min(75vh,640px);
+    border:2px solid var(--pi-accent-border);box-shadow:0 8px 26px rgba(0,0,0,.12);}
+  .mm-f-inspector-focused .mm-f-activity{max-height:min(60vh,600px);
+    overflow:auto;white-space:pre-wrap;}
   .mm-f-activity{max-height:240px;overflow:auto;} .mm-f-activity p{margin:3px 0;overflow-wrap:anywhere;}
   .mm-f-history{margin:12px 0;} .mm-f-history button{display:block;margin:5px 0;}
   .mm-fleet details{border-top:1px solid var(--pi-border-muted);padding:9px 0;}
