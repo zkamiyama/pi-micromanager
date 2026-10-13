@@ -229,9 +229,6 @@ function fakePluginHost(shared,options={}) {
     stdoutTruncated:false,stderrTruncated:false};}
   const capabilities={
     resolve(capability){
-      if(options.noNativeSessions&&
-        (capability.id==="pi-sessions"||capability.id==="pi-session-events"))
-        return undefined;
       if(capability.id==="pi-sessions")
         return {version:1,create:async()=>({sessionId:createSession().id})};
       if(capability.id==="pi-session-events")
@@ -974,11 +971,15 @@ test("One-command refuses a competing Workflow already running in the same Works
  }finally{await host.cleanup();}
 });
 
-test("Durable-only server activation does not require native PI WEB Session providers",async()=>{
- const host=fakePluginHost(undefined,{noNativeSessions:true});
+test("PI WEB's strict declared-capability resolver keeps native compatibility available",async()=>{
+ // PI WEB v3 only resolves capabilities explicitly listed in requires.
+ // The Durable default must not remove either native compatibility token.
+ const ids=new Set(serverPlugin.requires.map(capability=>capability.id));
+ assert.ok(ids.has("pi-sessions"));
+ assert.ok(ids.has("pi-session-events"));
+ assert.ok(ids.has("workspaces"));
+ const host=fakePluginHost();
  try{
-   assert.ok(!serverPlugin.requires.some(c=>c.id==="pi-sessions"||
-     c.id==="pi-session-events"));
    await host.activate();
    assert.deepEqual(await host.request("list",null),[]);
    const runs=await host.request("agents.list",{view:"all"});
