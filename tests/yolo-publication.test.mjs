@@ -57,6 +57,7 @@ function fixture(policy){
       if(args==="status --porcelain")return output(worktreeDirty?"?? dirty.txt\n":"");
       if(args==="symbolic-ref --quiet --short HEAD")return output(BRANCH+"\n");
       if(args==="remote get-url origin")return output("https://github.com/acme/repo.git\n");
+      if(args==="remote get-url --push --all origin")return output("https://github.com/acme/repo.git\n");
       if(args==="ls-remote --heads origin refs/heads/"+BRANCH)
         return output(remoteSha?remoteSha+"\trefs/heads/"+BRANCH+"\n":"");
       if(args==="push --porcelain origin HEAD:refs/heads/"+BRANCH){
