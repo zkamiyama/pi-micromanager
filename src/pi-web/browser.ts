@@ -476,6 +476,24 @@ const plugin: PiWebPlugin = {
 
 
 
+    async function suggestAdr(context:WorkspacePanelContext){
+      const state=stateFor(context),workflowId=state.selected?.definition.id;
+      if(!workflowId||state.busy)return;
+      state.busy=true;
+      state.adrStatus="Inspecting completed human QC decisions and sealed source evidence…";
+      context.host.requestRender();
+      try{
+        const fields=await send(context,"auto.adr.suggest",{workflowId}) as AdrFields|null;
+        if(fields){
+          state.adrFields=fields;
+          delete state.adrDraft;delete state.adrPublication;
+          state.adrStatus="Suggested fields from completed, human-resolved QC intervention. "+
+            "Review and edit every architectural assertion before Preview/Stage.";
+        }else state.adrStatus="No completed human-resolved QC intervention to suggest as an ADR. "+
+          "Draft a decision manually instead.";
+      }catch(error){state.adrStatus="ADR suggestion unavailable: "+String(error);}
+      finally{state.busy=false;context.host.requestRender();}
+    }
     async function adrCommand(context:WorkspacePanelContext,command:"preview"|"stage"|"latest"|"inspect"){
       const state=stateFor(context),workflowId=state.selected?.definition.id;
       if(!workflowId||state.busy)return;
@@ -1455,6 +1473,9 @@ const plugin: PiWebPlugin = {
                               }}></textarea>`}
                         </label>`)}
                       <div class="mm-actions">
+                        <button ?disabled=${state.busy||state.autopilotEnabled}
+                          @click=${()=>void suggestAdr(context)}>
+                          Suggest fields from completed QC decision</button>
                         <button ?disabled=${state.busy||state.autopilotEnabled||
                           !state.adrTargetWorkspaceId.trim()}
                           @click=${()=>void adrCommand(context,"preview")}>
