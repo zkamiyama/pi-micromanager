@@ -13,7 +13,7 @@ import {Type} from "@earendil-works/pi-ai";
 import {builtinModels} from "@earendil-works/pi-ai/providers/all";
 import {
   Harness,createRegistry,defineExtension,defineTool,watchEvents,
-  type AgentEvent,type AgentEventStream,type Conversation,
+  type AgentEvent,type AgentEventStream,type Conversation,type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import {CodingTools} from "@earendil-works/pi-durable/tools";
 import {NodeExecutionEnv} from "@earendil-works/pi-durable/env/node";
@@ -69,8 +69,8 @@ export function durableActivity(event:AgentEvent,text:string,sequence:number):
   if(event.type==="run_start")
     return {event:{kind:"agent_started",at,sequence,text:"Pi Durable run started"},text:""};
   if(event.type==="message_update"){
-    const delta=event.changes.filter((c):c is Extract<typeof c,{type:"text_delta"}>=>
-      c.type==="text_delta").map(c=>c.delta).join("");
+    const delta=event.changes.map(c=>
+      c.type==="text_delta"?c.delta:"").join("");
     if(!delta)return;
     const updated=bounded(text+delta);
     return {event:{kind:"message_delta",at,sequence,text:updated},text:updated};
@@ -217,9 +217,13 @@ export class DurableRunHost {
            return new NodeExecutionEnv({cwd:canonical});
          }},BACKGROUND_CONTEXT);
       try{
-        const tools=kind==="implementation"?
-          [...(CodingTools.tools??[])]:[CodingTools.tools!.find(x=>x.name==="read")!];
-        if(readonlyKinds.has(kind))tools.push(provided);
+        const original=[...(CodingTools.tools??[])];
+        const read=original.find(x=>x.name==="read");
+        if(!read)throw new Error("Pi Durable CodingTools lacks the safe read tool");
+        // TypeBox-specific registrations share the durable ToolRegistration
+        // interface but inferred schema unions are not homogeneous arrays.
+        const tools:ToolRegistration[]=(kind==="implementation"?
+          original:[read,provided]) as ToolRegistration[];
         const agent={
           model:{provider:model.provider,modelId:model.model},
           cwd:canonical,tools,
@@ -322,8 +326,8 @@ export class DurableRunHost {
     // behind the operator's back. Pi Durable marks non-replay-safe tools as
     // interrupted; the current implementation errs on the conservative side.
     const inspection=await live.harness.inspect(BACKGROUND_CONTEXT);
-    const uncertain=inspection.tasks.some(t=>t.kind==="pi.tool"&&
-      t.state.status!=="terminal");
+    const uncertain=inspection.tasks.some(t=>t.record.kind==="pi.tool"&&
+      t.state.kind!=="completing");
     if(uncertain)throw new Error("Interrupted Durable Tool requires human reconciliation");
     live.harness.resume();
     this.supervise(live);
