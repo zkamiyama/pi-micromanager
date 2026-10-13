@@ -147,3 +147,21 @@ test("Git commit ask is admitted before the modifying Pi Run, bound to Task atte
       /Commit approval no longer matches/);
   }finally{x.close();}
 });
+
+test("Audit F04: an approval is not transferable across GitHub repositories or source refs",()=>{
+ const x=fixture({actions:{"git.push":"ask"}});
+ try{
+   const pub=x.ledger.get("p","o","feature").config.publication;
+   const ensure=(repo,branch)=>x.permission.ensure("p","o","feature","code",
+     "git.push","qc-code-1",HEAD,pub,repo,branch);
+   const first=ensure("approved/repo","feature/code");
+   x.permission.decide("p","o",first.approval.id,"approved");
+   assert.equal(ensure("approved/repo","feature/code").decision,"allow");
+   const changedRepo=ensure("unapproved/repo","feature/code");
+   assert.equal(changedRepo.decision,"ask");
+   assert.notEqual(changedRepo.approval.id,first.approval.id);
+   const changedBranch=ensure("approved/repo","feature/other");
+   assert.equal(changedBranch.decision,"ask");
+   assert.notEqual(changedBranch.approval.id,first.approval.id);
+ }finally{x.close();}
+});
