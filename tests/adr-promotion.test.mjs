@@ -246,7 +246,13 @@ test("Explicit reviewed ADR publication commits exact file, pushes only new bran
    x.opts.host.execFile=async input=>{
      if(input.file==="gh"){
        gh.push([...input.args]);
-       return {exitCode:0,signal:null,stdout:"https://github.com/acme/adr-repo/pull/7\n",
+       const isView=input.args[1]==="view";
+       const payload=isView?JSON.stringify({
+         url:"https://github.com/acme/adr-repo/pull/7",
+         headRefName:"docs/review",headRefOid:cmd(x.target,"rev-parse","HEAD"),
+         baseRefName:"main",isDraft:true,state:"OPEN",
+       })+"\n":"https://github.com/acme/adr-repo/pull/7\n";
+       return {exitCode:0,signal:null,stdout:payload,
          stderr:"",stdoutTruncated:false,stderrTruncated:false};
      }
      if(input.file==="git"&&input.args.slice(-3).join(" ")==="remote get-url origin")
@@ -269,11 +275,12 @@ test("Explicit reviewed ADR publication commits exact file, pushes only new bran
    assert.equal(cmd(x.target,"status","--porcelain"),"");
    assert.equal(cmd(x.target,"ls-remote","--heads","origin","refs/heads/docs/review")
      .split(/\s+/)[0],after);
-   assert.equal(gh.length,1);
+   assert.equal(gh.length,2);
    assert.ok(gh[0].includes("--draft"));
+   assert.equal(gh[1][1],"view");
    assert.ok(!gh[0].includes("--admin")&&!gh[0].includes("--auto"));
    assert.equal((await x.promotion.publish("p","o",plan.id)).url,published.url);
-   assert.equal(gh.length,1,"Repeated Publish must never create a duplicate PR");
+   assert.equal(gh.length,2,"Repeated Publish must never create/view a duplicate PR");
  }finally{x.close();}
 });
 
