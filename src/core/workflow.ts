@@ -384,6 +384,8 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
       invariant(synth.status === "done", "blocked", "Synthesis must complete before resuming work");
       const t = taskById(instance, a.targetTaskId);
       invariant(t.status === "held", "invalid_transition", "Target not held");
+      invariant(action.decision === "rework" || action.decision === "accept_pass",
+        "invalid_decision", "Resume decision must be rework or accept_pass");
       if (action.decision === "accept_pass") invariant(t.lastQc?.verdict === "pass", "invalid_transition", "Cannot accept a failing QC");
       if (action.decision === "rework") invariant(t.qcRounds < instance.definition.maxQcRounds, "budget_exhausted", "QC budget exhausted; explicit budget amendment required");
       t.status = action.decision === "rework" ? "ready" : "passed";
