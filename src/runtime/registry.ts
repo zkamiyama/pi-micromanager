@@ -106,6 +106,14 @@ export class AgentRegistry {
     return this.db.prepare("SELECT "+fields+" FROM execution_runs WHERE project_id=? AND orchestra_workspace_id=?"+
       where+" ORDER BY updated_at DESC LIMIT 200").all(projectId,orchestraWorkspaceId) as unknown as AgentBinding[];
   }
+  /** Includes settled-but-unsealed Runs that the active UI intentionally omits. */
+  hasUnsealedAutomatedRun(p:string,o:string,w:string):boolean{
+    identity(p,"projectId");identity(o,"orchestraWorkspaceId");identity(w,"workflowId");
+    return Boolean(this.db.prepare("SELECT 1 FROM execution_runs WHERE "+
+      "project_id=? AND orchestra_workspace_id=? AND workflow_id=? "+
+      "AND substr(request_id,1,5)='auto:' AND phase NOT IN ('sealed','failed') LIMIT 1")
+      .get(p,o,w));
+  }
   /** Unbounded SQL existence check; never depend on the 200-item UI listing
    * when enforcing workspace leases before reading evidence or writing ADRs. */
   hasUnsealedWorkspace(projectId:string,workspaceId:string):boolean{
