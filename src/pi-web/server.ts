@@ -61,7 +61,9 @@ function plannedRunId(task:TaskState,seat:Seat):string {
 type Fanout={scope:string;send:(payload:JsonValue)=>void};
 const plugin:PiWebServerPlugin={
  apiVersion:3,name:"pi-micromanager",
- requires:[PI_WEB_HOST_PI_SESSIONS_CAPABILITY,PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY,PI_WEB_HOST_WORKSPACES_CAPABILITY],
+ // Pi Durable is the default and needs Workspace authority but no native
+ // hosted Pi session. Native compatibility capabilities are optional.
+ requires:[PI_WEB_HOST_WORKSPACES_CAPABILITY],
  activate(host){
   const store=new WorkflowStore(join(host.dataDirectory,"workflows.sqlite"));
   const agents=new AgentRegistry(join(host.dataDirectory,"agents.sqlite"));
