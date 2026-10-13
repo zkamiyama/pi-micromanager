@@ -421,3 +421,25 @@ test("Human QC intervention arriving during async host verification wins over st
       "Sol planning may continue but cannot void the held QC evidence");
   }finally{x.close();}
 });
+
+test("Audit F11: aborted Sol intervention planner cannot arm its provisional plan",async()=>{
+ const x=setup();
+ try{
+  await x.tick();
+  const w=x.wf();
+  x.store.act("project","orchestra","wf",w.revision,"audit-hold",{
+    type:"request_intervention",interventionId:"audit-hold",targetTaskId:"api",
+    afterQcRunId:"next",instruction:"Investigate before proceeding",
+  });
+  await x.tick();
+  const planner=x.settled("plan-audit-hold",true);
+  x.ledger.recordReport(planner,{kind:"plan",runId:planner.runId,
+    summary:"Provisional plan",agents:[{id:"review",title:"Review",
+      role:"reviewer",model:"test-provider/test-model"}],at:Date.now()});
+  await x.tick();
+  assert.equal(x.status().enabled,false);
+  assert.match(x.status().status,/interrupted/);
+  assert.equal(x.wf().amendments[0].status,"planning");
+  assert.equal(x.run("plan-audit-hold").phase,"settled");
+ }finally{x.close();}
+});
