@@ -1,6 +1,8 @@
 /** Public PI WEB Host API adapter for the deterministic Autopilot engine. */
 import { internalRunId,sessionDisplayName } from "../core/identifiers.js";
 import { randomUUID,createHash } from "node:crypto";
+import {capturePrivateFailure} from "./private-test-diagnostics.js";
+import {productionPolicy} from "../security/policy.js";
 import {boundedFailureDiagnostics} from "./test-diagnostics.js";
 import {requireCleanGit} from "./git.js";
 import {testInvocation,assertTestEnvironment} from "./test-execution.js";
@@ -302,7 +304,13 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
         " stdoutSha256="+createHash("sha256").update(result.stdout).digest("hex")+
         " stderrBytes="+Buffer.byteLength(result.stderr)+
         " stderrSha256="+createHash("sha256").update(result.stderr).digest("hex");
-      const actionable=testsPassed?"":" redactedFailure="+boundedFailureDiagnostics(result.stdout,result.stderr);
+      const diagnosticPolicy=productionPolicy(host.dataDirectory)?.diagnostics;
+      const localRaw=!testsPassed&&diagnosticPolicy?capturePrivateFailure(host.dataDirectory,
+        [binding.projectId,binding.orchestraWorkspaceId,binding.workflowId,binding.runId,after.sha],
+        result.stdout,result.stderr,diagnosticPolicy):undefined;
+      const actionable=testsPassed?"":" redactedFailure="+
+        boundedFailureDiagnostics(result.stdout,result.stderr,diagnosticPolicy)+
+        (localRaw?" privateDiagnostic="+JSON.stringify(localRaw):"");
       return {headSha:after.sha,clean,testsPassed,details:details+actionable};
     },
     onTransition:notify,

@@ -1,13 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {mkdtempSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {createHash} from "node:crypto";
 import {createHostExecutor} from "../dist/automation/host-port.js";
 
 const SHA="a".repeat(40);
 const secret="SECRET_TOKEN_THAT_MUST_NOT_BE_RETAINED";
-test("Host test evidence records output hashes and exit code, not raw potentially secret log text",async()=>{
+test("Host test evidence records output hashes and exit code, not raw potentially secret log text",async(t)=>{
+  const state=mkdtempSync(join(tmpdir(),"mm-host-evidence-"));t.after(()=>rmSync(state,{recursive:true,force:true}));
   const invocations=[];
-  const host={
+  const host={dataDirectory:state,
     lifetimeSignal:new AbortController().signal,
     async execFile(request){
       invocations.push(request);

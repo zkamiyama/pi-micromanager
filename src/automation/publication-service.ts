@@ -100,6 +100,12 @@ export class PublicationManager {
       UNIQUE(scope,workflow_id,task_id,action,qc_run_id));`);
   }
   close():void{this.db.close();}
+  /** A reserved/waiting external operation pins retention even outside UI pages. */
+  hasIncomplete(p:string,o:string,w:string):boolean{
+    this.options.workflows.get(p,o,w);
+    return Boolean(this.db.prepare("SELECT 1 FROM publication_operations WHERE scope=? AND workflow_id=? AND state!='completed' LIMIT 1")
+      .get(automationScope(p,o),w));
+  }
   list(p:string,o:string,w:string):PublishedOperation[]{
     this.options.workflows.get(p,o,w);
     return this.db.prepare("SELECT "+COLS+" FROM publication_operations WHERE scope=?"+

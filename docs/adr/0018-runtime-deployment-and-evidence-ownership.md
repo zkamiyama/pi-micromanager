@@ -144,3 +144,21 @@ certified until actually executed. Existing-account/branch tests do not prove
 separate tenant/credential isolation. A tool refusal is respected, not routed
 around; [current results](../LOCAL_LUNA_ACCEPTANCE_STATUS.md) are partial and
 #91/#92/#38 remain open. The automated API-key CI profile remains unchanged.
+
+## Implemented bounded product controls
+
+The [residual acceptance map](../RESIDUAL_ACCEPTANCE.md) binds the concrete
+production tool/test contract to entrypoints and real integration evidence.
+Storage admission is sampled and fail-closed, not a quota allocator. Derived
+activity retention is digest/revision-bound and records a deletion receipt in
+its own atomic database transaction; missing data is not success evidence.
+External pending operations are checked without browser pagination limits.
+
+Test-output disclosure is host-owned. Raw failure capture is opt-in, bounded and
+private, never a model/browser transcript store, and has no automatic deletion.
+The actual-host/browser harness uses a test-only public-context wrapper while
+keeping the real product engine, tools and transport; faux provider responses
+are explicitly not real-authentication acceptance. The supported local OAuth
+and same-repository publication profiles remain owner-operated and separately
+identified in evidence. #86 target-host and #89 owning-API/physical-reclamation
+requirements are not discharged by these changes or by this scope statement.

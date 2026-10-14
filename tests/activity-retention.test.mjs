@@ -16,13 +16,13 @@ const workflow={id:"flow",title:"A verified API",maxQcRounds:3,
   tasks:[{id:"api",title:"Implement API",kind:"implementation",
     role:"implementer",description:"Implement HTTP API",
     acceptanceCriteria:["HTTP 200 for a valid request"],dependsOn:[]}]};
-function fixture(){
+function fixture(extra={}){
   const dir=mkdtempSync(join(tmpdir(),"mm-retention-"));
   const wf=new WorkflowStore(join(dir,"workflow.sqlite"));
   const agents=new AgentRegistry(join(dir,"agents.sqlite"));
   const ledger=new AutopilotLedger(join(dir,"autopilot.sqlite"));
   const retirement=new ActivityRetention({path:join(dir,"retention.sqlite"),
-    workflows:wf,agents,ledger});
+    workflows:wf,agents,ledger,...extra});
   let state=wf.create("p","o",workflow);
   state=wf.act("p","o","flow",state.revision,"start",{type:"start",taskId:"api"});
   state=wf.act("p","o","flow",state.revision,"finish",{
@@ -139,8 +139,87 @@ test("Unsealed Run activity is never pruned even when its event timestamp is old
     x.agents.record(bound,{kind:"agent_started",text:"Pending",
       at:Date.now()-70*DAY,sequence:1});
     const preview=x.retirement.preview("p","o",30);
-    assert.equal(preview.rowCount,2);
-    x.retirement.confirm("p","o",preview.id);
+    assert.equal(preview,null,"An unresolved sibling Run pins all Workflow activity");
+    assert.equal(x.agents.activities("p","o","pi-qc").length,2);
     assert.equal(x.agents.activities("p","o","pi-unsealed").length,1);
   }finally{x.close();}
+});
+
+test('#88 same-length content modification invalidates the exact retention manifest',()=>{
+ const x=fixture();try{
+  x.integrate();const plan=x.retirement.preview('p','o',30);
+  assert.match(plan.manifestSha256,/^[a-f0-9]{64}$/);
+  const db=new DatabaseSync(join(x.dir,'agents.sqlite'));
+  db.prepare("UPDATE execution_activity SET text='Altered' WHERE text='Started'").run();db.close();
+  assert.throws(()=>x.retirement.confirm('p','o',plan.id),/eligibility changed/);
+  assert.equal(x.agents.activities('p','o','pi-qc').length,2);
+ }finally{x.close();}
+});
+test('#88 an atomic digest recheck refuses a writer between preview validation and DELETE',()=>{
+ const x=fixture();try{
+  x.integrate();const plan=x.retirement.preview('p','o',30),original=x.agents.deleteExpiredActivity.bind(x.agents);
+  x.agents.deleteExpiredActivity=(...args)=>{
+   const db=new DatabaseSync(join(x.dir,'agents.sqlite'));
+   db.prepare("UPDATE execution_activity SET text='Changed' WHERE text='Started'").run();db.close();
+   return original(...args);
+  };
+  assert.throws(()=>x.retirement.confirm('p','o',plan.id),/proof changed/);
+  assert.equal(x.agents.activities('p','o','pi-qc').length,2);
+ }finally{x.close();}
+});
+test('#88 missing rows are not proof that this deletion completed',()=>{
+ const x=fixture();try{
+  x.integrate();const plan=x.retirement.preview('p','o',30),db=new DatabaseSync(join(x.dir,'agents.sqlite'));
+  db.exec('DELETE FROM execution_activity');db.close();
+  assert.throws(()=>x.retirement.confirm('p','o',plan.id),/deletion unproved/);
+  assert.equal(x.agents.activityRetentionCommit('p','o',plan.id),undefined);
+ }finally{x.close();}
+});
+test('#88 interrupted response recovers the atomic deletion receipt on another SQLite connection without replay',()=>{
+ const x=fixture();let recovered;
+ try{
+  x.integrate();const plan=x.retirement.preview('p','o',30),original=x.agents.deleteExpiredActivity.bind(x.agents);let calls=0;
+  x.agents.deleteExpiredActivity=(...args)=>{calls++;original(...args);throw Error('synthetic lost completion');};
+  assert.throws(()=>x.retirement.confirm('p','o',plan.id),/lost completion/);
+  recovered=new ActivityRetention({path:join(x.dir,'retention.sqlite'),workflows:x.wf,agents:x.agents,ledger:x.ledger});
+  const result=recovered.confirm('p','o',plan.id);
+  assert.equal(result.state,'completed');assert.equal(result.deletedRows,2);assert.equal(calls,1);
+  assert.equal(x.agents.activityRetentionCommit('p','o',plan.id).fingerprint,plan.manifestSha256);
+  assert.equal(x.ledger.evidence(x.agents.get('p','o','pi-qc')).ref,x.evidence.ref);
+ }finally{recovered?.close();x.close();}
+});
+test('#88 newly pending external approval or changed Workflow revision invalidates a retention preview',()=>{
+ let pinned=false;const x=fixture({externallyPinned:()=>pinned});
+ try{
+  x.integrate();const plan=x.retirement.preview('p','o',30);pinned=true;
+  assert.equal(x.retirement.preview('p','o',30),null);
+  assert.throws(()=>x.retirement.confirm('p','o',plan.id),/eligibility changed/);
+  assert.equal(x.agents.activities('p','o','pi-qc').length,2);
+ }finally{x.close();}
+});
+
+test('#88 pin queries cover approvals and publication reservations older than the UI page',async()=>{
+ const {PermissionLedger}=await import('../dist/automation/permissions.js');
+ const {PublicationManager}=await import('../dist/automation/publication-service.js');
+ let permissions,publisher;
+ const x=fixture({externallyPinned:(p,o,w)=>permissions.hasPending(p,o,w)||publisher.hasIncomplete(p,o,w)});
+ try{
+  permissions=new PermissionLedger(join(x.dir,'permissions.sqlite'),x.wf,x.ledger);
+  publisher=new PublicationManager({path:join(x.dir,'publication.sqlite'),workflows:x.wf,agents:x.agents,
+   ledger:x.ledger,permissions,host:{lifetimeSignal:new AbortController().signal,execFile:async()=>{throw Error('no external request');}},workspaces:()=>undefined});
+  x.integrate();
+  const approvalDb=new DatabaseSync(join(x.dir,'permissions.sqlite'));
+  const insert=approvalDb.prepare('INSERT INTO workflow_approvals VALUES(?,?,?,?,?,?,?,?,?,?,?,?)');
+  for(let i=0;i<102;i++)insert.run('synthetic-'+i,JSON.stringify(['p','o']),'flow','api','git.push','qc-api-1',sha,'synthetic','mark-'+i,i===0?'pending':'approved',String(i).padStart(4,'0'),String(i));
+  assert.equal(permissions.list('p','o','flow').some(a=>a.state==='pending'),false);
+  assert.equal(permissions.hasPending('p','o','flow'),true);
+  assert.equal(x.retirement.preview('p','o',30),null);
+  approvalDb.exec("UPDATE workflow_approvals SET state='approved'");approvalDb.close();
+  const publicationDb=new DatabaseSync(join(x.dir,'publication.sqlite'));
+  const publish=publicationDb.prepare('INSERT INTO publication_operations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  for(let i=0;i<102;i++)publish.run('op-'+i,JSON.stringify(['p','o']),'flow','api','git.push','qc-'+i,sha,'synthetic','test only','fingerprint-'+i,i===0?'reserved':'completed','',String(i).padStart(4,'0'),String(i));
+  assert.equal(publisher.list('p','o','flow').some(a=>a.state!=='completed'),false);
+  assert.equal(publisher.hasIncomplete('p','o','flow'),true);
+  assert.equal(x.retirement.preview('p','o',30),null);publicationDb.close();
+ }finally{publisher?.close();permissions?.close();x.close();}
 });

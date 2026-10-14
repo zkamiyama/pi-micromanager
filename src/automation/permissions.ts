@@ -68,6 +68,12 @@ export class PermissionLedger {
         UNIQUE(scope,workflow_id,task_id,action,fingerprint));`);
   }
   close():void{this.db.close();}
+  /** Retention must not miss an older approval outside the public 100-row page. */
+  hasPending(p:string,o:string,workflowId:string):boolean{
+    this.workflows.get(p,o,workflowId);
+    return Boolean(this.db.prepare("SELECT 1 FROM workflow_approvals WHERE scope=? AND workflow_id=? AND state='pending' LIMIT 1")
+      .get(automationScope(p,o),workflowId));
+  }
   list(p:string,o:string,workflowId:string):ApprovalRequest[]{
     this.workflows.get(p,o,workflowId);
     return this.db.prepare("SELECT "+ROWS+" FROM workflow_approvals"+
