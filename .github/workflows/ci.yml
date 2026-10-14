@@ -4,19 +4,44 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
         node: ['22', '24']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
+          package-manager-cache: false
       - name: Install verification sandbox
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: npm ci --no-audit --no-fund
       - run: npm run check
+  successful-isolation:
+    # Require real supported namespaces; never weaken AppArmor or use a fallback.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: npm ci --no-audit --no-fund && npm run build
+      - name: Require real successful isolation, not only refusal coverage
+        env:
+          MM_REQUIRE_SANDBOX: '1'
+        run: node --test tests/production-safety.test.mjs tests/production-runtime.test.mjs tests/production-server-integration.test.mjs tests/production-server-isolation.required.mjs tests/offline-backup.test.mjs tests/state-owner-lifetime.test.mjs

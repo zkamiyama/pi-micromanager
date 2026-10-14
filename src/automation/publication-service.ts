@@ -1,0 +1,598 @@
+/** YOLO publication with exact QC SHA, untrusted Pi isolation boundary,
+ * durable no-repeat reservations and optional workflow-scoped approvals.
+ * Only host-owned Git/gh may publish or synchronously merge an exact SHA.
+ * Never force-push, bypass repository protection or delete branches. */
+import {createHash,randomUUID} from "node:crypto";
+import {DatabaseSync} from "node:sqlite";
+import {mkdirSync} from "node:fs";
+import {dirname} from "node:path";
+import type {PiWebHostWorkspacesV1} from "@jmfederico/pi-web/server-plugin-api";
+import type {WorkflowStore} from "../core/store.js";
+import type {WorkflowInstance} from "../core/workflow.js";
+import type {AgentRegistry} from "../runtime/registry.js";
+import type {AutopilotLedger,AutopilotRecord,PublicationConfig} from "./ledger.js";
+import {automationScope} from "./ledger.js";
+import {git,gitValue,requireAncestor,requireCleanGit,type GitHost} from "./git.js";
+import type {PermissionLedger,PublicationTarget} from "./permissions.js";
+import type {PermissionAction} from "../core/permissions.js";
+
+type PublicationAction="git.push"|"github.pr.create"|"github.pr.ready"|"github.pr.merge";
+export interface PublishedOperation {
+  id:string;workflowId:string;taskId:string;action:PublicationAction;
+  qcRunId:string;sha:string;branch:string;destination:string;
+  state:"reserved"|"scheduled"|"waiting"|"completed";result:string;createdAt:string;updatedAt:string;
+}
+interface OperationRow extends PublishedOperation {scope:string;fingerprint:string}
+interface PublicationOptions {
+  path:string;host:GitHost;workflows:WorkflowStore;
+  agents:AgentRegistry;ledger:AutopilotLedger;permissions:PermissionLedger;
+  workspaces():PiWebHostWorkspacesV1|undefined;
+}
+const COLS="id,scope,workflow_id AS workflowId,task_id AS taskId,"+
+  "action,qc_run_id AS qcRunId,sha,branch,destination,"+
+  "fingerprint,state,result,created_at AS createdAt,updated_at AS updatedAt";
+function fingerprint(action:PublicationAction,runId:string,sha:string,branch:string,
+  destination:string):string{
+  return createHash("sha256").update(JSON.stringify(
+    [action,runId,sha,branch,destination])).digest("hex");
+}
+function safeBranch(branch:string):boolean{
+  return /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,118}$/.test(branch)&&
+    !branch.includes("..")&&!branch.includes("//")&&!branch.includes("@{")&&
+    !branch.endsWith(".")&&!branch.endsWith("/")&&!branch.endsWith(".lock");
+}
+function publicRepo(url:string):string{
+  const match=url.trim().match(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)$/);
+  if(!match)throw new Error("Only a verified github.com remote is supported for automatic PR creation");
+  const name=match[2]!.endsWith(".git")?match[2]!.slice(0,-4):match[2]!;
+  if(!name||name==="."||name===".."||match[1]==="."||match[1]==="..")
+    throw new Error("Invalid GitHub repository remote");
+  return match[1]+"/"+name;
+}
+interface PrResult {number:number;url:string;headRefName:string;
+  baseRefName:string;isDraft:boolean;state:string;headRefOid:string}
+interface FinalPrState {
+  number:number;url:string;headRefOid:string;baseRefName:string;
+  isDraft:boolean;state:string;autoMergeRequest:unknown;
+}
+/** A PR-linked Actions run is trustworthy only with an exact head SHA,
+ * repository and PR number. Empty, incomplete, foreign or skipped checks
+ * never authorize a merge. */
+export function evaluatePrActionsRuns(value:unknown,repo:string,pr:number,sha:string):
+  "pass"|"pending"{
+  if(!value||typeof value!=="object"||Array.isArray(value))
+    throw new Error("Malformed GitHub Actions run page");
+  const page=value as Record<string,unknown>;
+  if(!Array.isArray(page.workflow_runs)||!Number.isSafeInteger(page.total_count)||
+    (page.total_count as number)<0||page.workflow_runs.length>10000)
+    throw new Error("Malformed GitHub Actions run list");
+  if((page.total_count as number)>page.workflow_runs.length)return "pending";
+  const matched=page.workflow_runs.filter(row=>{
+    if(!row||typeof row!=="object"||Array.isArray(row))
+      throw new Error("Malformed GitHub Actions run");
+    const run=row as Record<string,unknown>;
+    if(!Array.isArray(run.pull_requests))throw new Error("Missing GitHub PR association");
+    return run.head_sha===sha&&run.event==="pull_request"&&
+      (!run.repository||typeof run.repository==="object"&&
+        (run.repository as {full_name?:unknown}).full_name===repo)&&
+      run.pull_requests.some(link=>link&&typeof link==="object"&&
+        (link as {number?:unknown}).number===pr);
+  }) as Record<string,unknown>[];
+  if(!matched.length)return "pending";
+  if(matched.some(run=>run.status==="completed"&&run.conclusion!=="success"))
+    throw new Error("GitHub PR Actions run did not succeed; no merge permitted");
+  if(matched.some(run=>run.status!=="completed"))return "pending";
+  return "pass";
+}
+export class PublicationManager {
+  private readonly db:DatabaseSync;
+  constructor(private readonly options:PublicationOptions){
+    mkdirSync(dirname(options.path),{recursive:true,mode:0o700});
+    this.db=new DatabaseSync(options.path);
+    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+      CREATE TABLE IF NOT EXISTS publication_operations(
+      id TEXT PRIMARY KEY,scope TEXT NOT NULL,workflow_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,action TEXT NOT NULL,qc_run_id TEXT NOT NULL,
+      sha TEXT NOT NULL,branch TEXT NOT NULL,destination TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,state TEXT NOT NULL,
+      result TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(scope,workflow_id,task_id,action,qc_run_id));`);
+  }
+  close():void{this.db.close();}
+  list(p:string,o:string,w:string):PublishedOperation[]{
+    this.options.workflows.get(p,o,w);
+    return this.db.prepare("SELECT "+COLS+" FROM publication_operations WHERE scope=?"+
+      " AND workflow_id=? ORDER BY created_at DESC LIMIT 100")
+      .all(automationScope(p,o),w) as unknown as PublishedOperation[];
+  }
+  private existing(p:string,o:string,w:string,taskId:string,
+    action:PublicationAction,runId:string):OperationRow|undefined{
+    return this.db.prepare("SELECT "+COLS+" FROM publication_operations"+
+      " WHERE scope=? AND workflow_id=? AND task_id=? AND action=? AND qc_run_id=?")
+      .get(automationScope(p,o),w,taskId,action,runId) as OperationRow|undefined;
+  }
+  private reserve(p:string,o:string,w:string,taskId:string,action:PublicationAction,
+    runId:string,sha:string,branch:string,destination:string):OperationRow{
+    const mark=fingerprint(action,runId,sha,branch,destination);
+    const existing=this.existing(p,o,w,taskId,action,runId);
+    if(existing){
+      if(existing.fingerprint!==mark)
+        throw new Error("Publication target changed after operation reservation; manual reconciliation required");
+      return existing;
+    }
+    const id=randomUUID(),at=new Date().toISOString();
+    this.db.prepare(`INSERT INTO publication_operations
+      (id,scope,workflow_id,task_id,action,qc_run_id,sha,branch,destination,
+      fingerprint,state,result,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,'reserved','',?,?)
+      ON CONFLICT(scope,workflow_id,task_id,action,qc_run_id) DO NOTHING`)
+      .run(id,automationScope(p,o),w,taskId,action,runId,sha,branch,destination,mark,at,at);
+    const row=this.existing(p,o,w,taskId,action,runId);
+    if(!row||row.fingerprint!==mark)
+      throw new Error("Conflicting publication reservation");
+    return row;
+  }
+  private complete(row:OperationRow,result:string):void{
+    if(result.length>500)throw new Error("Publication result exceeds 500 characters");
+    this.db.prepare("UPDATE publication_operations SET state='completed',result=?,updated_at=?"+
+      " WHERE id=? AND state IN ('reserved','scheduled','waiting')")
+      .run(result,new Date().toISOString(),row.id);
+  }
+  private assertAdmitted(record:AutopilotRecord):void{
+    this.options.host.lifetimeSignal.throwIfAborted();
+    const current=this.options.ledger.get(record.projectId,
+      record.orchestraWorkspaceId,record.workflowId);
+    if(!current?.enabled||current.generation!==record.generation||!current.config.publication||
+      JSON.stringify(current.config.publication)!==
+        JSON.stringify(record.config.publication))
+      throw new Error("Autopilot publication is paused or its destination changed");
+  }
+  private async gh(path:string,args:string[]):Promise<string>{
+    const result=await this.options.host.execFile({
+      file:"gh",args,cwd:path,timeoutMs:60000,signal:this.options.host.lifetimeSignal,
+      unsetEnv:["GH_REPO","GH_HOST","GIT_DIR","GIT_WORK_TREE","GIT_INDEX_FILE"],
+    });
+    if(result.signal||result.stdoutTruncated||result.stderrTruncated)
+      throw new Error("GitHub CLI response was interrupted/truncated; publication state is uncertain");
+    if(result.exitCode!==0)
+      throw new Error("GitHub CLI failed: "+result.stderr.slice(-150));
+    return result.stdout.trim();
+  }
+  private async remoteSha(path:string,target:PublicationTarget,branch:string):Promise<string|undefined>{
+    // Never re-resolve a mutable remote alias after authorization.
+    const res=await git(this.options.host,path,
+      ["ls-remote","--heads",target.pushUrl,"refs/heads/"+branch],45000);
+    if(res.exitCode!==0)throw new Error("Cannot inspect Git remote branch: "+res.stderr.slice(-170));
+    const lines=res.stdout.trim().split("\n").filter(Boolean);
+    if(lines.length>1)throw new Error("Ambiguous remote Git branch");
+    if(!lines.length)return;
+    const parts=lines[0]!.split(/\s+/);
+    if(parts.length!==2||parts[1]!=="refs/heads/"+branch||
+      !/^[0-9a-f]{40,64}$/.test(parts[0]!))
+      throw new Error("Invalid remote Git branch identity");
+    return parts[0];
+  }
+  private async pullRequests(path:string,repo:string,branch:string):Promise<PrResult[]>{
+    const response=await this.gh(path,["pr","list","--repo",repo,
+      "--state","all","--head",branch,"--json",
+      "number,url,headRefName,baseRefName,isDraft,state,headRefOid","--limit","20"]);
+    const parsed:unknown=JSON.parse(response);
+    if(!Array.isArray(parsed))throw new Error("Unexpected GitHub PR list");
+    if(parsed.length>20)throw new Error("Ambiguous remote Pull Requests");
+    return parsed.map(v=>{
+      if(!v||typeof v!=="object"||Array.isArray(v))
+        throw new Error("Malformed GitHub PR result");
+      const pr=v as Record<string,unknown>;
+      if(!Number.isSafeInteger(pr.number)||typeof pr.url!=="string"||
+        typeof pr.headRefName!=="string"||typeof pr.baseRefName!=="string"||
+        typeof pr.isDraft!=="boolean"||typeof pr.state!=="string"||
+        typeof pr.headRefOid!=="string")
+        throw new Error("Untrusted GitHub PR result");
+      return pr as unknown as PrResult;
+    }).filter(pr=>pr.headRefName===branch);
+  }
+  private async finalPrState(path:string,repo:string,number:number):Promise<FinalPrState>{
+    const raw=await this.gh(path,["pr","view",String(number),"--repo",repo,
+      "--json","number,url,headRefOid,baseRefName,isDraft,state,autoMergeRequest"]);
+    const p:unknown=JSON.parse(raw);
+    if(!p||typeof p!=="object"||Array.isArray(p))throw new Error("Invalid GitHub PR state");
+    const row=p as Record<string,unknown>;
+    if(row.number!==number||typeof row.url!=="string"||
+      typeof row.headRefOid!=="string"||typeof row.baseRefName!=="string"||
+      typeof row.isDraft!=="boolean"||typeof row.state!=="string"||
+      !Object.hasOwn(row,"autoMergeRequest"))
+      throw new Error("Incomplete GitHub PR merge state");
+    return row as unknown as FinalPrState;
+  }
+  /** Strict fallback for fine-grained gh tokens that may read Actions runs
+   * but lack commit check-rollup GraphQL access. A success is accepted only
+   * for a completed, exact-commit pull_request workflow linked to this PR. */
+  private async prActionsChecks(path:string,repo:string,number:number,sha:string):
+    Promise<"pass"|"pending">{
+    const rows:unknown[]=[];let total:number|undefined;
+    for(let page=1;page<=100;page++){
+      const raw=await this.gh(path,["api","repos/"+repo+"/actions/runs?head_sha="+sha+
+        "&event=pull_request&per_page=100&page="+page]);
+      const parsed:unknown=JSON.parse(raw);
+      if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))
+        throw new Error("Malformed GitHub Actions page");
+      const result=parsed as {total_count?:unknown;workflow_runs?:unknown};
+      if(!Number.isSafeInteger(result.total_count)||(result.total_count as number)<0||
+        (result.total_count as number)>10000||!Array.isArray(result.workflow_runs)||
+        result.workflow_runs.length>100)
+        throw new Error("GitHub Actions result exceeds the explicit 10000-run verification budget or is malformed");
+      if(total!==undefined&&total!==result.total_count)return "pending";
+      total=result.total_count as number;
+      rows.push(...result.workflow_runs);
+      if(rows.length>=total)return evaluatePrActionsRuns({total_count:total,workflow_runs:rows},repo,number,sha);
+      if(!result.workflow_runs.length)throw new Error("Incomplete GitHub Actions pagination");
+    }
+    throw new Error("GitHub Actions pagination exhausted; inspect CI manually");
+  }
+
+  /** Poll exact PR CI without relying on GitHub's optional repository
+   * "Allow auto-merge" setting. Refuse empty, failing or unknown checks.
+   * The PR head is verified again immediately before merge. */
+  private async prChecks(path:string,repo:string,number:number,sha:string):Promise<"pass"|"pending">{
+    const result=await this.options.host.execFile({
+      file:"gh",args:["pr","checks",String(number),"--repo",repo,
+        "--json","name,bucket"],
+      cwd:path,timeoutMs:45000,signal:this.options.host.lifetimeSignal,
+      unsetEnv:["GH_REPO","GH_HOST","GIT_DIR","GIT_WORK_TREE","GIT_INDEX_FILE"],
+    });
+    // GitHub fine-grained tokens can have Actions read but no GraphQL
+    // statusCheckRollup scope. Never infer success from this denial.
+    if(result.exitCode!==0&&
+      /Resource not accessible by personal access token/i.test(result.stderr))
+      return this.prActionsChecks(path,repo,number,sha);
+    if(result.signal||result.stdoutTruncated||result.stderrTruncated||
+      ![0,1,8].includes(result.exitCode??-1))
+      throw new Error("Cannot verify GitHub PR checks; CI state is uncertain");
+    let raw:unknown;
+    try{raw=JSON.parse(result.stdout);}catch{
+      throw new Error("GitHub PR checks did not return valid JSON");
+    }
+    if(!Array.isArray(raw)||raw.length>200)
+      throw new Error("Invalid GitHub PR checks result");
+    let passed=0,waiting=false;
+    for(const item of raw){
+      if(!item||typeof item!=="object"||Array.isArray(item)||
+        typeof (item as Record<string,unknown>).name!=="string"||
+        typeof (item as Record<string,unknown>).bucket!=="string")
+        throw new Error("Malformed GitHub PR check");
+      const bucket=(item as {bucket:string}).bucket;
+      if(bucket==="fail"||bucket==="cancel")
+        throw new Error("GitHub PR checks failed or cancelled; no merge permitted");
+      if(bucket==="pass")passed++;
+      else if(bucket==="pending")waiting=true;
+      else if(bucket!=="skipping")throw new Error("Unknown GitHub PR CI status");
+    }
+    if(raw.length===0||passed===0||waiting)return "pending";
+    return "pass";
+  }
+  private async completeFinalPR(record:AutopilotRecord,taskId:string,
+    qcRunId:string,sha:string,path:string,branch:string,repo:string,
+    destination:string,target:PublicationTarget):Promise<"acted"|"waiting"|"scheduled"|"checks_pending"|"none">{
+    const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
+    const pub=record.config.publication!;
+
+    const prs=await this.pullRequests(path,repo,branch);
+    if(prs.length!==1||prs[0]?.headRefOid!==sha||
+      prs[0]?.baseRefName!==pub.baseBranch||
+      !["OPEN","MERGED"].includes(prs[0]!.state))
+      throw new Error("Final PR branch/base/head changed or is missing");
+    const number=prs[0]!.number;
+    const inspected=await this.finalPrState(path,repo,number);
+    if(inspected.headRefOid!==sha||inspected.baseRefName!==pub.baseBranch||
+      inspected.url!==prs[0]!.url)
+      throw new Error("Final GitHub PR identity changed");
+    const ready=this.existing(p,o,w,taskId,"github.pr.ready",qcRunId);
+    const merge=this.existing(p,o,w,taskId,"github.pr.merge",qcRunId);
+    if(inspected.state==="MERGED"){
+      const merged=this.reserve(p,o,w,taskId,"github.pr.merge",
+        qcRunId,sha,branch,destination);
+      if(merged.state!=="completed")this.complete(merged,inspected.url);
+      // Actual GitHub MERGED state, not a scheduled autoMergeRequest,
+      // is the only proof that permits the final DAG integration transition.
+      const current=this.options.workflows.get(p,o,w);
+      const finalTask=current.tasks[taskId];
+      if(finalTask?.status==="passed"||finalTask?.status==="integrated"&&
+        Object.values(current.tasks).some(t=>t.spec.kind==="implementation"&&t.status!=="integrated")){
+        this.options.workflows.act(p,o,w,current.revision,
+          "auto:remote-merge:"+qcRunId,
+          {type:"final_merge_confirmed",taskId,headSha:sha,prUrl:inspected.url});
+        return "acted";
+      }
+      if(finalTask?.status!=="integrated")
+        throw new Error("Final Workflow Task was changed after GitHub merged");
+      return merge?.state==="completed"?"none":"acted";
+    }
+    if(inspected.state!=="OPEN")
+      throw new Error("PR is closed or no longer eligible for automatic merge");
+    if(inspected.autoMergeRequest!==null){
+      // Adopt no externally scheduled mutation as proof. Retire only a
+      // reservation owned by this publisher, then use exact synchronous merge.
+      if(!merge)throw new Error("Externally scheduled auto-merge must be cancelled/reviewed explicitly");
+      await this.cancelScheduled(record);
+      return "acted";
+    }
+    if(!record.config.finalization?.autoMerge)return "waiting";
+    const approval=this.options.permissions.ensure(p,o,w,taskId,
+      "github.pr.merge",qcRunId,sha,pub,target);
+    if(approval.decision!=="allow")return "waiting";
+    if(inspected.isDraft){
+      if(ready)throw new Error("Uncertain PR ready promotion; inspect GitHub rather than replaying");
+      // No ready-to-review transition is allowed until merge policy consent.
+      const receipt=this.reserve(p,o,w,taskId,"github.pr.ready",
+        qcRunId,sha,branch,destination);
+      this.assertAdmitted(record);
+      if(this.options.agents.hasUnsealedWorkspace(p,
+        record.config.finalization!.workspaceId)||
+        await requireCleanGit(this.options.host,path)!==sha||
+        await this.remoteSha(path,target,branch)!==sha)
+        throw new Error("Final PR source changed before Ready transition");
+      this.assertAdmitted(record);
+      await this.gh(path,["pr","ready",String(number),"--repo",repo]);
+      const after=await this.finalPrState(path,repo,number);
+      if(after.isDraft||after.headRefOid!==sha||after.baseRefName!==pub.baseBranch)
+        throw new Error("GitHub did not prove matching PR is ready");
+      this.complete(receipt,after.url);
+      return "acted";
+    }
+    if(!ready){
+      const recovered=this.reserve(p,o,w,taskId,"github.pr.ready",
+        qcRunId,sha,branch,destination);
+      this.complete(recovered,inspected.url);
+      return "acted";
+    }
+    if(ready.state==="reserved"){
+      this.complete(ready,inspected.url);
+      return "acted";
+    }
+    if(merge&&merge.state!=="waiting")
+      throw new Error("Merge response is uncertain: inspect exact GitHub state before another attempt");
+    if(await this.prChecks(path,repo,number,sha)!=="pass")
+      return "checks_pending";
+    // A genuine passing GitHub CI run is mandatory, even if the repository
+    // has no required checks or Allow auto-merge is disabled.
+    const receipt=this.reserve(p,o,w,taskId,"github.pr.merge",
+      qcRunId,sha,branch,destination);
+    this.assertAdmitted(record);
+    if(this.options.agents.hasUnsealedWorkspace(p,
+      record.config.finalization.workspaceId)||
+      await requireCleanGit(this.options.host,path)!==sha||
+      await this.remoteSha(path,target,branch)!==sha)
+      throw new Error("Final PR source was modified before scheduling merge");
+    // Synchronous REST merge pins the exact SHA and never creates a future
+    // auto-merge/merge-queue authorization. Repository protection still applies.
+    this.assertAdmitted(record);
+    this.db.prepare("UPDATE publication_operations SET state='reserved',updated_at=? WHERE id=? AND state='waiting'")
+      .run(new Date().toISOString(),receipt.id);
+    const result=await this.options.host.execFile({
+      file:"gh",args:["api","--method","PUT","repos/"+repo+"/pulls/"+number+"/merge",
+        "--include","-f","sha="+sha,"-f","merge_method=merge"],
+      cwd:path,timeoutMs:60000,signal:this.options.host.lifetimeSignal,
+      unsetEnv:["GH_REPO","GH_HOST","GIT_DIR","GIT_WORK_TREE","GIT_INDEX_FILE"],
+    });
+    if(result.signal||result.stdoutTruncated||result.stderrTruncated)
+      throw new Error("GitHub merge response is uncertain; no blind replay permitted");
+    const status=result.stdout.match(/^HTTP\/[0-9.]+\s+([0-9]{3})\b/m)?.[1];
+    if(status==="405"){
+      // A definite refusal has made no merge. Keep polling the same immutable
+      // subject after required checks/reviews, not an irreversible reservation.
+      this.db.prepare("UPDATE publication_operations SET state='waiting',result=?,updated_at=? WHERE id=?")
+        .run(inspected.url,new Date().toISOString(),receipt.id);
+      return "checks_pending";
+    }
+    if(result.exitCode!==0||status!=="200")
+      throw new Error("GitHub exact-SHA merge was not confirmed (HTTP "+(status??"unknown")+"); inspect before retry");
+    const body=result.stdout.split(/\r?\n\r?\n/).slice(1).join("\n\n");
+    const response:unknown=JSON.parse(body);
+    if(!response||typeof response!=="object"||(response as {merged?:unknown}).merged!==true)
+      throw new Error("GitHub did not confirm an exact-SHA synchronous merge");
+    const after=await this.finalPrState(path,repo,number);
+    if(after.headRefOid!==sha||after.baseRefName!==pub.baseBranch)
+      throw new Error("Final PR moved during automatic merge");
+    if(after.state==="MERGED"){
+      this.complete(receipt,after.url);
+      return "acted";
+    }
+    throw new Error("GitHub merge result is uncertain; inspect MERGED before another attempt");
+  }
+  /** Operator Pause also retires legacy owned native auto-merge reservations.
+   * New executions never schedule one. Failure is reported, not called cancelled.
+   */
+  async cancelScheduled(record:AutopilotRecord):Promise<void>{
+    const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
+    const rows=this.db.prepare("SELECT "+COLS+" FROM publication_operations WHERE scope=? AND workflow_id=? "+
+      "AND action='github.pr.merge' AND state IN ('reserved','scheduled')")
+      .all(automationScope(p,o),w) as unknown as OperationRow[];
+    for(const row of rows){
+      const workspaceId=record.config.finalization?.workspaceId??record.config.workspaces[row.taskId];
+      if(!workspaceId)throw new Error("Cannot cancel legacy merge without its original Workspace");
+      const authority=await this.options.workspaces()?.resolve({projectId:p,workspaceId});
+      if(!authority||authority.project.id!==p||authority.workspace.id!==workspaceId||authority.workspace.projectId!==p)
+        throw new Error("Legacy merge cancellation Workspace authority mismatch");
+      const repo=row.destination.split(" ")[0]!;
+      if(!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repo))throw new Error("Invalid saved merge repository");
+      const prs=await this.pullRequests(authority.workspace.path,repo,row.branch);
+      if(prs.length!==1)throw new Error("Cannot identify exact owned legacy merge PR");
+      const pr=await this.finalPrState(authority.workspace.path,repo,prs[0]!.number);
+      if(pr.state==="MERGED")continue; // observation/normal finalization will seal it later
+      if(pr.autoMergeRequest!==null){
+        await this.gh(authority.workspace.path,["pr","merge",String(pr.number),"--repo",repo,"--disable-auto"]);
+        const after=await this.finalPrState(authority.workspace.path,repo,pr.number);
+        if(after.autoMergeRequest!==null)throw new Error("Legacy GitHub auto-merge cancellation was not confirmed");
+        this.db.prepare("UPDATE publication_operations SET state='waiting',result=?,updated_at=? WHERE id=?")
+          .run(pr.url,new Date().toISOString(),row.id);
+      }else if(row.state==="scheduled"){
+        this.db.prepare("UPDATE publication_operations SET state='waiting',updated_at=? WHERE id=?")
+          .run(new Date().toISOString(),row.id);
+      }
+    }
+  }
+  /** At most one external side effect per tick, after all QC/permission gates. */
+  async step(record:AutopilotRecord,workflow:WorkflowInstance):Promise<"acted"|"waiting"|"scheduled"|"checks_pending"|"none">{
+    try{return await this.stepAdmitted(record,workflow);}
+    catch(error){
+      try{await this.cancelScheduled(record);}catch(cancelError){
+        throw new Error(String(error)+"; legacy cancellation also requires attention: "+String(cancelError));
+      }
+      throw error;
+    }
+  }
+  private async stepAdmitted(record:AutopilotRecord,workflow:WorkflowInstance):Promise<"acted"|"waiting"|"scheduled"|"checks_pending"|"none">{
+    const pub=record.config.publication;
+    if(!pub)return "none"; // historical configs do not unexpectedly start network actions
+    this.assertAdmitted(record);
+    const p=record.projectId,o=record.orchestraWorkspaceId,w=record.workflowId;
+    for(const task of Object.values(workflow.tasks)){
+      if(record.config.finalization&&
+        task.spec.systemPurpose!=="final-integration")continue;
+      if(task.spec.kind!=="implementation"||
+        !["passed","integrated"].includes(task.status)||task.lastQc?.verdict!=="pass")continue;
+      const qc=task.lastQc,session=this.options.agents.getRun(p,o,w,qc.runId);
+      if(!session||session.taskId!==task.spec.id||session.phase!=="sealed"||
+        session.seat!=="qc"||!session.evidenceRef||!session.sessionId||
+        !session.requestId.startsWith("auto:"))
+        throw new Error("Cannot publish without sealed automatic QC evidence");
+      const evidence=this.options.ledger.evidence(session);
+      if(!evidence||evidence.ref!==session.evidenceRef||evidence.sessionId!==session.sessionId)
+        throw new Error("QC evidence mismatch at publication");
+      const workspaceId=task.spec.systemPurpose==="final-integration"?
+        record.config.finalization?.workspaceId:record.config.workspaces[task.spec.id];
+      if(!workspaceId)throw new Error("Missing implementation workspace for publication");
+      if(this.options.agents.hasUnsealedWorkspace(p,workspaceId))
+        throw new Error("Implementation workspace is still leased by an active Run");
+      const api=this.options.workspaces();
+      if(!api)throw new Error("PI WEB Workspaces capability is unavailable");
+      const authority=await api.resolve({projectId:p,workspaceId});
+      const target=authority.workspace;
+      if(authority.project.id!==p||target.projectId!==p||target.id!==workspaceId||
+        target.isMain||target.provider?.metadata?.isGitWorktree!==true)
+        throw new Error("Publication Workspace authority changed");
+      const sha=await requireCleanGit(this.options.host,target.path);
+      if(sha!==qc.headSha)throw new Error("Publication source Git HEAD differs from QC-pass commit");
+      if(task.spec.systemPurpose==="final-integration"){
+        for(const source of Object.values(workflow.tasks)){
+          if(source.spec.kind!=="implementation"||
+            source.spec.systemPurpose==="final-integration")continue;
+          if(!["passed","integrated"].includes(source.status)||
+            source.lastQc?.verdict!=="pass")
+            throw new Error("Final publish source Task has no QC PASS");
+          await requireAncestor(this.options.host,target.path,
+            source.lastQc.headSha,sha);
+        }
+      }
+      const branch=await gitValue(this.options.host,target.path,
+        ["symbolic-ref","--quiet","--short","HEAD"]);
+      if(!safeBranch(branch)||branch===pub.baseBranch||
+        /^(main|master|develop|production|stable|release)(\/|$)/i.test(branch))
+        throw new Error("Refusing to publish to a protected or invalid Git branch");
+      const url=await gitValue(this.options.host,target.path,["remote","get-url",pub.remote]);
+      const fetchRepo=publicRepo(url);
+      const destinations=(await gitValue(this.options.host,target.path,
+        ["remote","get-url","--push","--all",pub.remote])).split("\n").filter(Boolean);
+      if(destinations.length!==1)
+        throw new Error("Publication requires exactly one effective Git push URL");
+      const pushUrl=destinations[0]!;
+      const repo=publicRepo(pushUrl);
+      if(repo!==fetchRepo)
+        throw new Error("Git fetch and push repositories differ; reconcile destination explicitly");
+      const publicationTarget:PublicationTarget={repository:repo,sourceBranch:branch,pushUrl};
+      const dest=repo+" "+pub.remote+" "+pub.baseBranch;
+      if(this.options.agents.hasUnsealedWorkspace(p,workspaceId))
+        throw new Error("Worker lease changed during Git publication preflight");
+      const donePush=this.existing(p,o,w,task.spec.id,"git.push",qc.runId);
+      if(donePush&&donePush.fingerprint!==fingerprint("git.push",
+        qc.runId,sha,branch,dest))
+        throw new Error("Git publication destination changed after reservation");
+      if(!donePush||donePush.state!=="completed"){
+        const approval=this.options.permissions.ensure(p,o,w,task.spec.id,
+          "git.push",qc.runId,qc.headSha,pub,publicationTarget);
+        if(approval.decision==="deny")continue;
+        if(approval.decision==="ask")return "waiting";
+        const remote=await this.remoteSha(target.path,publicationTarget,branch);
+        if(remote&&remote!==sha)
+          throw new Error("Remote branch has a different commit; never force push");
+        if(remote===sha){
+          const receipt=this.reserve(p,o,w,task.spec.id,"git.push",
+            qc.runId,sha,branch,dest);
+          if(receipt.state!=="completed")
+            this.complete(receipt,"Remote matches QC commit "+sha);
+          return "acted";
+        }
+        if(donePush)
+          throw new Error("Reserved Git push is uncertain; remote does not contain expected QC SHA");
+        const receipt=this.reserve(p,o,w,task.spec.id,"git.push",qc.runId,sha,branch,dest);
+        if(receipt.state==="reserved"){
+          this.assertAdmitted(record);
+          if(this.options.agents.hasUnsealedWorkspace(p,workspaceId)||
+            await requireCleanGit(this.options.host,target.path)!==sha)
+            throw new Error("Publication Git checkout changed immediately before push");
+          // Recheck pause after the last awaited preflight; pin the URL and source SHA.
+          this.assertAdmitted(record);
+          const pushed=await git(this.options.host,target.path,
+            ["push","--porcelain",publicationTarget.pushUrl,
+              sha+":refs/heads/"+branch],120000);
+          if(pushed.exitCode!==0)
+            throw new Error("Git push not confirmed; inspect remote before any retry");
+          const confirmed=await this.remoteSha(target.path,publicationTarget,branch);
+          if(confirmed!==sha)throw new Error("Git remote did not confirm QC SHA after push");
+          this.complete(receipt,"Remote HEAD="+sha);
+        }
+        return "acted";
+      }
+      const previous=this.existing(p,o,w,task.spec.id,"github.pr.create",qc.runId);
+      if(previous&&previous.fingerprint!==fingerprint("github.pr.create",qc.runId,sha,branch,dest))
+        throw new Error("GitHub PR target changed after reservation");
+      if(previous?.state==="completed"){
+        if(task.spec.systemPurpose==="final-integration"&&record.config.finalization)
+          return this.completeFinalPR(record,task.spec.id,qc.runId,sha,
+            target.path,branch,repo,dest,publicationTarget);
+        continue;
+      }
+      const approval=this.options.permissions.ensure(p,o,w,task.spec.id,
+        "github.pr.create",qc.runId,qc.headSha,pub,publicationTarget);
+      if(approval.decision==="deny")continue;
+      if(approval.decision==="ask")return "waiting";
+      // An existing identical Draft PR is proof even if the previous gh call
+      // returned uncertain. A missing PR after reservation needs a human.
+      const prList=await this.pullRequests(target.path,repo,branch);
+      const match=prList.find(pr=>pr.state==="OPEN"&&pr.baseRefName===pub.baseBranch&&
+        pr.headRefOid===sha);
+      if(prList.length&&(!match||prList.length!==1))
+        throw new Error("A different or closed PR already uses the source branch");
+      if(match){
+        const receipt=this.reserve(p,o,w,task.spec.id,"github.pr.create",
+          qc.runId,sha,branch,dest);
+        this.complete(receipt,match.url);
+        return "acted";
+      }
+      const receipt=this.reserve(p,o,w,task.spec.id,"github.pr.create",
+        qc.runId,sha,branch,dest);
+      if(previous)throw new Error("Reserved PR creation is uncertain; inspect GitHub before retry");
+      this.assertAdmitted(record);
+      if(this.options.agents.hasUnsealedWorkspace(p,workspaceId)||
+        await requireCleanGit(this.options.host,target.path)!==sha||
+        await this.remoteSha(target.path,publicationTarget,branch)!==sha)
+        throw new Error("Publication source/remote changed before Draft PR creation");
+      const title=(task.spec.title||task.spec.id).slice(0,180);
+      const body="Autonomous Draft PR for Workflow "+w+", Task "+task.spec.id+
+        ".\nQC Run "+qc.runId+" PASS at "+sha+".\nEvidence: "+evidence.ref+
+        ".\nHuman review and merge policy remain authoritative.";
+      this.assertAdmitted(record);
+      await this.gh(target.path,["pr","create","--repo",repo,
+        "--head",branch,"--base",pub.baseBranch,"--draft",
+        "--title",title,"--body",body]);
+      const checked=await this.pullRequests(target.path,repo,branch);
+      const created=checked.find(pr=>pr.state==="OPEN"&&pr.baseRefName===pub.baseBranch&&
+        pr.headRefOid===sha&&pr.isDraft);
+      if(!created)throw new Error("GitHub did not confirm matching Draft PR after creation");
+      this.complete(receipt,created.url);
+      return "acted";
+    }
+    return "none";
+  }
+}
