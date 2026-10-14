@@ -19,7 +19,11 @@ export function assertWorkspaceBoundary(policy:ProductionPolicy,project:string,
   const selected=realpathSync(project);
   if(!isWithin(selected,canonical)&&!managed)
     throw new Error("Workspace is outside its selected project or exact managed Worktree root");
-  if(policy.projectRoots.some(root=>root!==selected&&isWithin(selected,root)&&isWithin(root,canonical)))
-    throw new Error("Workspace belongs to a different authorized project");
+  // Refuse both entry into another allowlisted project and a Workspace
+  // enclosing another project. Outer Workspaces could otherwise inspect or
+  // modify the nested project's files while using an authorized parent ID.
+  if(policy.projectRoots.some(root=>root!==selected&&
+    (isWithin(root,canonical)||isWithin(canonical,root))))
+    throw new Error("Workspace overlaps a different authorized project");
   return canonical;
 }

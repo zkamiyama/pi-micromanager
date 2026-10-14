@@ -34,7 +34,7 @@ function runGit(root,...args){
 }
 function fixture(options={}){
   const temp=mkdtempSync(join(tmpdir(),'mm-production-server-'));
-  const project=join(temp,'project'),other=join(temp,'other');
+  const project=join(temp,'project'),other=options.nestedOther?join(project,'foreign-project'):join(temp,'other');
   const state=options.stateNested?join(project,'private-state'):join(temp,'state');
   const packageRoot=options.packageNested?join(project,'package'):join(temp,'package');
   for(const dir of [project,other,packageRoot])mkdirSync(dir,{recursive:true,mode:0o700});
@@ -118,8 +118,9 @@ function fixture(options={}){
 }
 
 test('#79 public server: reject state ancestor, package overlap, foreign project and symlink',async()=>{
-  for(const mode of ['state-ancestor','package-ancestor','foreign','symlink']){
-    const x=fixture({stateNested:mode==='state-ancestor',packageNested:mode==='package-ancestor'});
+  for(const mode of ['state-ancestor','package-ancestor','foreign','contains-foreign','symlink']){
+    const x=fixture({stateNested:mode==='state-ancestor',packageNested:mode==='package-ancestor',
+      nestedOther:mode==='contains-foreign'});
     try{
       await x.activate();
       if(mode==='foreign')x.setWorkspace(x.other);
@@ -130,7 +131,7 @@ test('#79 public server: reject state ancestor, package overlap, foreign project
       await x.peer('auto.configure',{workflowId:'wf',config:configuration});
       if(mode==='state-ancestor'||mode==='package-ancestor')x.setWorkspace(x.project);
       await assert.rejects(x.peer('auto.worktree.preview',{workflowId:'wf',taskId:'task'}),
-        /overlaps|selected project|canonical|outside/i,mode);
+        /overlaps|selected project|canonical|outside|different authorized/i,mode);
     }finally{await x.close();}
   }
 });
