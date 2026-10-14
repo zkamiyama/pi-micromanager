@@ -84,3 +84,23 @@ real successful test-branch operations. Rehearsal uses faux/local-bare transport
 and is not real-provider or real-remote certification. A stopped parent or a
 kernel-blocked child is not a joined process tree. The runner retains test state
 on uncertain shutdown instead of silently claiming cleanup.
+
+## Additional bounded production controls
+
+The [residual acceptance map](docs/RESIDUAL_ACCEPTANCE.md) documents the supported
+execution backend, actual hosted/browser test boundaries, source discovery,
+capacity admission and exact own-activity retention. Host-owned `storage` limits
+block new work on exhausted or unproved capacity; `security.capacity` remains a
+read-only inspection endpoint. Existing uncertain work is never cleared to free
+capacity. These sampled metadata limits do not replace hard filesystem/cgroup quotas.
+
+Production failure diagnostics expose only explicitly allowlisted test labels and
+fixed compiler codes. Optional private raw capture is **disabled by default**,
+count/byte bounded, owner-only and never model/browser readable. Enabling it requires
+an operator decision about sensitive logs, backups and keep-until-reviewed retention.
+The activity GC does not delete these private failure files or native Pi data.
+
+The hosted-browser CI uses only scripted faux responses and no account credentials
+or remote publication. Real OAuth and same-repository publication are separate,
+explicitly authorized local acceptance modes. Success never certifies deployment
+TLS, tenant separation, provider budgets, hard quotas, or independent security review.

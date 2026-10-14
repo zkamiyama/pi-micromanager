@@ -132,3 +132,28 @@ test('#92 rehearsal remote initializes correctly from a shallow CI checkout with
   assert.equal(git(root,['--git-dir='+bare,'rev-parse','refs/heads/'+trial.head]),next);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
+
+import {processIdentity,descendants} from '../scripts/hosted-e2e-processes.mjs';
+test('#92 process inspection failure is unknown, not proof of exit or permission to signal',()=>{
+ const denied=()=>{throw Object.assign(new Error('synthetic-private-inspection-error'),{code:'EACCES'});};
+ const absent=()=>{throw Object.assign(new Error('gone'),{code:'ENOENT'});};
+ assert.equal(processIdentity(999999,absent),undefined);
+ assert.throws(()=>processIdentity(999999,denied),/^Error: process-inspection-unproved$/);
+ assert.throws(()=>processIdentity(999999,()=> 'incomplete stat'),/process-inspection-unproved/);
+ const recorded={pid:999999,start:'123',state:'S'},signals=[];
+ assert.equal(isStillRunning(recorded,denied),true,'Unknown inspection pins temporary state');
+ signalRecorded([recorded],'SIGKILL',denied,(...args)=>signals.push(args));
+ assert.equal(signals.length,0,'An unreadable identity may belong to a reused PID');
+});
+test('#92 descendant enumeration cannot silently discard permission failures',()=>{
+ const identity=pid=>({pid,start:String(pid),state:'S'});
+ const denied=()=>{throw Object.assign(new Error('no permission'),{code:'EPERM'});};
+ assert.throws(()=>descendants(1,{identity,tasks:denied,children:()=>''}),/process-inspection-unproved/);
+ assert.throws(()=>descendants(1,{identity,tasks:()=>['1'],children:denied}),/process-inspection-unproved/);
+ const gone=()=>{throw Object.assign(new Error('exited task'),{code:'ENOENT'});};
+ assert.equal(descendants(1,{identity,tasks:()=>['1'],children:gone}).size,0);
+});
+test('#92 bounded process inventory exhaustion is unproved rather than a truncated success',()=>{
+ const system={identity:pid=>({pid,start:String(pid),state:'S'}),tasks:()=>['1'],children:pid=>String(pid+1)};
+ assert.throws(()=>descendants(1,system),/process-inspection-unproved/);
+});

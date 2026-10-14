@@ -258,6 +258,10 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       });
       if(ctl.signal.aborted||lifetime.aborted){channel.close();return}
       s.channel=channel;s.listening=true;s.loadStatus="Listening for actual Pi session activity.";
+      // Public peer channels do not replay startup events. Re-read after the
+      // subscription is established, so a Run admitted between the preceding
+      // list request and channel-open acknowledgement cannot vanish from UI.
+      void load(ctx);
       const connectedAt=Date.now();
       void channel.closed.then(()=>{
         if(s.channel!==channel)return;

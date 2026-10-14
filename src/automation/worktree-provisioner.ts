@@ -11,6 +11,9 @@ import {managedBranch} from "../core/identifiers.js";
 import {automationScope} from "./ledger.js";
 import {git,requireCleanGit,type GitHost} from "./git.js";
 
+import {productionPolicy} from "../security/policy.js";
+import {assertStorageAdmission} from "../security/storage-admission.js";
+
 export type WorktreeStage="prepared"|"reserved"|"created";
 export interface WorktreePlan {
   id:string;workflowId:string;taskId:string;repoRoot:string;path:string;
@@ -202,6 +205,8 @@ export class ManagedWorktreeProvisioner {
     // Persist reservation BEFORE the non-atomic native Git action. Never
     // repeat git worktree add after uncertain completion or a restart.
     assertAdmitted?.();
+    const capacityPolicy=productionPolicy(this.options.dataDirectory);
+    if(capacityPolicy)assertStorageAdmission(this.options.dataDirectory,capacityPolicy.storage);
     const reserved=this.db.prepare("UPDATE worktree_plans SET stage='reserved'"+
       " WHERE id=? AND stage='prepared'").run(id);
     if(reserved.changes!==1)throw new Error("Concurrent provisioning reservation; inspect state");

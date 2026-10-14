@@ -12,13 +12,22 @@ export function installRehearsalModels(fixture){
   const prompt=messages.filter(m=>m.role==='user').map(m=>text(m.content)).find(s=>s.includes('Task ID:'))??'';
   const task=prompt.match(/Task ID: ([a-z0-9-]+)/)?.[1];
   const qc=prompt.includes('READ-ONLY QC session');
+  // Pi providers receive TranscriptContext: tool declarations live on system
+  // messages as toolsAdded/toolsRemoved, not legacy context.tools.
+  const available=new Set();
+  for(const message of messages){
+   if(message.role!=='system')continue;
+   for(const tool of message.toolsRemoved??[])available.delete(tool.name);
+   for(const tool of message.toolsAdded??[])available.add(tool.name);
+  }
   const calls=messages.filter(m=>m.role==='assistant').flatMap(m=>Array.isArray(m.content)?m.content.filter(c=>c.type==='toolCall'):[]);
   const called=name=>calls.filter(c=>c.name===name);
   const invoke=(name,args)=>fauxAssistantMessage([fauxToolCall(name,args,{id:'rehearsal-'+state.callCount})],{stopReason:'toolUse'});
   if(!task)throw Error('Synthetic prompt lacks the bound Task identity');
   if(qc){
    const ids=task==='mm-final-integration'?['a','b']:[task];
-   if(task==='mm-final-integration'&&context.tools?.some(t=>t.name==='mm_final_qc_contract')){
+   if(task==='mm-final-integration'){
+    if(!available.has('mm_final_qc_contract'))throw Error('Final QC contract tool was not advertised by the host');
     for(let i=0;i<ids.length;i++)if(!called('mm_final_qc_contract').some(c=>c.arguments.index===i))
       return invoke('mm_final_qc_contract',{index:i});
    }

@@ -46,7 +46,24 @@ jobs:
       - name: Require real successful isolation, not only refusal coverage
         env:
           MM_REQUIRE_SANDBOX: '1'
-        run: node --test tests/production-safety.test.mjs tests/production-runtime.test.mjs tests/production-server-integration.test.mjs tests/production-server-isolation.required.mjs tests/offline-backup.test.mjs tests/state-owner-lifetime.test.mjs
+        run: node --test tests/production-safety.test.mjs tests/production-runtime.test.mjs tests/production-server-integration.test.mjs tests/production-server-isolation.required.mjs tests/offline-backup.test.mjs tests/state-owner-lifetime.test.mjs tests/production-search.required.mjs tests/production-diagnostics.required.mjs
+  hosted-browser:
+    # Credential-free actual host/browser/runtime only; never load local OAuth.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: npm ci --no-audit --no-fund && npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Four real hosted Runs, UI steer, QC, intervention and restart
+        run: npm run test:e2e:hosted-quartet -- --mode faux
   hosted-acceptance-rehearsal:
     # Actual PI WEB/browser/Bubblewrap. Model and remote transport are explicitly
     # simulated; this job has no OAuth/provider or repository-write credentials.

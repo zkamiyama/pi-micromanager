@@ -10,10 +10,10 @@ export interface HostResult {exitCode:number|null;signal:string|null;stdout:stri
  * before the underlying host accepts a side effect. It supplements, not replaces,
  * the caller's Workflow/SHA/permission checks. */
 export function guardedHostExecution(exec:(request:HostRequest)=>Promise<HostResult>,policy?:ProductionPolicy,
-  captureFence?:()=>()=>void){
+  captureFence?:(request:HostRequest)=>()=>void){
   return async(request:HostRequest):Promise<HostResult>=>{
     request.signal.throwIfAborted();
-    const fence=captureFence?.();
+    const fence=captureFence?.(request);
     const admitted=()=>{request.signal.throwIfAborted();fence?.();};
     if(policy&&request.file==="/usr/bin/bwrap"){
       const args=request.args??[],split=args.indexOf("--");

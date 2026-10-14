@@ -82,6 +82,7 @@ export function durableActivity(event:AgentEvent,text:string,sequence:number):{e
 export async function createDurableModels(authPath?:string):Promise<Models>{
   return ModelRuntime.create({allowModelNetwork:false,refreshOnCreate:false,...(authPath?{authPath,modelsPath:null}:{})});
 }
+import {assertStorageAdmission} from "../security/storage-admission.js";
 export class DurableRunHost {
   private modelsPromise:Promise<Models>|undefined;
   private readonly active=new Map<string,Active>();
@@ -340,6 +341,8 @@ export class DurableRunHost {
   }
   async launch(spec:DurableLaunch):Promise<AgentBinding>{
     this.assertLive();
+    const capacityPolicy=productionPolicy(this.options.dataDirectory);
+    if(capacityPolicy)assertStorageAdmission(this.options.dataDirectory,capacityPolicy.storage);
     const r=spec.reservation,key=sessionHash(r);
     if(this.closing)throw new Error("Durable host shutting down");
     if(this.options.agents.getRun(r.projectId,r.orchestraWorkspaceId,r.workflowId,r.runId))
@@ -356,6 +359,7 @@ export class DurableRunHost {
       if(probe.exitCode!==0)throw new Error("Production sandbox preflight failed");
     }
     this.assertLive();spec.assertAdmitted?.();
+    if(production)assertStorageAdmission(this.options.dataDirectory,production.storage);
     const startedAt=Date.now();
     this.safety.reserve(key,hash(JSON.stringify([spec.kind,realpathSync(spec.cwd),spec.model])),
       production?.limits??this.options.limits??DEFAULT_LIMITS,startedAt);
@@ -367,6 +371,7 @@ export class DurableRunHost {
     current=this.options.agents.update(current,"configured",spec.model);
     active.binding=current;this.options.changed(current);
     this.assertLive();spec.assertAdmitted?.();
+    if(capacityPolicy)assertStorageAdmission(this.options.dataDirectory,capacityPolicy.storage);
     this.safety.trackInput(key,"mm:"+key);
     const accepted=await active.root.submit({type:"input",content:spec.prompt,requestId:"mm:"+key,whenBusy:"reject"},BACKGROUND_CONTEXT);
     if(!accepted.id)throw new Error("Durable did not commit the exact Run input");
@@ -377,6 +382,8 @@ export class DurableRunHost {
   }
   async resumeUnstarted(binding:AgentBinding,spec:DurableLaunch):Promise<AgentBinding>{
     this.assertLive();spec.assertAdmitted?.();
+    const capacityPolicy=productionPolicy(this.options.dataDirectory);
+    if(capacityPolicy)assertStorageAdmission(this.options.dataDirectory,capacityPolicy.storage);
     if(!isDurableSession(binding.sessionId)||binding.abortRequested===1||!["created","connected","configured"].includes(binding.phase))
       throw new Error("Only an attached, proved-unstarted Durable Run can be recovered");
     if(!existsSync(this.path(this.reservation(binding))))throw new Error("Original Durable storage is missing");
@@ -390,6 +397,7 @@ export class DurableRunHost {
       if(entries.items.length||inspection.tasks.length||inspection.submissions.length||live.verified)
         throw new Error("Durable Session has accepted input/work; zero-input continuation refused");
       this.assertLive();spec.assertAdmitted?.();this.safety.assertActive(key);
+      if(capacityPolicy)assertStorageAdmission(this.options.dataDirectory,capacityPolicy.storage);
       this.options.changed(this.options.agents.update(binding,"configured",spec.model));
       this.safety.trackInput(key,"mm:"+key);
       const accepted=await live.root.submit({type:"input",content:spec.prompt,requestId:"mm:"+key,whenBusy:"reject"},BACKGROUND_CONTEXT);

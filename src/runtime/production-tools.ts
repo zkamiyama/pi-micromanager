@@ -5,6 +5,7 @@ import {isAbsolute,relative} from "node:path";
 import {isWithin} from "../security/policy.js";
 import {sandboxExec,FILE_SERVICE,type SandboxLimits} from "../security/sandbox.js";
 import {brokerGit} from "../security/git-broker.js";
+import {REPOSITORY_SEARCH_SERVICE} from "../security/repository-search-service.js";
 export function productionTools(cwd:string,writable:boolean,allowedMergeShas:readonly string[],
   limits:SandboxLimits,assertActive:()=>void):ToolRegistration[]{
   const path=Type.String({minLength:1,maxLength:1024});
@@ -26,6 +27,20 @@ export function productionTools(cwd:string,writable:boolean,allowedMergeShas:rea
       parameters:Type.Object({path:Type.Optional(path)}),
       async execute(args,_api,ctx){return file("list",{path:args.path??"."},ctx.abortSignal);}}),
   ];
+  const discovery=async(op:"glob"|"search",args:Record<string,unknown>,signal?:AbortSignal)=>{
+    assertActive();return result(await sandboxExec(cwd,["/runtime/node","-e",REPOSITORY_SEARCH_SERVICE],
+      true,limits,signal,JSON.stringify({...args,op})));
+  };
+  const pathPrefix=Type.Optional(Type.String({maxLength:160}));
+  const glob=Type.Optional(Type.String({minLength:1,maxLength:160}));
+  tools.push(
+    defineTool({name:"mm_glob_repo_files",description:"Find source filenames with bounded *, ** and ? path globs, inside the read-only sandbox. Hidden, dependency and build folders are excluded.",
+      replay:"safe",parameters:Type.Object({pathPrefix,glob}),
+      async execute(args,_api,ctx){return discovery("glob",args,ctx.abortSignal);}}),
+    defineTool({name:"mm_search_repo_text",description:"Find a literal phrase in bounded source files inside the read-only sandbox; returns at most 60 short source matches, never runs a shell or regex.",
+      replay:"safe",parameters:Type.Object({text:Type.String({minLength:2,maxLength:120}),pathPrefix,glob}),
+      async execute(args,_api,ctx){return discovery("search",args,ctx.abortSignal);}}),
+  );
   if(!writable)return tools;
   tools.push(
     defineTool({name:"write",description:"Write a bounded text file inside the isolated Workspace.",replay:"unsafe",

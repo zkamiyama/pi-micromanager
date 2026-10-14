@@ -99,6 +99,7 @@ const plugin:PiWebServerPlugin={
   const retention=new ActivityRetention({
     path:join(host.dataDirectory,"activity-retention.sqlite"),
     workflows:store,agents,ledger,
+    externallyPinned:(p,o,w)=>permissions.hasPending(p,o,w)||publisher.hasIncomplete(p,o,w),
   });
   const provisioner=new ManagedWorktreeProvisioner({
     path:join(host.dataDirectory,"worktree-provisions.sqlite"),

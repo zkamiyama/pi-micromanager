@@ -3,10 +3,12 @@ import {realpathSync} from "node:fs";
 import {validateModelAuthFile} from "./auth-source.js";
 import {isAbsolute,relative,resolve,sep} from "node:path";
 import {DEFAULT_LIMITS,validateRunLimits,type RunLimits} from "./run-safety.js";
+import {parseStorageLimits,type StorageLimits} from "./storage-admission.js";
+import {parseTestDiagnosticPolicy,type TestDiagnosticPolicy} from "../automation/private-test-diagnostics.js";
 export interface ProductionPolicy {
   mode:"production";projectRoots:string[];models:Array<{provider:string;model:string}>;
   publication:Array<{repository:string;baseBranch:string}>;limits:RunLimits;
-  maxCommandMs:number;maxWorkspaceBytes:number;
+  maxCommandMs:number;maxWorkspaceBytes:number;storage:StorageLimits;diagnostics:TestDiagnosticPolicy;
   modelAuthFile?:string;
 }
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==="object"&&!Array.isArray(v);
@@ -23,7 +25,7 @@ export function isWithin(root:string,path:string):boolean{
 export function parseProductionPolicy(value:unknown):ProductionPolicy|undefined{
   if(value===undefined)return;
   if(!object(value)||value.mode!=="production")throw new Error("Explicit host production policy required");
-  if(Object.keys(value).some(k=>!["mode","projectRoots","models","publication","limits","maxCommandMs","maxWorkspaceBytes","modelAuthFile"].includes(k)))
+  if(Object.keys(value).some(k=>!["mode","projectRoots","models","publication","limits","maxCommandMs","maxWorkspaceBytes","storage","diagnostics","modelAuthFile"].includes(k)))
     throw new Error("Unknown production policy field");
   if(!Array.isArray(value.projectRoots)||!value.projectRoots.length||value.projectRoots.length>32)
     throw new Error("Production requires 1..32 explicit project roots");
@@ -51,7 +53,7 @@ export function parseProductionPolicy(value:unknown):ProductionPolicy|undefined{
   const limits=validateRunLimits({...DEFAULT_LIMITS,maxConcurrentRuns:4,...(value.limits as Partial<RunLimits>??{})});
   const modelAuthFile=value.modelAuthFile===undefined?undefined:
     validateModelAuthFile(value.modelAuthFile,projectRoots);
-  return {mode:"production",projectRoots,models,publication,limits,
+  return {mode:"production",projectRoots,models,publication,limits,storage:parseStorageLimits(value.storage),diagnostics:parseTestDiagnosticPolicy(value.diagnostics),
     ...(modelAuthFile?{modelAuthFile}:{}),
     maxCommandMs:bound(value.maxCommandMs,60_000,1000,120_000),
     maxWorkspaceBytes:bound(value.maxWorkspaceBytes,512*1024*1024,1024*1024,4*1024*1024*1024)};
@@ -87,7 +89,7 @@ export function installProductionPolicy(dataRoot:string,policy:ProductionPolicy)
   const root=realpathSync(dataRoot);
   if(contexts.has(root))throw new Error("Production data root already registered");
   const frozen=structuredClone(policy);
-  Object.freeze(frozen.limits);
+  Object.freeze(frozen.limits);Object.freeze(frozen.storage);Object.freeze(frozen.diagnostics.labels);Object.freeze(frozen.diagnostics);
   frozen.models.forEach(Object.freeze);frozen.publication.forEach(Object.freeze);
   Object.freeze(frozen.projectRoots);Object.freeze(frozen.models);Object.freeze(frozen.publication);
   Object.freeze(frozen);contexts.set(root,frozen);

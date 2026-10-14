@@ -20,7 +20,9 @@ export async function launchHost(trial,{root,project,authFile,ghConfig}){
  const browserRoot=make('adapter/browser'),gatewayPort=await port(),socket=join(root,'sessiond.sock');
  const serverDir=join(REPO_ROOT,'node_modules/@jmfederico/pi-web/dist/server');
  const children=[],connections=new Set(),recorded=new Map();let daemon,web,browser,proxy,context,page,closing;
- const remember=()=>{for(const [pid,r] of descendants(process.pid))recorded.set(pid,r);};
+ let inspectionUnproved=false;
+ const scan=pid=>{try{return descendants(pid);}catch{inspectionUnproved=true;return new Map();}};
+ const remember=()=>{for(const [pid,r] of scan(process.pid))recorded.set(pid,r);};
  const tracking=setInterval(remember,200);tracking.unref();
  const testOperations=['list','get','create','auto.status','auto.configure','auto.start','auto.pause',
   'auto.permissions','auto.permission.decide','agents.list','agents.command','agents.history','security.readiness'];
@@ -50,12 +52,12 @@ export async function launchHost(trial,{root,project,authFile,ghConfig}){
   c.failure=null;c.on('error',()=>{c.failure=true;});c.joined=new Promise(resolve=>c.once('close',()=>{c.closed=true;resolve();}));children.push(c);return c;}
  async function stop(c){
   if(!c||c.closed)return;
-  remember();const tree=[...descendants(c.pid).values()];
+  remember();const tree=[...scan(c.pid).values()];
   c.kill('SIGTERM');
   let timeout;await Promise.race([c.joined,new Promise(r=>{timeout=setTimeout(r,15000);})]);clearTimeout(timeout);
   if(!c.closed){c.kill('SIGKILL');signalRecorded(tree,'SIGKILL');await Promise.race([c.joined,sleep(3000)]);fail('shutdown-unproved');}
   signalRecorded(tree,'SIGTERM');await sleep(100);signalRecorded(tree,'SIGKILL');await sleep(100);
-  if(tree.some(r=>isStillRunning(r)))fail('shutdown-unproved');
+  if(inspectionUnproved||tree.some(r=>isStillRunning(r)))fail('shutdown-unproved');
  }
  async function ready(){
   for(let i=0;i<100;i++){
@@ -72,7 +74,7 @@ export async function launchHost(trial,{root,project,authFile,ghConfig}){
    if(proxy){for(const s of connections)s.destroy();await new Promise(r=>proxy.close(r));}
    for(const c of [...children].reverse())try{await stop(c);}catch{failures.push('child');}
    signalRecorded(tree,'SIGTERM');await sleep(100);signalRecorded(tree,'SIGKILL');await sleep(100);
-   if(failures.length||tree.some(r=>isStillRunning(r)))fail('shutdown-unproved');
+   if(inspectionUnproved||failures.length||tree.some(r=>isStillRunning(r)))fail('shutdown-unproved');
   })();return closing;
  }
  try{

@@ -29,7 +29,8 @@
     "test:e2e:faux": "node scripts/durable-auth-smoke.mjs --mode faux",
     "test:e2e:contracts": "node --test tests/e2e-contract.test.mjs",
     "test:e2e:local-luna": "node scripts/local-pi-oauth-smoke.mjs",
-    "test:e2e:hosted": "npm run build && node scripts/local-hosted-e2e.mjs"
+    "test:e2e:hosted": "npm run build && node scripts/local-hosted-e2e.mjs",
+    "test:e2e:hosted-quartet": "node scripts/hosted-acceptance.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^1.2.0",

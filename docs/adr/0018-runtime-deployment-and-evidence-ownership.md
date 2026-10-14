@@ -163,3 +163,21 @@ injection. It does not call private PI WEB HTTP routes. A credential-free
 rehearsal may substitute the model and remote transports only when its evidence
 says so. Actual user-approved Luna and GitHub results remain a distinct acceptance
 gate. See [hosted acceptance](../HOSTED_E2E_ACCEPTANCE.md).
+
+## Implemented bounded product controls
+
+The [residual acceptance map](../RESIDUAL_ACCEPTANCE.md) binds the concrete
+production tool/test contract to entrypoints and real integration evidence.
+Storage admission is sampled and fail-closed, not a quota allocator. Derived
+activity retention is digest/revision-bound and records a deletion receipt in
+its own atomic database transaction; missing data is not success evidence.
+External pending operations are checked without browser pagination limits.
+
+Test-output disclosure is host-owned. Raw failure capture is opt-in, bounded and
+private, never a model/browser transcript store, and has no automatic deletion.
+The actual-host/browser harness uses a test-only public-context wrapper while
+keeping the real product engine, tools and transport; faux provider responses
+are explicitly not real-authentication acceptance. The supported local OAuth
+and same-repository publication profiles remain owner-operated and separately
+identified in evidence. #86 target-host and #89 owning-API/physical-reclamation
+requirements are not discharged by these changes or by this scope statement.

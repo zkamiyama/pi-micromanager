@@ -32,5 +32,5 @@ export function assertTestEnvironment(test:AutopilotConfig["test"],
   if(test.execution!=="trusted-host"&&result.exitCode!==0&&/^bwrap:/m.test(result.stderr))
     throw new Error("Verification sandbox could not start. No unsandboxed fallback was used; "+
       "use an execution host whose administrator permits the required namespaces. "+
-      "Details: "+result.stderr.slice(0,300));
+      "Raw test or launcher output is withheld from public diagnostics.");
 }

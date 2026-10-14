@@ -1,3 +1,73 @@
+# Local continuation and remaining acceptance gate — 2026-10-14
+
+**Status: implementation improved; complete isolated rehearsal and live acceptance remain unproved.**
+
+The owner permits equivalent local verification while Actions capacity is unavailable.
+No workflow/protection setting has been weakened and no failed/skipped status is
+represented as a successful run. Exact candidate SHA and fresh test totals are
+recorded in PR #98 after the final commit.
+
+## Work completed in this continuation
+
+- PR #97 was independently rechecked at its unchanged head
+  `562a555a1ece3ba0fb3199af42189e3a1e968322`. Its complete existing CI
+  38527448657 passed Node22/24, actual isolation and actual hosted-browser;
+  fresh scoped local product tests passed 29/29 on each Node22.23.3/24.21.0.
+  It is merged into main as `ac9ea014593e31e3b8061e8587f3ab1fadd57719`.
+- This candidate now incorporates that main through an explicit merge, retaining
+  all storage/diagnostic/retention protections and the full existing README.
+  Both quartet-browser and publication-rehearsal jobs remain present; the
+  older quartet runner has its own `test:e2e:hosted-quartet` command.
+- The final-QC faux fixture consulted obsolete `context.tools`. Pi's actual
+  normalized provider context advertises tools on system messages using
+  `toolsAdded`/`toolsRemoved`. The recovered correction tracks those declarations
+  and requires the advertised final-contract tool before emitting final QC.
+  New tests reproduced **2 failures on original PR #98 head 1b85e640** and
+  pass after the correction through the public Pi model API. This explains a
+  real fixture defect; it is not yet a complete successful rehearsal receipt.
+- Process inspection now distinguishes a missing PID from inaccessible/malformed
+  `/proc` evidence. Unknown identity or exhausted descendant inventory cannot
+  certify shutdown. Signals require positively matching process identity;
+  unreadable/reused PIDs are not killed speculatively. The host supervisor
+  latches incomplete inspection while still attempting normal owned-child stop,
+  and retains temporary state rather than reporting successful cleanup.
+
+## Current execution blockers
+
+The approved local WSL kernel still contains old test Bubblewrap descendants in
+D-state at `exp_funnel_lock`. One fresh bounded, credential-free `/bin/true`
+namespace probe also timed out; its parent exited but a recorded descendant
+remained blocked. No further namespace/browser/model acceptance was attempted
+on that host. The kernel root cause is unknown; this is not a passing
+sandbox-refusal test or successful joined cleanup. No existing service, OS
+security setting or production data was changed, and uncertain test state was
+not deleted.
+
+A single SSH connection to a previously created dedicated validation VM was
+refused by the tool safety check. It was not retried, rephrased, or rerouted
+through a different access mechanism. Earlier VM files/processes remain
+untouched. This is separate from the code-level regression results.
+
+The most recent original PR CI runs failed without execution steps. The owner
+reports an Actions capacity limit; no unsupported billing endpoint or account
+settings were used to establish/change its cause. Existing green PR #97 results
+apply only to PR #97, not to this newly merged candidate.
+
+## Gate before this candidate can merge
+
+Use a qualified local Linux host where actual namespaces and sandboxed Chromium
+finish normally. Verify this exact candidate with Node22 and Node24 full checks,
+the complete mandatory real-isolation suite, the actual hosted quartet and the
+full credential-free publication rehearsal. Scoped native tests below do not
+replace these gates. Follow with the separately approved live Luna/QC/GitHub
+receipt for #92; #91's successful owner-run SDK receipt remains accepted.
+No new account/model/repository authorization is required for that existing
+profile. Platform/owner-lifecycle issues #86/#89 and their parents remain
+separate unfulfilled requirements.
+
+---
+## Historical development record before the local continuation
+
 # Hosted acceptance progress — 2026-10-14
 
 Scope: #92 and parent #38. #91 remains accepted from the owner's successful
