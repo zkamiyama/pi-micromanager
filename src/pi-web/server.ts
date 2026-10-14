@@ -130,6 +130,24 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
           workerTools:policy?"sandbox-only-with-fixed-git-broker":"unconfined-compatibility",
           testExecution:policy?"sandbox-only":"operator-configurable",
           universalSafetyGuarantee:false,
+          // Evidence statuses distinguish enforced code-level controls from
+          // operator/deployment facts. No application result certifies the host.
+          checks:[
+            {id:"host-policy",status:policy?"pass":"fail",
+              evidence:policy?"Host production profile parsed and installed":"Compatibility mode is not production isolation"},
+            {id:"state-owner",status:owner&&!owner.lost.aborted?"pass":"not-verified",
+              evidence:owner&&!owner.lost.aborted?"Local OS flock descriptor retained by this server":"Exclusive production ownership not established"},
+            {id:"worker-isolation-on-deployment-host",status:"not-verified",
+              evidence:"GitHub runner isolation is not evidence for the deployed host"},
+            {id:"ingress-auth-and-tls",status:"not-verified",
+              evidence:"Ingress authentication, TLS and operator authorization need external review"},
+            {id:"resource-and-spend-quotas",status:"not-verified",
+              evidence:"cgroup, filesystem and provider billing limits need operator evidence"},
+            {id:"external-recovery",status:"not-verified",
+              evidence:"External Git, provider and hosted-session reconciliation needs an offline drill"},
+            {id:"independent-security-review",status:"not-verified",
+              evidence:"No independent deployment security attestation is recorded"},
+          ],
           notVerified:["deployment authentication/TLS","OS and kernel patch status","cgroup and disk quotas",
             "provider billing ceiling","external-state restore drill","independent security review"],
         };

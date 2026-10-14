@@ -121,6 +121,16 @@ export class DurableRunHost {
     if(this.closing)throw new Error("Durable host shutting down");
   }
   connected(id:string):boolean{return this.active.get(id)?.closed===false;}
+  /** No persisted provisional report, missing outcome, or interrupted turn may
+   * authorize QC, planning, implementation, or human proposal acceptance.
+   * Call at the workflow transition boundary, not from a model-provided tool. */
+  assertProvedCompleted(binding:AgentBinding):void{
+    if(!isDurableSession(binding.sessionId)||
+      !["settled","sealed"].includes(binding.phase)||
+      binding.abortRequested===1||
+      this.safety.get(sessionHash(this.reservation(binding)))?.outcome!=="completed")
+      throw new Error("Durable Run lacks a persisted successful input outcome");
+  }
   private configuredModels():Promise<Models>{
     if(this.options.models)return Promise.resolve(this.options.models);
     if(!this.modelsPromise)this.modelsPromise=createDurableModels().catch(error=>{this.modelsPromise=undefined;throw error;});

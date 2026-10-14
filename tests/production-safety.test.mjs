@@ -10,6 +10,7 @@ import {RunSafetyLedger,DEFAULT_LIMITS,classifyInputOutcomes} from '../dist/secu
 import {parseProductionPolicy,assertProductionConfig,assertProductionDestination,assertProductionProject} from '../dist/security/policy.js';
 import {acquireStateOwner,privateStateRoot} from '../dist/security/state-owner.js';
 import {gitExecutionEnvironment,assertPassiveRepositoryConfig} from '../dist/security/git-guard.js';
+import {guardedHostExecution} from '../dist/security/host-execution.js';
 import {brokerGit} from '../dist/security/git-broker.js';
 import {sandboxExec,inspectSandboxWorkspace,boundedProcess,FILE_SERVICE} from '../dist/security/sandbox.js';
 const temp=()=>mkdtempSync(join(tmpdir(),'mm-security-'));
@@ -123,4 +124,43 @@ test('Production isolation success: a reachable host-loopback service cannot be 
  const code=`const c=require('node:net').connect(${port},'127.0.0.1');c.on('connect',()=>process.exit(2));c.on('error',()=>process.exit(0));setTimeout(()=>process.exit(0),250);`;
  const r=await sandboxExec(root,['/runtime/node','-e',code],false,limits);assert.equal(r.exitCode,0,r.stderr);
  }finally{await new Promise(resolve=>server.close(resolve));rmSync(root,{recursive:true,force:true});}
+});
+
+test('S02 real production Git host wrapper rejects executable local config before any native mutation',async()=>{
+ const x=repository(),sentinel=join(x.root,'never-executed'),native=[];
+ try{
+  const policy=parseProductionPolicy({mode:'production',projectRoots:[x.repo],
+   models:[{provider:'faux',model:'faux-1'}]});
+  const exec=async request=>{
+   native.push([request.file,...(request.args??[])]);
+   assert.equal(request.file,'/usr/bin/git');
+   const env={...process.env,...request.env};
+   for(const name of request.unsetEnv??[])delete env[name];
+   const r=spawnSync(request.file,request.args,{encoding:'utf8',cwd:request.cwd??x.wt,
+     env:{...env,HOME:'/nonexistent'},timeout:15000});
+   return {exitCode:r.status,signal:r.signal,stdout:r.stdout??'',stderr:r.stderr??'',
+     stdoutTruncated:false,stderrTruncated:false};
+  };
+  const guarded=guardedHostExecution(exec,policy);
+  const attempt=()=>guarded({file:'git',args:['-C',x.wt,'add','--all','--','.'],
+    signal:new AbortController().signal});
+  for(const [key,value] of [
+   ['filter.synthetic.clean','/bin/sh -c "touch sentinel"'],
+   ['merge.synthetic.driver','/bin/sh -c "touch sentinel"'],
+   ['include.path','/tmp/synthetic-git-config'],
+   ['credential.helper','!/bin/sh -c "touch sentinel"'],
+   ['url.https://unapproved.invalid/.insteadOf','https://github.com/'],
+  ]){
+   git(x.repo,'config','--local',key,value);
+   native.length=0;
+   await assert.rejects(attempt(),/Executable or redirecting repository Git configuration/);
+   assert.equal(native.some(cmd=>cmd.includes('add')),false,
+     key+' must be denied after real asynchronous Git config inspection');
+   assert.equal(existsSync(sentinel),false);
+   git(x.repo,'config','--local','--unset',key);
+  }
+  const clean=await attempt();
+  assert.equal(clean.exitCode,0);
+  assert.ok(native.some(cmd=>cmd.includes('add')),'Passive repository Git config remains usable');
+ }finally{rmSync(x.root,{recursive:true,force:true});}
 });

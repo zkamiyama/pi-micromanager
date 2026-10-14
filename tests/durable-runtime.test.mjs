@@ -11,7 +11,7 @@ import {AgentRegistry} from "../dist/runtime/registry.js";
 import {AutopilotLedger,parseAutopilotConfig} from "../dist/automation/ledger.js";
 import {DurableRunHost,isDurableSession,durableActivity,isSafeBashCommand,createDurableModels} from "../dist/runtime/durable-runner.js";
 
-function fixture(){
+function fixture(kind="qc"){
  const home=mkdtempSync(join(tmpdir(),"mm-durable-real-"));
  const project=join(home,"worktree"),data=join(home,"state");
  mkdirSync(project,{recursive:true});mkdirSync(data,{recursive:true});
@@ -28,12 +28,13 @@ function fixture(){
    report(binding,report){reports.push(report);ledger.recordReport(binding,report);},
    wake(binding){wakes.push(binding);}};
  let durable=new DurableRunHost(options);
+ const planning=kind==="planning",runId=planning?"plan-alpha-1":"qc-alpha-1";
  const r={projectId:"p",orchestraWorkspaceId:"o",workflowId:"workflow",
-   taskId:"alpha",runId:"qc-alpha-1",workspaceId:"wt-alpha",seat:"qc",
-   requestId:"auto:qc-alpha-1"};
- const launch={reservation:r,cwd:project,kind:"qc",
-   model:{provider:"faux",model:"faux-1"},prompt:"Check the code and submit QC verdict."};
- const current=()=>agents.getRun("p","o","workflow","qc-alpha-1");
+   taskId:"alpha",runId,workspaceId:"wt-alpha",seat:planning?"planner":"qc",
+   requestId:"auto:"+runId};
+ const launch={reservation:r,cwd:project,kind,
+   model:{provider:"faux",model:"faux-1"},prompt:"Provide a structured local review."};
+ const current=()=>agents.getRun("p","o","workflow",runId);
  const waitFor=async(predicate,timeoutMs=8000)=>{
    const deadline=Date.now()+timeoutMs;
    while(Date.now()<deadline){
@@ -220,6 +221,7 @@ test("F06: abort intent survives lost event and Durable restart",async()=>{
     await x.waitFor(()=>dropped);
     assert.equal(dropped.text,"Agent interrupted");
     assert.equal(x.current().abortRequested,1);
+    assert.throws(()=>x.durable.assertProvedCompleted(x.current()),/persisted successful/);
     await x.durable.close();
     x.options.activity=original;
     x.durable=new DurableRunHost(x.options);
@@ -227,6 +229,7 @@ test("F06: abort intent survives lost event and Durable restart",async()=>{
     await x.waitFor(()=>x.current().phase==="settled");
     assert.equal(x.current().latestText,"Agent interrupted");
     assert.equal(x.ledger.report(x.current()).verdict,"pass");
+    assert.throws(()=>x.durable.assertProvedCompleted(x.current()),/persisted successful/);
   }finally{await x.close();}
 });
 
@@ -324,4 +327,43 @@ test('R14 real Durable: explicit zero-input recovery uses the original Harness a
   assert.equal(x.current().sessionId,original.sessionId);assert.equal(x.reports.length,1);assert.equal(x.faux.state.callCount,2);
   await assert.rejects(x.durable.resumeUnstarted(x.current(),x.launch),/unstarted/);
  }finally{await x.close();}
+});
+
+test("F06 planning: interrupted provisional Plan cannot become an accepted settlement after lost event and reopen",async()=>{
+  const x=fixture("planning"),slow=fauxProvider({tokensPerSecond:100});
+  const models=createModels();models.setProvider(slow.provider);
+  x.options.models=models;
+  const original=x.options.activity;let lost;
+  x.options.activity=(binding,event)=>{
+    if(event.kind==="agent_settled"){lost=event;return;}
+    original(binding,event);
+  };
+  try{
+    slow.setResponses([
+      fauxAssistantMessage([fauxToolCall("mm_plan_intervention",{
+        summary:"Provisional planning before interruption",
+        agents:[{id:"review",title:"Independent analysis",role:"reviewer",
+          model:"faux/faux-1"}]},{id:"plan-before-abort"})],{stopReason:"toolUse"}),
+      fauxAssistantMessage([fauxText("Still planning. ".repeat(1000))]),
+    ]);
+    await x.durable.launch(x.launch);
+    await x.waitFor(()=>x.reports.length===1);
+    assert.equal(x.reports[0].kind,"plan");
+    await x.durable.command(x.current(),x.project,"planning","abort","audit-plan-abort");
+    await x.waitFor(()=>lost);
+    assert.equal(lost.text,"Agent interrupted");
+    assert.equal(x.current().abortRequested,1);
+    assert.throws(()=>x.durable.assertProvedCompleted(x.current()),/persisted successful/);
+    const submitted=slow.state.callCount;
+    await x.durable.close();
+    x.options.activity=original;
+    x.durable=new DurableRunHost(x.options);
+    try{await x.durable.reconnect(x.current(),x.project,"planning");}
+    catch(error){assert.match(String(error),/terminal|successful|input outcome|aborted/);}
+    assert.equal(x.current().abortRequested,1);
+    assert.notEqual(x.current().latestText,"Agent settled");
+    assert.equal(x.ledger.report(x.current())?.kind,"plan");
+    assert.throws(()=>x.durable.assertProvedCompleted(x.current()),/persisted successful/);
+    assert.equal(slow.state.callCount,submitted,"Aborted Plan must never resubmit to the provider");
+  }finally{await x.close();}
 });

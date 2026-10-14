@@ -14,7 +14,7 @@ With `host.settings.productionSecurity.mode = "production"`:
 - Project roots and model selections are host allowlisted. Workspaces must be inside an allowed project or the plugin's managed-worktree root. Publication repositories are separately allowlisted, and effective external mutation policies must be `ask` or `deny`, not YOLO `allow`.
 - The state root must be private/owned/canonical. An OS flock prevents a second cooperating production activation from opening the same state root; lock loss aborts the wrapped host lifetime. No stale PID lock is stolen.
 
-All Durable Runs now have persisted finite request/tool/input/deadline budgets and committed input outcome checks. An idle Harness or a provisional report is not success. Failed or unproved input outcomes remain uncertain at the workflow boundary, and cannot finalize QC, planning or implementation. Counters and deadlines do not reset on restart.
+All Durable Runs now have persisted finite request/tool/input/deadline budgets and committed input outcome checks. An idle Harness or a provisional report is not success. The server's actual QC, planning, implementation and proposal-acceptance boundaries recheck the immutable persisted `completed` outcome even if a stale `settled` projection or lost event appears after an aborted/failed turn. Failed or unproved input outcomes remain uncertain at the workflow boundary. Counters and deadlines do not reset on restart.
 
 ## Host policy example
 
@@ -44,7 +44,7 @@ Run `npm ci --no-audit --no-fund && npm run check`. CI includes portable Node 22
 
 The security suite uses synthetic secrets, disposable Git repositories and loopback servers, real SQLite/flock, and the real Durable Harness with a deterministic faux provider. It does not incur provider charges or publish an application PR. Authenticated compatibility smoke remains a separately approved, default-branch-only workflow; it is not production isolation certification.
 
-The `security.readiness` peer operation reports configured controls and explicitly unverified deployment conditions; it never returns a universal-safety guarantee. Before production rollout, record evidence for TLS/authentication and authorization, provider scopes/spend alerts, OS/SDK patching, cgroup memory/PID/CPU limits, disk quotas, isolation success on the **actual** execution host, offline backup/restore drills including external Git/provider state, and an independent security review.
+The `security.readiness` peer operation reports bounded `pass`/`fail`/`not-verified` evidence for enforced code-level controls and explicitly unverified deployment conditions; it never returns a universal-safety guarantee. Before production rollout, record evidence for TLS/authentication and authorization, provider scopes/spend alerts, OS/SDK patching, cgroup memory/PID/CPU limits, disk quotas, isolation success on the **actual** execution host, offline backup/restore drills including external Git/provider state, and an independent security review.
 
 ## Limits and residual risk
 
@@ -52,4 +52,4 @@ Workspace size scanning and per-process rlimits are not a hard aggregate disk, m
 
 Private state and flock are not a verified full-system backup. The offline CLI offers `snapshot`, `verify`, and **fresh-root-only** `restore`, requiring a separately trusted manifest SHA-256 digest. Restore creates a new private directory and durably writes `RESTORE_REQUIRES_REVIEW` before copying verified payloads; errors or interruptions leave that directory quarantined. Production **and compatibility** activation reject the quarantine marker. No unquarantine or automatic replay command exists. Independently verify database integrity, immutable evidence, external Git Worktrees/PR branches, provider outcomes and native PI WEB sessions before a future manually reviewed production recovery. Never reset uncertain Runs, overwrite an existing or active state directory, or infer external side effects from local backup timestamps.
 
-These are explicit deployment release blockers, not silently waived checks. Track S01–S06 in issues #72–#77 and broader worker/resource/recovery work in #36–#38. No production daemon is reloaded by the tests or configuration example.
+These are explicit deployment release blockers, not silently waived checks. Code-level S01–S06/#18 acceptance evidence is mapped in `docs/PRODUCTION_ISSUE_ACCEPTANCE_72_77_18.md`; broader worker/resource/recovery and deployment obligations remain tracked in #36–#38. No production daemon is reloaded by the tests or configuration example.

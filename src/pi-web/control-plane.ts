@@ -241,6 +241,7 @@ const plugin:PiWebServerPlugin={
       !binding.requestId.startsWith("auto:"))
       throw new Error("Only a settled automated Pi Run can replay its report");
     if(isDurableSession(binding.sessionId)){
+      durable.assertProvedCompleted(binding);
       if(!ledger.report(binding))
         throw new Error("Durable tool result is missing a committed host report; stop safely");
       return;
@@ -849,10 +850,16 @@ const plugin:PiWebServerPlugin={
               catch(error){notice=String(error).slice(0,280);}
             }
             const report=ledger.report(binding);
+            let provedCompleted=!isDurableSession(binding.sessionId);
+            if(!provedCompleted){
+              try{durable.assertProvedCompleted(binding);provedCompleted=true;}
+              catch{/* A provisional report must never become an accepted proposal. */}
+            }
             return j({phase:binding.phase,runId,draftWorkflowId,
               proposal:report?.kind==="workflow_plan"?report.definition:null,
               summary:report?.kind==="workflow_plan"?report.summary:null,
-              canAccept:!!report&&report.kind==="workflow_plan"&&
+              canAccept:provedCompleted&&binding.abortRequested!==1&&
+                !!report&&report.kind==="workflow_plan"&&
                 ["settled","sealed"].includes(binding.phase)&&
                 !(binding.latestKind==="agent_settled"&&binding.latestText==="Agent interrupted"),
               ...(notice?{notice}:{})});
@@ -865,6 +872,9 @@ const plugin:PiWebServerPlugin={
               (binding.phase!=="settled"&&binding.phase!=="sealed")||
               (binding.latestKind==="agent_settled"&&binding.latestText==="Agent interrupted"))
               throw new Error("A completed, registered Sol proposal is required");
+            if(isDurableSession(binding.sessionId))durable.assertProvedCompleted(binding);
+            if(binding.abortRequested===1)
+              throw new Error("Interrupted proposal cannot be accepted");
             if(binding.phase==="settled"&&!ledger.report(binding))
               await replaySettledReport(binding);
             const report=ledger.report(binding);
