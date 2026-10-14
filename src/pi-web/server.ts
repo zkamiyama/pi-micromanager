@@ -7,12 +7,13 @@ import type {PiWebServerPlugin,PiWebHostWorkspacesV1} from "@jmfederico/pi-web/s
 import {parseProductionPolicy,installProductionPolicy,assertProductionProject,
   assertProductionConfig,assertProductionModel} from "../security/policy.js";
 import {acquireStateOwner} from "../security/state-owner.js";
-import {guardedHostExecution} from "../security/host-execution.js";
+import {guardedHostExecution,type HostRequest} from "../security/host-execution.js";
 import {assertWorkspaceBoundary} from "../security/workspace-boundary.js";
 import {assertStateActivation,persistProductionMode} from "../security/state-mode.js";
 import {parseAutopilotConfig,AutopilotLedger} from "../automation/ledger.js";
 import {QuickLaunchLedger,parseQuickProfile} from "../automation/quick-launch.js";
 import {WorkflowStore} from "../core/store.js";
+import {inspectStorage,assertStorageAdmission} from "../security/storage-admission.js";
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==="object"&&!Array.isArray(v);
 const plugin:PiWebServerPlugin={...base,async activate(host){
   const policy=parseProductionPolicy(host.settings.productionSecurity);
@@ -29,10 +30,16 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
     return JSON.stringify(generations.prepare(
       "SELECT scope,workflow_id,enabled,generation FROM autopilots ORDER BY scope,workflow_id").all());
   };
-  const captureFence=()=>{
+  const captureFence=(request:HostRequest)=>{
     signal.throwIfAborted();owner?.assertHeld();
     const captured=policy?snapshotGenerations():undefined;
     return ()=>{
+      signal.throwIfAborted();owner?.assertHeld();
+      // Capacity may change while asynchronous Git config inspection runs.
+      // Recheck before new Worktree allocation, never while only inspecting it.
+      if(policy&&["git","/usr/bin/git"].includes(request.file)&&
+        request.args?.[2]==="worktree"&&request.args?.[3]==="add")
+        assertStorageAdmission(host.dataDirectory,policy.storage);
       signal.throwIfAborted();owner?.assertHeld();
       if(policy&&snapshotGenerations()!==captured)
         throw new Error("Operator control generation changed during Git preflight");
@@ -123,6 +130,11 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
         signal.throwIfAborted();
         if(draining)throw new Error("Control plane is stopping");
         const flight=(async()=>{
+        if(ctx.operation==="security.capacity"){
+          if(!policy)return {status:"not-enforced",reason:"production-profile-required",hardQuotaVerified:false};
+          const capacity=inspectStorage(host.dataDirectory,policy.storage);
+          return {...capacity,limits:{...capacity.limits}};
+        }
         if(ctx.operation==="security.readiness")return {
           mode:policy?"production":"compatibility",
           admissionPolicy:policy?"host-enforced":"not-production",
@@ -154,6 +166,8 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
         if(!request)throw new Error("Control-plane request endpoint unavailable");
         if(policy){
           assertProductionProject(policy,ctx.project.path);
+          if(["auto.start","auto.propose","auto.quick.start","auto.worktree.create","auto.recover.unstarted"].includes(ctx.operation))
+            assertStorageAdmission(host.dataDirectory,policy.storage);
           if(["agents.create","agents.attach","agents.configure"].includes(ctx.operation))
             throw new Error("Manual native Pi execution is forbidden in production");
           const input=ctx.input;

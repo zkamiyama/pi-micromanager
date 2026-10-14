@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {createHash} from "node:crypto";
 import type { RuntimeActivity } from "./protocol.js";
 
 export type Seat = "planner" | "implementer" | "qc" | "architect";
@@ -46,7 +47,7 @@ export interface SavedActivity {
 /** Only a bounded projection: never a native Pi JSONL transcript or artifact. */
 export interface ExpiredActivity {
   id:number; sessionId:string; workflowId:string; taskId:string;
-  at:number; bytes:number;
+  at:number; bytes:number;contentSha256:string;evidenceRef:string;runUpdatedAt:string;
 }
 const fields = [
   "project_id AS projectId", "orchestra_workspace_id AS orchestraWorkspaceId",
@@ -105,6 +106,8 @@ export class AgentRegistry {
       "kind TEXT NOT NULL,text TEXT NOT NULL,at INTEGER NOT NULL);",
       "CREATE INDEX IF NOT EXISTS execution_activity_session ON",
       "execution_activity(project_id,orchestra_workspace_id,session_id,id);",
+      "CREATE TABLE IF NOT EXISTS activity_retention_commits(plan_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,",
+      "orchestra_workspace_id TEXT NOT NULL,fingerprint TEXT NOT NULL,deleted_rows INTEGER NOT NULL);",
     ].join(" "));
     // SQLite stores created by pre-abort-intent versions remain readable.
     const columns=this.db.prepare("PRAGMA table_info(execution_runs)").all() as {name:string}[];
@@ -144,6 +147,13 @@ export class AgentRegistry {
       " AND request_id LIKE 'auto:%'"+
       (unsealed?" AND phase NOT IN ('sealed','failed')":"")+
       " LIMIT 1").get(p,o,w));
+  }
+  /** All unresolved Runs pin the Workflow's derived evidence, not just the
+   * first 200 entries in a public listing. Failed but unsealed data is retained. */
+  hasUnsealedWorkflow(p:string,o:string,w:string):boolean{
+    identity(p,"projectId");identity(o,"orchestraWorkspaceId");identity(w,"workflowId");
+    return Boolean(this.db.prepare("SELECT 1 FROM execution_runs WHERE project_id=? AND "+
+      "orchestra_workspace_id=? AND workflow_id=? AND phase!='sealed' LIMIT 1").get(p,o,w));
   }
   /** Unbounded SQL existence check; never depend on the 200-item UI listing
    * when enforcing workspace leases before reading evidence or writing ADRs. */
@@ -314,8 +324,9 @@ export class AgentRegistry {
     if(!Number.isSafeInteger(beforeEventMs)||!Number.isSafeInteger(limit)||
       limit<1||limit>250||!Number.isFinite(Date.parse(beforeSealedIso)))
       throw new Error("Invalid activity retention boundary");
-    return this.db.prepare("SELECT a.id AS id,a.session_id AS sessionId,"+
-      "r.workflow_id AS workflowId,r.task_id AS taskId,a.at,"+
+    const rows=this.db.prepare("SELECT a.id AS id,a.session_id AS sessionId,"+
+      "r.workflow_id AS workflowId,r.task_id AS taskId,a.at,a.kind,a.text,"+
+      "r.evidence_ref AS evidenceRef,r.updated_at AS runUpdatedAt,"+
       "length(CAST(a.text AS BLOB)) AS bytes "+
       "FROM execution_activity a JOIN execution_runs r ON "+
       "r.project_id=a.project_id AND r.orchestra_workspace_id=a.orchestra_workspace_id "+
@@ -324,7 +335,14 @@ export class AgentRegistry {
       "AND r.updated_at<? AND r.phase='sealed' AND r.evidence_ref IS NOT NULL "+
       "ORDER BY a.id LIMIT ?")
       .all(projectId,orchestraWorkspaceId,beforeEventMs,beforeSealedIso,limit) as
-      unknown as ExpiredActivity[];
+      unknown as Array<Omit<ExpiredActivity,"contentSha256">&{kind:string;text:string}>;
+    return rows.map(({kind,text,...row})=>({...row,
+      contentSha256:createHash("sha256").update(JSON.stringify([kind,text,row.at])).digest("hex")}));
+  }
+  activityRetentionCommit(p:string,o:string,id:string):{fingerprint:string;deletedRows:number}|undefined{
+    return this.db.prepare("SELECT fingerprint,deleted_rows AS deletedRows FROM activity_retention_commits "+
+      "WHERE plan_id=? AND project_id=? AND orchestra_workspace_id=?").get(id,p,o) as
+      {fingerprint:string;deletedRows:number}|undefined;
   }
   remainingActivityIds(projectId:string,orchestraWorkspaceId:string,ids:readonly number[]):number[]{
     if(ids.length<1||ids.length>250||ids.some(id=>!Number.isSafeInteger(id)||id<1))
@@ -338,13 +356,22 @@ export class AgentRegistry {
   }
   /** Exact atomic deletion of previously verified projections only. */
   deleteExpiredActivity(projectId:string,orchestraWorkspaceId:string,
-    ids:readonly number[],beforeEventMs:number,beforeSealedIso:string):number{
+    ids:readonly number[],beforeEventMs:number,beforeSealedIso:string,
+    expected:readonly ExpiredActivity[],planId:string,fingerprint:string):number{
     const sorted=[...new Set(ids)].sort((a,b)=>a-b);
     if(sorted.length<1||sorted.length>200||sorted.length!==ids.length||
       sorted.some(id=>!Number.isSafeInteger(id)||id<1))
       throw new Error("Invalid retention deletion batch");
+    if(!/^[0-9a-f-]{36}$/.test(planId)||!/^[0-9a-f]{64}$/.test(fingerprint)||expected.length!==ids.length)
+      throw new Error("Exact retention manifest and operation identity required");
     this.db.exec("BEGIN IMMEDIATE");
     try{
+      const existing=this.activityRetentionCommit(projectId,orchestraWorkspaceId,planId);
+      if(existing){
+        if(existing.fingerprint!==fingerprint||existing.deletedRows!==ids.length)
+          throw new Error("Conflicting retention commit receipt");
+        this.db.exec("COMMIT");return existing.deletedRows;
+      }
       // Recheck every ID under the same SQLite write transaction. Never
       // partially delete an altered or newly active Run's public log.
       const candidates=this.expiredActivity(projectId,orchestraWorkspaceId,
@@ -352,11 +379,17 @@ export class AgentRegistry {
       const approved=new Set(candidates.map(c=>c.id));
       if(sorted.some(id=>!approved.has(id)))
         throw new Error("Retention candidates changed after preview; start a new preview");
+      if(expected.some(row=>{
+        const actual=candidates.find(c=>c.id===row.id);
+        return !actual||JSON.stringify(actual)!==JSON.stringify(row);
+      }))throw new Error("Retention content or Run proof changed before atomic deletion");
       const placeholders=sorted.map(()=>"?").join(",");
       const result=this.db.prepare("DELETE FROM execution_activity "+
         "WHERE project_id=? AND orchestra_workspace_id=? AND id IN ("+placeholders+")")
         .run(projectId,orchestraWorkspaceId,...sorted);
       if(result.changes!==sorted.length)throw new Error("Retention batch was not fully deleted");
+      this.db.prepare("INSERT INTO activity_retention_commits(plan_id,project_id,orchestra_workspace_id,fingerprint,deleted_rows) VALUES(?,?,?,?,?)")
+        .run(planId,projectId,orchestraWorkspaceId,fingerprint,sorted.length);
       this.db.exec("COMMIT");return result.changes;
     }catch(error){this.db.exec("ROLLBACK");throw error;}
   }

@@ -63,7 +63,7 @@ test("Real divergent leaf commits can be merge-conflicted, repaired, committed a
    }
    state=workflows.act("p","o","combined",state.revision,"prepare",
      {type:"prepare_final_integration"});
-   const host={lifetimeSignal:new AbortController().signal,
+   const host={dataDirectory:root,lifetimeSignal:new AbortController().signal,
      async execFile(command){
        try{
          const stdout=execFileSync(command.file,[...(command.args??[])],{

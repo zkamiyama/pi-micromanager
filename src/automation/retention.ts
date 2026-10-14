@@ -3,8 +3,8 @@
  * are never modified by this service. */
 import {createHash,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
-import {mkdirSync} from "node:fs";
-import {dirname} from "node:path";
+import {mkdirSync,lstatSync,realpathSync} from "node:fs";
+import {dirname,resolve} from "node:path";
 import type {WorkflowStore} from "../core/store.js";
 import type {AgentRegistry,ExpiredActivity} from "../runtime/registry.js";
 import type {AutopilotLedger} from "./ledger.js";
@@ -13,7 +13,7 @@ import {automationScope} from "./ledger.js";
 export interface RetentionPreview {
   id:string;olderThanDays:number;rowCount:number;estimatedBytes:number;
   affectedRuns:number;expiresAt:number;state:"prepared"|"completed";
-  deletedRows:number;
+  deletedRows:number;manifestSha256:string;
 }
 interface PlanRow {
   id:string;scope:string;before_at:number;before_iso:string;
@@ -23,17 +23,22 @@ interface PlanRow {
 }
 export interface RetentionOptions {
   path:string;workflows:WorkflowStore;agents:AgentRegistry;ledger:AutopilotLedger;
+  externallyPinned?:(p:string,o:string,workflowId:string)=>boolean;
 }
 const TTL=10*60*1000;
 const DAY=24*60*60*1000;
-function digest(rows:readonly ExpiredActivity[]):string{
+function digest(rows:readonly ExpiredActivity[],revision:(workflowId:string)=>number):string{
   return createHash("sha256").update(JSON.stringify(rows.map(r=>
-    [r.id,r.sessionId,r.workflowId,r.taskId,r.at,r.bytes]))).digest("hex");
+    [r.id,r.sessionId,r.workflowId,r.taskId,r.at,r.bytes,r.contentSha256,
+      r.evidenceRef,r.runUpdatedAt,revision(r.workflowId)]))).digest("hex");
 }
 export class ActivityRetention {
   private readonly db:DatabaseSync;
   constructor(private readonly opts:RetentionOptions){
     mkdirSync(dirname(opts.path),{recursive:true,mode:0o700});
+    if(realpathSync(dirname(opts.path))!==resolve(dirname(opts.path)))throw new Error("Unsafe retention database parent alias");
+    try{const stat=lstatSync(opts.path);if(!stat.isFile()||stat.nlink!==1)throw new Error("Unsafe retention database alias");}
+    catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
     this.db=new DatabaseSync(opts.path);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS retention_previews(
@@ -48,6 +53,7 @@ export class ActivityRetention {
     // A "passed", held, needs_human or otherwise unresolved Task protects
     // all of this Workflow's public Run activity until human decisions finish.
     try{
+      if(this.opts.externallyPinned?.(p,o,r.workflowId)||this.opts.agents.hasUnsealedWorkflow(p,o,r.workflowId))return false;
       const wf=this.opts.workflows.get(p,o,r.workflowId);
       if(Object.values(wf.tasks).some(t=>t.status!=="done"&&t.status!=="integrated"))
         return false;
@@ -70,7 +76,7 @@ export class ActivityRetention {
     const ids=JSON.parse(row.ids_json) as number[];
     return {id:row.id,olderThanDays:row.older_than_days,
       rowCount:ids.length,estimatedBytes:row.bytes,affectedRuns:row.runs,
-      expiresAt:row.expires_at,state:row.state,deletedRows:row.deleted_rows};
+      expiresAt:row.expires_at,state:row.state,deletedRows:row.deleted_rows,manifestSha256:row.fingerprint};
   }
   preview(p:string,o:string,days=30,now=Date.now()):RetentionPreview|null{
     if(!Number.isSafeInteger(days)||days<30||days>365||
@@ -93,7 +99,7 @@ export class ActivityRetention {
       id:randomUUID(),scope:automationScope(p,o),
       before_at:beforeAt,before_iso:beforeIso,older_than_days:days,
       ids_json:JSON.stringify(candidates.map(r=>r.id)),
-      fingerprint:digest(candidates),
+      fingerprint:digest(candidates,w=>this.opts.workflows.get(p,o,w).revision),
       bytes:candidates.reduce((sum,r)=>sum+r.bytes,0),
       runs:new Set(candidates.map(r=>r.sessionId)).size,
       expires_at:now+TTL,state:"prepared",deleted_rows:0,
@@ -118,8 +124,11 @@ export class ActivityRetention {
     if(now>row.expires_at)throw new Error("Retention preview expired");
     const remaining=this.opts.agents.remainingActivityIds(p,o,ids);
     if(remaining.length===0){
-      // Activity SQLite committed deletion, but a crash prevented recording
-      // the receipt in this separate SQLite file. Recovery is read-only.
+      // Only a matching receipt committed atomically WITH deletion can prove
+      // this operation succeeded. Absent rows alone are not our success proof.
+      const committed=this.opts.agents.activityRetentionCommit(p,o,id);
+      if(!committed||committed.fingerprint!==row.fingerprint||committed.deletedRows!==ids.length)
+        throw new Error("Retention deletion unproved; manual reconciliation required");
       this.db.prepare("UPDATE retention_previews SET state='completed',deleted_rows=? WHERE id=?")
         .run(ids.length,id);
       return {...this.display(row),state:"completed",deletedRows:ids.length};
@@ -128,11 +137,11 @@ export class ActivityRetention {
       throw new Error("Partial activity retention state; manual reconciliation required");
     const selected=this.candidates(p,o,row.before_at,row.before_iso)
       .filter(r=>ids.includes(r.id));
-    if(selected.length!==ids.length||digest(selected)!==row.fingerprint)
+    if(selected.length!==ids.length||digest(selected,w=>this.opts.workflows.get(p,o,w).revision)!==row.fingerprint)
       throw new Error("Workflow/Run retention eligibility changed after preview");
     // No await: candidate revalidation and the exact DELETE are synchronous
     // on the same server event loop; SQLite rechecks Run sealing atomically.
-    this.opts.agents.deleteExpiredActivity(p,o,ids,row.before_at,row.before_iso);
+    this.opts.agents.deleteExpiredActivity(p,o,ids,row.before_at,row.before_iso,selected,id,row.fingerprint);
     this.db.prepare("UPDATE retention_previews SET state='completed',deleted_rows=? WHERE id=?")
       .run(ids.length,id);
     return {...this.display(row),state:"completed",deletedRows:ids.length};

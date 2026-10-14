@@ -60,3 +60,23 @@ These are explicit deployment release blockers, not silently waived checks. Code
 quotas, credential provisioning and real-environment acceptance. Existing
 production controls remain mandatory. Splitting an Issue does not certify a
 deployment, authorize production operations, or permit unsupported fallback.
+
+## Additional bounded production controls
+
+The [residual acceptance map](docs/RESIDUAL_ACCEPTANCE.md) documents the supported
+execution backend, actual hosted/browser test boundaries, source discovery,
+capacity admission and exact own-activity retention. Host-owned `storage` limits
+block new work on exhausted or unproved capacity; `security.capacity` remains a
+read-only inspection endpoint. Existing uncertain work is never cleared to free
+capacity. These sampled metadata limits do not replace hard filesystem/cgroup quotas.
+
+Production failure diagnostics expose only explicitly allowlisted test labels and
+fixed compiler codes. Optional private raw capture is **disabled by default**,
+count/byte bounded, owner-only and never model/browser readable. Enabling it requires
+an operator decision about sensitive logs, backups and keep-until-reviewed retention.
+The activity GC does not delete these private failure files or native Pi data.
+
+The hosted-browser CI uses only scripted faux responses and no account credentials
+or remote publication. Real OAuth and same-repository publication are separate,
+explicitly authorized local acceptance modes. Success never certifies deployment
+TLS, tenant separation, provider budgets, hard quotas, or independent security review.
