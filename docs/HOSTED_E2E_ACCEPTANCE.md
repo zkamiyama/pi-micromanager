@@ -1,3 +1,5 @@
+> 2026-10-15: The owner-approved local real model/GitHub run passed, with 15/15 receipt checks and actual PR #100 merged to test-only base. See [2026-10-15 accepted real-host receipt](HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md). The earlier Draft/blocked descriptions below are historical and the steps remain useful for reproduction; the result does not certify production TLS/quotas.
+
 # 実PI WEB・並列Run・QC・公開復旧の受け入れ試験
 
 **現在は未完了のDraft実装です。実行結果と障害は [進捗記録](HOSTED_E2E_PROGRESS.md) を参照してください。**

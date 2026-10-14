@@ -104,3 +104,7 @@ The hosted-browser CI uses only scripted faux responses and no account credentia
 or remote publication. Real OAuth and same-repository publication are separate,
 explicitly authorized local acceptance modes. Success never certifies deployment
 TLS, tenant separation, provider budgets, hard quotas, or independent security review.
+
+## Owner-approved local live acceptance (not production qualification)
+
+The [actual local Pi/PI WEB/Luna and GitHub test-branch receipt](docs/HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md) passed on 2026-10-15 (PR #100 to synthetic test base). This verifies one approved single-tenant product path, not deployed TLS, publisher/process identity separation, hard CPU/RAM/PID/disk limits, tenant isolation, exact spend or physical native-session/worktree GC. Production qualification remains open in #86/#89/#5.
