@@ -128,3 +128,19 @@ operator prerequisites. Security obligations remain, with explicit owners.
 - GitHub Actions secure use: https://docs.github.com/en/actions/reference/security/secure-use
 - GitHub environments: https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
 - Local implementation and limitations: ../../SECURITY.md
+
+## Local acceptance disposition (2026-10-14)
+
+For the owner's current development trial, accept a documented local execution
+record instead of GitHub Environment/job evidence. The owner expressly permits
+reuse of the existing Pi ChatGPT OAuth identity, Luna Low for ordinary tests and
+Luna Max for independent QC, and same-repository test-only source/base branches.
+See [authorization](../LOCAL_LUNA_ACCEPTANCE_AUTHORIZATION.md).
+
+This changes the **approved test profile**, not any runtime security setting:
+main/release refs are never synthetic-test destinations, credentials remain
+outside tools/logs/commits, no live services are restarted, and no result is
+certified until actually executed. Existing-account/branch tests do not prove
+separate tenant/credential isolation. A tool refusal is respected, not routed
+around; [current results](../LOCAL_LUNA_ACCEPTANCE_STATUS.md) are partial and
+#91/#92/#38 remain open. The automated API-key CI profile remains unchanged.
