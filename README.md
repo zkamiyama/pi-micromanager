@@ -65,6 +65,8 @@ The older preview-before-approval Sol workflow remains available. See
 
 ## Architecture and ADRs
 
+Product/runtime/deployment ownership and the #36–#38 work split: [ADR-0018](docs/adr/0018-runtime-deployment-and-evidence-ownership.md).
+
 - [ADR-0001 — Control plane and product boundaries](docs/adr/0001-control-plane-and-product-boundaries.md)
 - [ADR-0002 — Deterministic DAG, QC barriers, and Workflow Amendments](docs/adr/0002-deterministic-dag-and-live-interventions.md)
 - [ADR-0003 — Evidence, Live Journal, retention, knowledge promotion](docs/adr/0003-evidence-journal-retention-and-knowledge.md)

@@ -53,3 +53,10 @@ Workspace size scanning and per-process rlimits are not a hard aggregate disk, m
 Private state and flock are not a verified full-system backup. The offline CLI offers `snapshot`, `verify`, and **fresh-root-only** `restore`, requiring a separately trusted manifest SHA-256 digest. Restore creates a new private directory and durably writes `RESTORE_REQUIRES_REVIEW` before copying verified payloads; errors or interruptions leave that directory quarantined. Production **and compatibility** activation reject the quarantine marker. No unquarantine or automatic replay command exists. Independently verify database integrity, immutable evidence, external Git Worktrees/PR branches, provider outcomes and native PI WEB sessions before a future manually reviewed production recovery. Never reset uncertain Runs, overwrite an existing or active state directory, or infer external side effects from local backup timestamps.
 
 These are explicit deployment release blockers, not silently waived checks. Code-level S01–S06/#18 acceptance evidence is mapped in `docs/PRODUCTION_ISSUE_ACCEPTANCE_72_77_18.md`; broader worker/resource/recovery and deployment obligations remain tracked in #36–#38. No production daemon is reloaded by the tests or configuration example.
+
+## Responsibility and acceptance ownership
+
+[ADR-0018](docs/adr/0018-runtime-deployment-and-evidence-ownership.md) separates product admission/evidence obligations from platform isolation,
+quotas, credential provisioning and real-environment acceptance. Existing
+production controls remain mandatory. Splitting an Issue does not certify a
+deployment, authorize production operations, or permit unsupported fallback.
