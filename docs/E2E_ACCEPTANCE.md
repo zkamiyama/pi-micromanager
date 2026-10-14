@@ -1,3 +1,5 @@
+> Update 2026-10-15: #90 harness, #91 real Luna SDK smoke and #92 real Luna/QC/hosted PI WEB/GitHub test-branch E2E completed for the approved local profile; parent #38 closed. See [2026-10-15 accepted real-host receipt](HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md). Earlier OPEN/NOT VERIFIED descriptions below are historical; #86 production host hardening and #89 native lifecycle remain separate.
+
 # E2E acceptance: product harness versus operational evidence
 
 Design: [ADR-0018](adr/0018-runtime-deployment-and-evidence-ownership.md).

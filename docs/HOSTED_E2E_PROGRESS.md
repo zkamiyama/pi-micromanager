@@ -1,3 +1,5 @@
+> Update 2026-10-15: The owner-approved real Pi/PI WEB/Luna/GitHub E2E completed successfully and #92/#38 are closed. See [2026-10-15 accepted real-host receipt](HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md). All earlier pending/blocked details below are historical development-stage evidence, not current status.
+
 # Local continuation and remaining acceptance gate — 2026-10-14
 
 **Status: implementation improved; complete isolated rehearsal and live acceptance remain unproved.**

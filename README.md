@@ -96,6 +96,9 @@ mocks. They do **not** replace authenticated PI WEB host soak tests.
 
 ## Development
 
+**Local real-host E2E accepted (2026-10-15):** [actual Pi OAuth/Luna Low + QC Max, hosted PI WEB and GitHub test-branch lost-response recovery](docs/HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md) passed. Deployment quotas, TLS, native owner GC and broader product epics remain separate.
+
+
 Hosted PI WEB/browser, parallel Run/QC and exact-branch publication/recovery acceptance: [owner-operated hosted test](docs/HOSTED_E2E_ACCEPTANCE.md). Credential-free rehearsal and actual local OAuth/GitHub execution are separately labeled.
 
 Actual hosted browser/Workflow lifecycle: [HOSTED_ACCEPTANCE.md](docs/HOSTED_ACCEPTANCE.md). Production source discovery, capacity admission, disclosure policy and proof-pinned retention: [residual acceptance map](docs/RESIDUAL_ACCEPTANCE.md).
