@@ -96,6 +96,7 @@ export async function runHosted(args){
    if(!SHA.test(main))fail('main-observation-failed');
    if(main!==source.commit)fail('source-not-current-main');facts.mainBefore=main;
    if(git(project,['ls-remote','--heads',remote,'refs/heads/'+trial.base,'refs/heads/'+trial.head],env))fail('test-ref-exists');
+   facts.remoteMutationAttempted=true;
    git(project,['push','--porcelain',remote,seedSha+':refs/heads/'+trial.base],env);facts.remoteCreated=true;
   }else{
    seedRehearsalRemote(project,bare,env);
@@ -160,7 +161,12 @@ export async function runHosted(args){
      facts.checks.publicationApproved=true;
     }
     if(Object.values(wf.tasks).every(t=>t.status==='integrated')){finished=true;break;}
-    if(!status.enabled)fail('workflow-stopped-before-publication');
+    if(!status.enabled){
+     if(config.mode==='rehearsal')process.stderr.write('[rehearsal-state] '+JSON.stringify({
+      status:String(status.status).slice(0,1600),tasks:Object.fromEntries(Object.entries(wf.tasks).map(([id,t])=>[id,{status:t.status,attempts:t.attempts}])),
+      runs:runs.map(r=>({task:r.taskId,seat:r.seat,phase:r.phase,abort:r.abortRequested,latestKind:r.latestKind})),transport:audit})+'\n');
+     fail('workflow-stopped-before-publication');
+    }
     if(runs.some(r=>['failed','uncertain','blocked'].includes(r.phase)))fail('workflow-run-unproved');
     await pause(200);
    }

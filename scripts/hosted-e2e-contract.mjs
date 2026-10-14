@@ -81,6 +81,6 @@ export function hostedReceipt(config,source,facts){
     prNumber:boundInt(facts.publication.prNumber),pushCalls:boundInt(facts.publication.pushCalls),
     mergeCalls:boundInt(facts.publication.mergeCalls),mainUnchanged:facts.publication.mainUnchanged===true}:null,
   trial:facts.trial&&validTrialPrefix(facts.prefix??'')?{repository:REPOSITORY,base:facts.prefix+'-base',head:facts.prefix+'-final',seedSha:safeSha(facts.trial.seedSha)}:null,
-  cleanup:facts.cleanup==='removed'?'removed':'retained',remoteRefsRetained:facts.remoteCreated===true,
+  cleanup:facts.cleanup==='removed'?'removed':'retained',remoteRefsRetained:facts.remoteCreated===true||facts.remoteMutationAttempted===true,
   productionSafetyGuaranteed:false};
 }
