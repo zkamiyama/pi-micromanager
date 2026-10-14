@@ -37,7 +37,7 @@
     "@jmfederico/pi-web": "^1.202610.1",
     "@types/node": "^24.13.3",
     "playwright": "1.64.0",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "^1.2.0",
