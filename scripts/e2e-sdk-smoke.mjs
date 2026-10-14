@@ -13,7 +13,7 @@ const requestMethods=new Set(['stream','streamSimple','complete','completeSimple
   'streamDeferred','fetchDeferred','generateImages','classify']);
 const failure=code=>{throw new E2EFailure(code);};
 
-export async function runSdkSmoke(config,{directory,apiKey}){
+export async function runSdkSmoke(config,{directory,apiKey,createAuthenticatedModels}){
   const abort=new AbortController(),context=withAbortSignal(abort.signal,BACKGROUND_CONTEXT);
   let first,second,requests=0,reports=0,latched,acceptRequests=true,joined=true;
   const timer=setTimeout(()=>abort.abort(new E2EFailure('timed-out')),config.timeoutMs);
@@ -37,6 +37,9 @@ export async function runSdkSmoke(config,{directory,apiKey}){
         [fauxAssistantMessage(config.scenario==='duplicate-report'?[call('a'),call('b')]:[call('a')],
           {stopReason:'toolUse'}),fauxAssistantMessage('Completed.')];
       faux.setResponses(responses);
+    }else if(createAuthenticatedModels){
+      // Test-only adapter: local operator uses the public Pi credential store.
+      models=await createAuthenticatedModels(abort.signal);
     }else{
       // Public in-memory CredentialStore; no daemon HOME, auth.json, models.json,
       // environment credential fallback or network catalogue refresh.
@@ -45,6 +48,9 @@ export async function runSdkSmoke(config,{directory,apiKey}){
       models=await ModelRuntime.create({credentials,modelsPath:null,
         allowModelNetwork:false,refreshOnCreate:false,signal:abort.signal});
     }
+    const outputLimit=config.maxOutputTokens??256;
+    if(!Number.isInteger(outputLimit)||outputLimit<1||outputLimit>4096||
+      config.effort!==undefined&&!["low","max"].includes(config.effort))failure("invalid-arguments");
     abort.signal.throwIfAborted();
     if(!models.getModel(config.provider,config.model))failure('model-unavailable');
     const bounded=new Proxy(models,{get(target,property){
@@ -60,7 +66,8 @@ export async function runSdkSmoke(config,{directory,apiKey}){
           }
           requests++;
           const previous=args[2]??{};
-          args[2]={...previous,maxTokens:256,signal:previous.signal?
+          args[2]={...previous,maxTokens:outputLimit,
+            ...(config.effort?{reasoning:config.effort}:{}),signal:previous.signal?
             AbortSignal.any([abort.signal,previous.signal]):abort.signal};
         }
         return Reflect.apply(value,target,args);
@@ -79,6 +86,7 @@ export async function runSdkSmoke(config,{directory,apiKey}){
     const settings={models:bounded,registry,settings:{toolExecution:'sequential',
       compaction:{enabled:false},stream:{maxRetries:0,timeoutMs:config.timeoutMs},retry:{maxRetries:0}}};
     const agent={model:{provider:config.provider,modelId:config.model},cwd:directory,
+      ...(config.effort?{thinkingLevel:config.effort}:{}),
       tools:[report],modelTools:[report],
       instructions:'Call mm_auth_smoke_report once with ok=true, then finish. No other action.'};
     const database=join(directory,'smoke.sqlite'),requestId='mm-e2e-single-input';

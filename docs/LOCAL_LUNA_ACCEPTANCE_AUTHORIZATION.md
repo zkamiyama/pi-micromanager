@@ -31,11 +31,7 @@ not a standing authorization to deploy or access arbitrary accounts.
 
 The selected existing Pi login is used through public `ModelRuntime` and
 `readStoredCredential` APIs with an explicit canonical owner-only auth file. A
-normal OAuth refresh, when required to reuse that login, is performed once by
-Pi's standard serialized credential-store operation; never manually rewrite
-tokens, create a new login, change account, or copy the credential file. The
-subsequent isolated test process uses an in-memory provider-scoped credential
-and refuses unexpected expiry instead of repeatedly rotating the user's login.
+normal OAuth refresh, when required to reuse that login, is handled by Pi's standard serialized credential-store operation; never manually rewrite tokens, create a new login, change account, or copy the credential file. The shipped local runner supplies the explicitly selected auth path directly to that public SDK in a dedicated short-lived process. This replaces the earlier unimplemented in-memory handoff plan and avoids copying credential data. Only the fixed OpenAI model is admitted, with no external retry loop.
 No daemon home is mounted into model tools. OAuth SDK operations remain the
 authentication authority; no endpoint/originator spoofing, custom OAuth
 implementation or authentication bypass. Invalid/revoked refresh stops real

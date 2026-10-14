@@ -27,7 +27,8 @@
     "test:adversarial": "npm run build && node --test tests/adversarial-interventions.test.mjs tests/adversarial-scheduler.test.mjs",
     "doctor": "node scripts/doctor.mjs",
     "test:e2e:faux": "node scripts/durable-auth-smoke.mjs --mode faux",
-    "test:e2e:contracts": "node --test tests/e2e-contract.test.mjs"
+    "test:e2e:contracts": "node --test tests/e2e-contract.test.mjs",
+    "test:e2e:local-luna": "node scripts/local-pi-oauth-smoke.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.0.0",

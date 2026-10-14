@@ -96,6 +96,8 @@ mocks. They do **not** replace authenticated PI WEB host soak tests.
 
 ## Development
 
+Owner-approved local ChatGPT OAuth / Luna Low or Max smoke: [manual test and result-sharing guide](docs/LOCAL_LUNA_MANUAL_TEST.md). The opt-in script sends no GitHub writes and exposes no coding tools.
+
 For the supported E2E tiers, test-only authentication, exact-commit receipts
 and the remaining hosted/browser acceptance work, see
 [E2E acceptance](docs/E2E_ACCEPTANCE.md). The old unconfined authenticated
