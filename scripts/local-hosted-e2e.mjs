@@ -23,7 +23,12 @@ const safeGitEnv=home=>({PATH:'/usr/bin:/bin',HOME:home,LANG:'C.UTF-8',
  GIT_CONFIG_KEY_3:'gc.auto',GIT_CONFIG_VALUE_3:'0'});
 function git(cwd,args,env,acceptable=[0]){
  const r=spawnSync('/usr/bin/git',['-C',cwd,...args],{cwd,env,encoding:'utf8',timeout:120000,maxBuffer:1024*1024});
- if(r.error||r.signal||!acceptable.includes(r.status))fail('fixture-git-failed');return r.stdout.trim();
+ if(r.error||r.signal||!acceptable.includes(r.status))fail('fixture-git-failed-'+(/^[a-z-]+$/.test(args[0]??'')?args[0]:'command'));return r.stdout.trim();
+}
+export function seedRehearsalRemote(project,bare,env){
+ // CI checks out a shallow synthetic merge. Clone its known objects/refs rather
+ // than pushing a shallow history into an unrelated empty receive-pack.
+ git(project,['clone','--bare','--no-local','--no-hardlinks',project,bare],env);
 }
 function boundedStats(dir){
  const p=join(dir,'run-safety.sqlite');if(!existsSync(p))return {count:0,requests:0,tools:0};
@@ -93,7 +98,7 @@ export async function runHosted(args){
    if(git(project,['ls-remote','--heads',remote,'refs/heads/'+trial.base,'refs/heads/'+trial.head],env))fail('test-ref-exists');
    git(project,['push','--porcelain',remote,seedSha+':refs/heads/'+trial.base],env);facts.remoteCreated=true;
   }else{
-   git(root,['init','--bare',bare],env);git(project,['push',bare,seedSha+':refs/heads/'+trial.base],env);
+   seedRehearsalRemote(project,bare,env);
   }
   const worktrees=make('project/acceptance-worktrees');
   writeFileSync(join(project,'.git/info/exclude'),'\n/acceptance-worktrees/\n',{flag:'a'});

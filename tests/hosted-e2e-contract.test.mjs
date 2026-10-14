@@ -92,3 +92,43 @@ test('#92 supervisor does not confuse a dead parent, kernel-blocked descendant o
  signalRecorded([record],'SIGTERM',()=>({pid:record.pid,start:'123',state:'D'}),(pid,sig)=>signals.push([pid,sig]));
  assert.deepEqual(signals,[[999999,'SIGTERM']]);
 });
+
+import {DatabaseSync} from 'node:sqlite';
+test('#92 test-owned async source inspection cannot open a new stale-generation mutation window',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'mm-hosted-fence-')),path=join(root,'audit.json');writeFileSync(path,'{}');
+ const db=new DatabaseSync(join(root,'autopilot.sqlite'));
+ db.exec("CREATE TABLE autopilots(scope TEXT,workflow_id TEXT,enabled INTEGER,generation INTEGER);INSERT INTO autopilots VALUES('synthetic','wf',1,1)");
+ let entered,release,calls=0;const ready=new Promise(r=>{entered=r;}),gate=new Promise(r=>{release=r;});
+ try{
+  const exec=wrapAcceptanceExec(async r=>{
+   if(r.args.includes('diff')){entered();await gate;return output(trial.fixture+'/a.txt\n');}
+   calls++;return output('');
+  },{...trial,mode:'live',transport:path,controlDataDirectory:root});
+  const pending=exec({file:'/usr/bin/git',cwd:'/synthetic',args:['-C','/synthetic','push','--porcelain',
+   'https://github.com/'+trial.repository+'.git',sha+':refs/heads/'+trial.head],signal:new AbortController().signal});
+  const refused=assert.rejects(pending,/operator-generation-changed/);
+  await ready;db.exec('UPDATE autopilots SET enabled=0,generation=2');release();await refused;
+  assert.equal(calls,0,'The wrapper may not mutate after its added inspection becomes stale');
+ }finally{release();db.close();rmSync(root,{recursive:true,force:true});}
+});
+
+import {spawnSync} from 'node:child_process';
+import {pathToFileURL} from 'node:url';
+import {seedRehearsalRemote} from '../scripts/local-hosted-e2e.mjs';
+test('#92 rehearsal remote initializes correctly from a shallow CI checkout without weakening receive policy',()=>{
+ const root=mkdtempSync(join(tmpdir(),'mm-shallow-trial-')),source=join(root,'source'),shallow=join(root,'shallow'),bare=join(root,'remote.git');
+ const env={PATH:'/usr/bin:/bin',HOME:root,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',
+  GIT_AUTHOR_NAME:'synthetic',GIT_AUTHOR_EMAIL:'test@invalid.local',GIT_COMMITTER_NAME:'synthetic',GIT_COMMITTER_EMAIL:'test@invalid.local'};
+ const git=(cwd,args)=>{const r=spawnSync('/usr/bin/git',args,{cwd,env,encoding:'utf8',timeout:10000});assert.equal(r.status,0,r.stderr);return r.stdout.trim();};
+ try{
+  git(root,['init',source]);git(source,['commit','--allow-empty','-m','first']);git(source,['commit','--allow-empty','-m','second']);
+  git(root,['clone','--depth','1',pathToFileURL(source).href,shallow]);
+  assert.equal(git(shallow,['rev-parse','--is-shallow-repository']),'true');
+  git(shallow,['switch','-c',trial.base]);git(shallow,['commit','--allow-empty','-m','fixture']);
+  const seed=git(shallow,['rev-parse','HEAD']);seedRehearsalRemote(shallow,bare,env);
+  assert.equal(git(root,['--git-dir='+bare,'rev-parse','refs/heads/'+trial.base]),seed);
+  git(shallow,['commit','--allow-empty','-m','synthetic-next']);const next=git(shallow,['rev-parse','HEAD']);
+  git(shallow,['push',bare,next+':refs/heads/'+trial.head]);
+  assert.equal(git(root,['--git-dir='+bare,'rev-parse','refs/heads/'+trial.head]),next);
+ }finally{rmSync(root,{recursive:true,force:true});}
+});
