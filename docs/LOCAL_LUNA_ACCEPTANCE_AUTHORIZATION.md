@@ -29,12 +29,17 @@ not a standing authorization to deploy or access arbitrary accounts.
 
 ## Guardrails and implementation choices
 
-The existing Pi credential is read only through the public `readStoredCredential`
-API into an in-memory scoped credential store, using an explicit canonical owner-only
-file. No daemon home is mounted into model tools. Expired or imminently expiring
-credentials stop the trial rather than silently refreshing or rewriting the user's
-login. OAuth SDK operations remain the authentication authority; no endpoint or
-originator spoofing, custom OAuth implementation or authentication bypass.
+The selected existing Pi login is used through public `ModelRuntime` and
+`readStoredCredential` APIs with an explicit canonical owner-only auth file. A
+normal OAuth refresh, when required to reuse that login, is performed once by
+Pi's standard serialized credential-store operation; never manually rewrite
+tokens, create a new login, change account, or copy the credential file. The
+subsequent isolated test process uses an in-memory provider-scoped credential
+and refuses unexpected expiry instead of repeatedly rotating the user's login.
+No daemon home is mounted into model tools. OAuth SDK operations remain the
+authentication authority; no endpoint/originator spoofing, custom OAuth
+implementation or authentication bypass. Invalid/revoked refresh stops real
+auth testing and is reported rather than retried through another credential.
 
 Every new test state, host configuration, socket, browser profile and Worktree is
 under a freshly created temporary root. Never restart or reconfigure existing

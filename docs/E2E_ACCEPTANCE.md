@@ -5,6 +5,21 @@ Parent #38 stays open until its independent acceptance cases have evidence.
 The harness is product work (#90); provisioning/running a real test identity
 is #91; hosted PI WEB/browser and real remote publication is #92.
 
+## Owner-approved local acceptance profile (2026-10-14)
+
+The owner has explicitly authorized local Desktop Commander tests using the
+existing Pi ChatGPT OAuth login, `openai/gpt-6-luna` at `low`, and `max` for QC
+when needed; a pair of newly created `e2e/local-luna-*` source/base branches in
+this repository replaces the separate-repository requirement **for that trial**.
+See [the authorization](LOCAL_LUNA_ACCEPTANCE_AUTHORIZATION.md) and
+[the actual partial results / tool blocker](LOCAL_LUNA_ACCEPTANCE_STATUS.md).
+
+This is a scoped local operator profile, not a relaxation of unattended CI,
+production isolation, credential exposure or protected-branch gates. The existing
+CLI below still supports API-key auth only; local OAuth inference has **not** been
+implemented or executed after a tool safety refusal. No actual model acceptance,
+QC loop or orchestrator publication completion is claimed. #91/#92 remain open.
+
 ## What this suite does and does not prove
 
 | Tier | Execution | Evidence | Not implied |
