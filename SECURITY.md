@@ -61,6 +61,30 @@ quotas, credential provisioning and real-environment acceptance. Existing
 production controls remain mandatory. Splitting an Issue does not certify a
 deployment, authorize production operations, or permit unsupported fallback.
 
+## Explicit host model credential source
+
+An optional host-only `productionSecurity.modelAuthFile` selects the existing
+private canonical credential file for the public Pi ModelRuntime. It never copies
+credentials into a Workspace or returns their path in readiness. Files under a
+project, control state or executable package, aliases, hardlinks, shared file
+permissions and unsafe parents are refused. Workflow/model arguments cannot set
+this field. Unspecified profiles retain existing behavior; an explicitly selected
+source disables ambient custom models.json. The trusted SDK still owns refresh.
+This is not credential isolation from a malicious same-UID host process.
+
+Final integration receives a separate persisted `allowedMergeShas` broker
+capability, checked against current exact QC evidence. It is not the set of
+ancestors that must already exist before an ordinary dependent Run starts.
+Legacy final Runs missing that proof fail closed; do not rewrite their ledgers
+or reconstruct unproved authority to force a resume.
+
+The [hosted acceptance runner](docs/HOSTED_E2E_ACCEPTANCE.md) preserves sandboxing
+and scoped public APIs. Its GitHub transport fault injection acts only after
+real successful test-branch operations. Rehearsal uses faux/local-bare transport
+and is not real-provider or real-remote certification. A stopped parent or a
+kernel-blocked child is not a joined process tree. The runner retains test state
+on uncertain shutdown instead of silently claiming cleanup.
+
 ## Additional bounded production controls
 
 The [residual acceptance map](docs/RESIDUAL_ACCEPTANCE.md) documents the supported

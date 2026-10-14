@@ -12,7 +12,7 @@ import type {
   PiWebHostWorkspacesV1,
 } from "@jmfederico/pi-web/server-plugin-api";
 import type { WorkflowStore } from "../core/store.js";
-import type { TaskState } from "../core/workflow.js";
+import type { TaskState,WorkflowInstance } from "../core/workflow.js";
 import type { AgentBinding, AgentRegistry, Reservation, Seat } from "../runtime/registry.js";
 import type { PiSessionBridge } from "../runtime/session-bridge.js";
 import {isDurableSession,type DurableRunHost} from "../runtime/durable-runner.js";
@@ -41,6 +41,23 @@ export interface HostPortOptions {
   replaySettledReport(binding:AgentBinding):Promise<void>;
   notify(binding:AgentBinding):void;
   assertAdmitted?(job:LaunchJob):void;
+}
+/** Revalidate the immutable final broker capability against the current QC facts. */
+export function assertFinalMergeSources(job:LaunchJob,current:WorkflowInstance):void{
+  const task=current.tasks[job.taskId];
+  if(job.kind!=="implementation"||task?.spec.systemPurpose!=="final-integration"){
+    if(job.allowedMergeShas?.length)throw new Error("Only final integration may receive merge authority");
+    return;
+  }
+  const expected=task.spec.dependsOn.map(dep=>{
+    const source=current.tasks[dep.taskId];
+    if(source?.spec.kind!=="implementation"||source.lastQc?.verdict!=="pass"||
+      !["passed","integrated"].includes(source.status))
+      throw new Error("Final integration source no longer has accepted QC evidence");
+    return source.lastQc.headSha;
+  });
+  if(!expected.length||JSON.stringify(expected)!==JSON.stringify(job.allowedMergeShas))
+    throw new Error("Final integration broker authority differs from frozen QC sources");
 }
 export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
   resumeUnstarted(binding:AgentBinding,job:LaunchJob,assertAdmitted:()=>void):Promise<AgentBinding>;
@@ -110,6 +127,8 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
       const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
       const task=current.tasks[job.taskId];
       if(!task)throw new Error("Unknown Task");
+      if(options.getRuntime?.(job.projectId,job.orchestraWorkspaceId,job.workflowId)==="durable"||job.allowedMergeShas)
+        assertFinalMergeSources(job,current);
       if(job.kind==="planning"){
         const amendment=current.amendments.find(a=>a.targetTaskId===job.taskId&&
           a.status==="planning"&&internalRunId("plan",a.id)===job.runId);
@@ -196,6 +215,7 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
       const current=workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
       const task=current.tasks[job.taskId];
       if(!task)throw new Error("Recovery Task is missing");
+      if(isDurableSession(binding.sessionId)||job.allowedMergeShas)assertFinalMergeSources(job,current);
       if(job.kind==="planning"){
         if(!current.amendments.some(a=>a.status==="planning"&&a.targetTaskId===job.taskId&&
           internalRunId("plan",a.id)===job.runId))throw new Error("Recovery intervention changed");

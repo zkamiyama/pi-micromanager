@@ -145,6 +145,25 @@ separate tenant/credential isolation. A tool refusal is respected, not routed
 around; [current results](../LOCAL_LUNA_ACCEPTANCE_STATUS.md) are partial and
 #91/#92/#38 remain open. The automated API-key CI profile remains unchanged.
 
+## Hosted acceptance adapters and final-integration authority
+
+The product may accept an optional host-owned, metadata-validated credential
+source path (`modelAuthFile`) so a separate test/runtime state root need not
+mount or copy the operator's whole Pi profile. Authentication remains owned by
+the public Pi SDK. A Workflow cannot grant this authority or expose it to tools.
+
+Final Git integration's allowed source SHAs are a persisted broker capability,
+not an already-integrated ancestry precondition. Capture them from exact accepted
+source QC, recheck at the host executor and retain the same immutable list across
+recovery. A legacy missing capability requires reconciliation, not a fallback.
+
+Product E2E uses actual shipped host executables, registered plugin lifecycle,
+public browser peer and a test-owned public host-execution wrapper for loss
+injection. It does not call private PI WEB HTTP routes. A credential-free
+rehearsal may substitute the model and remote transports only when its evidence
+says so. Actual user-approved Luna and GitHub results remain a distinct acceptance
+gate. See [hosted acceptance](../HOSTED_E2E_ACCEPTANCE.md).
+
 ## Implemented bounded product controls
 
 The [residual acceptance map](../RESIDUAL_ACCEPTANCE.md) binds the concrete

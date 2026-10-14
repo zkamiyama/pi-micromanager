@@ -1,5 +1,6 @@
 /** Host-owned settings: never accept a Workflow's assertion of isolation. */
 import {realpathSync} from "node:fs";
+import {validateModelAuthFile} from "./auth-source.js";
 import {isAbsolute,relative,resolve,sep} from "node:path";
 import {DEFAULT_LIMITS,validateRunLimits,type RunLimits} from "./run-safety.js";
 import {parseStorageLimits,type StorageLimits} from "./storage-admission.js";
@@ -8,6 +9,7 @@ export interface ProductionPolicy {
   mode:"production";projectRoots:string[];models:Array<{provider:string;model:string}>;
   publication:Array<{repository:string;baseBranch:string}>;limits:RunLimits;
   maxCommandMs:number;maxWorkspaceBytes:number;storage:StorageLimits;diagnostics:TestDiagnosticPolicy;
+  modelAuthFile?:string;
 }
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==="object"&&!Array.isArray(v);
 function text(v:unknown,max:number):string{
@@ -23,7 +25,7 @@ export function isWithin(root:string,path:string):boolean{
 export function parseProductionPolicy(value:unknown):ProductionPolicy|undefined{
   if(value===undefined)return;
   if(!object(value)||value.mode!=="production")throw new Error("Explicit host production policy required");
-  if(Object.keys(value).some(k=>!["mode","projectRoots","models","publication","limits","maxCommandMs","maxWorkspaceBytes","storage","diagnostics"].includes(k)))
+  if(Object.keys(value).some(k=>!["mode","projectRoots","models","publication","limits","maxCommandMs","maxWorkspaceBytes","storage","diagnostics","modelAuthFile"].includes(k)))
     throw new Error("Unknown production policy field");
   if(!Array.isArray(value.projectRoots)||!value.projectRoots.length||value.projectRoots.length>32)
     throw new Error("Production requires 1..32 explicit project roots");
@@ -49,7 +51,10 @@ export function parseProductionPolicy(value:unknown):ProductionPolicy|undefined{
   if(value.limits!==undefined&&(!object(value.limits)||Object.keys(value.limits).some(k=>!Object.hasOwn(DEFAULT_LIMITS,k))))
     throw new Error("Unknown production budget field");
   const limits=validateRunLimits({...DEFAULT_LIMITS,maxConcurrentRuns:4,...(value.limits as Partial<RunLimits>??{})});
+  const modelAuthFile=value.modelAuthFile===undefined?undefined:
+    validateModelAuthFile(value.modelAuthFile,projectRoots);
   return {mode:"production",projectRoots,models,publication,limits,storage:parseStorageLimits(value.storage),diagnostics:parseTestDiagnosticPolicy(value.diagnostics),
+    ...(modelAuthFile?{modelAuthFile}:{}),
     maxCommandMs:bound(value.maxCommandMs,60_000,1000,120_000),
     maxWorkspaceBytes:bound(value.maxWorkspaceBytes,512*1024*1024,1024*1024,4*1024*1024*1024)};
 }

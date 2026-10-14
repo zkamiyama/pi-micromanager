@@ -542,3 +542,24 @@ test("G06: configured runtime and managed Worktree budgets are finite",()=>{
  assert.equal(parseAutopilotConfig({...config,maxConcurrentRuns:2,
    maxManagedWorktrees:16}).maxConcurrentRuns,2);
 });
+
+test('#92 final integration freezes merger allowlist separately from pre-existing ancestry requirements',async()=>{
+ const x=setup(definition,{...config,finalization:{workspaceId:'linked-wt-final',autoMerge:false},
+  publication:{remote:'origin',baseBranch:'test-base',draft:true}});
+ try{
+  for(let i=0;i<3&&!x.run('impl-api-1');i++)await x.tick();
+  x.settled('impl-api-1');await x.tick();
+  for(let i=0;i<3&&!x.run('qc-api-1');i++)await x.tick();
+  const qc=x.run('qc-api-1');
+  x.ledger.recordReport(qc,{kind:'qc',runId:qc.runId,verdict:'pass',summary:'Synthetic exact source accepted',at:Date.now()});
+  x.settled('qc-api-1');
+  for(let i=0;i<10&&!x.launches.some(j=>j.runId==='impl-mm-final-integration-1');i++)await x.tick();
+  const final=x.launches.find(j=>j.runId==='impl-mm-final-integration-1');
+  assert.ok(final,'The engine must actually dispatch the final worker');
+  assert.deepEqual(final.allowedMergeShas,[sha],
+    'The sandbox cannot access Git metadata; only the broker may merge these frozen QC SHAs');
+  assert.deepEqual(final.requiredAncestors??[],[],
+    'Sources need not be ancestors before the worker has integrated them');
+  assert.deepEqual(x.ledger.launchFor(x.run(final.runId)).allowedMergeShas,[sha]);
+ }finally{x.close();}
+});

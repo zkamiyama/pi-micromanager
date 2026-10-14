@@ -63,4 +63,24 @@ jobs:
       - run: npm ci --no-audit --no-fund && npm run build
       - run: npx playwright install --with-deps chromium
       - name: Four real hosted Runs, UI steer, QC, intervention and restart
-        run: npm run test:e2e:hosted -- --mode faux
+        run: npm run test:e2e:hosted-quartet -- --mode faux
+  hosted-acceptance-rehearsal:
+    # Actual PI WEB/browser/Bubblewrap. Model and remote transport are explicitly
+    # simulated; this job has no OAuth/provider or repository-write credentials.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: npm ci --no-audit --no-fund && npm run build
+      - run: npx --no-install playwright install --with-deps --only-shell chromium
+      - name: Require hosted rehearsal (not real-provider or GitHub acceptance)
+        env:
+          MM_REQUIRE_SANDBOX: '1'
+        run: node scripts/local-hosted-e2e.mjs --mode rehearsal

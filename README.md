@@ -96,6 +96,8 @@ mocks. They do **not** replace authenticated PI WEB host soak tests.
 
 ## Development
 
+Hosted PI WEB/browser, parallel Run/QC and exact-branch publication/recovery acceptance: [owner-operated hosted test](docs/HOSTED_E2E_ACCEPTANCE.md). Credential-free rehearsal and actual local OAuth/GitHub execution are separately labeled.
+
 Actual hosted browser/Workflow lifecycle: [HOSTED_ACCEPTANCE.md](docs/HOSTED_ACCEPTANCE.md). Production source discovery, capacity admission, disclosure policy and proof-pinned retention: [residual acceptance map](docs/RESIDUAL_ACCEPTANCE.md).
 
 Owner-approved local ChatGPT OAuth / Luna Low or Max smoke: [manual test and result-sharing guide](docs/LOCAL_LUNA_MANUAL_TEST.md). The opt-in script sends no GitHub writes and exposes no coding tools.

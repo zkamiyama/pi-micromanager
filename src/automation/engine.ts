@@ -15,6 +15,8 @@ export interface LaunchJob {
   controlGeneration?:number;
   /** QC-passed upstream commits that must be ancestors of a dependent writer. */
   requiredAncestors?:string[];
+  /** Final-only broker capability, distinct from ancestors required before launch. */
+  allowedMergeShas?:string[];
 }
 export interface Verification {
   headSha:string;clean:boolean;testsPassed:boolean;details:string;
@@ -452,11 +454,19 @@ export class AutopilotEngine {
           return source?.spec.kind==="implementation"&&source.lastQc?.verdict==="pass"?
             [source.lastQc.headSha]:[];
         }):[];
+      const allowedMergeShas=next.kind==="implementation"&&task.spec.systemPurpose==="final-integration"?
+        task.spec.dependsOn.map(dep=>{
+          const source=current.tasks[dep.taskId];
+          if(source?.spec.kind!=="implementation"||source.lastQc?.verdict!=="pass")
+            throw new Error("Final broker source lacks a frozen QC PASS");
+          return source.lastQc.headSha;
+        }):[];
       if(this.stopping)return;
       await this.launch({projectId:p,orchestraWorkspaceId:o,workflowId,
         controlGeneration:record.generation,
         taskId:next.taskId,runId:next.runId,seat:next.seat,kind:next.kind,workspaceId,
         ...(requiredAncestors.length?{requiredAncestors}:{}),
+        ...(allowedMergeShas.length?{allowedMergeShas}:{}),
         // A Task's implementer override must never replace its independent QC profile.
         model:task.spec.model&&next.kind!=="qc"?(()=>{
           const raw=task.spec.model!;
