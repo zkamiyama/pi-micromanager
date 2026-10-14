@@ -16,9 +16,7 @@ See [the authorization](LOCAL_LUNA_ACCEPTANCE_AUTHORIZATION.md) and
 
 This is a scoped local operator profile, not a relaxation of unattended CI,
 production isolation, credential exposure or protected-branch gates. The existing
-CLI below still supports API-key auth only; local OAuth inference has **not** been
-implemented or executed after a tool safety refusal. No actual model acceptance,
-QC loop or orchestrator publication completion is claimed. #91/#92 remain open.
+CLI below still supports API-key auth only. A separate [local OAuth runner](LOCAL_LUNA_MANUAL_TEST.md) now implements the explicitly approved Luna profile through the public Pi SDK; the earlier refusal is retained as history. Its real execution receipt, not its existence or a faux pass, determines #91 acceptance. It does not certify a QC loop or orchestrator publication (#92).
 
 ## What this suite does and does not prove
 

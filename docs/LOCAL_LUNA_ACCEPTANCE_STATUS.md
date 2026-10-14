@@ -1,4 +1,6 @@
-# Local Luna acceptance status — 2026-10-14
+# Historical local Luna acceptance status — first attempt, 2026-10-14
+
+The subsequent user-requested retry now has a [manual runnable smoke](LOCAL_LUNA_MANUAL_TEST.md). The record below describes the earlier attempt, not the current script availability. Real results are recorded in the follow-up PR/Issue evidence.
 
 Related: #38, #91, #92; [operator authorization](LOCAL_LUNA_ACCEPTANCE_AUTHORIZATION.md).
 **Overall status: PARTIAL / BLOCKED. Real Luna inference and the complete
