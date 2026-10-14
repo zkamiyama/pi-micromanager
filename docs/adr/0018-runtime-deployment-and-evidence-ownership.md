@@ -2,6 +2,8 @@
 
 Status: Accepted design; implementation and deployment evidence are tracked separately.
 Date: 2026-10-14
+
+Follow-up: [ADR-0019](0019-bounded-product-capabilities-and-issue-disposition.md) records concrete choices, rejected alternatives and per-Issue acceptance for the remaining eight Issues. It preserves the existing security boundary and separates adopted design from implementation/deployment evidence.
 Parents: ADR-0001, ADR-0003, ADR-0016, ADR-0017; Issues #36, #37, #38.
 
 ## Context
