@@ -80,6 +80,9 @@ export default {...${actualExport},async activate(host){
  }});
 }};`;
 }
+export function manualPublicationConfig(config){
+ const {managedWorktrees,...manual}=config;return manual;
+}
 export async function runPublicationTrial({setup,call,wait,restart,profile,definition,onStage=()=>{}}){
  onStage('provision');const workflowId='publication';
  const spec=definition(workflowId,['source']);
@@ -103,7 +106,7 @@ export async function runPublicationTrial({setup,call,wait,restart,profile,defin
  // Only new idle test worktrees are renamed. Keep host-verified physical IDs;
  // no production plan is altered, and no Run has yet been launched.
  onStage('admit-configured-workflow');
- const configured={...state.config,managedWorktrees:undefined};
+ const configured=manualPublicationConfig(state.config);
  await call('auto.configure',{workflowId,config:configured});await call('auto.start',{workflowId});
  onStage('await-approved-publisher');
  let reconciled=false,prUrl,finalSha;

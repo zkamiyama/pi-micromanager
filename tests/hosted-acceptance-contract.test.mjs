@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {parseHostedArguments} from '../scripts/hosted-acceptance.mjs';
-import {publicationServerWrapper,TRIAL_REPOSITORY} from '../scripts/hosted-publication-trial.mjs';
+import {publicationServerWrapper,manualPublicationConfig,TRIAL_REPOSITORY} from '../scripts/hosted-publication-trial.mjs';
 
 test('#92 hosted runner requires explicit real-account and exact-source publication authority',()=>{
  assert.equal(parseHostedArguments(['--mode','faux']).publish,false);
@@ -39,4 +39,12 @@ test('#92 fault adapter discards only one confirmed merge response and refuses a
   await assert.rejects(host.execFile(request),/Second merge request refused/);
   assert.equal(requests,1);assert.equal(readFileSync(audit,'utf8').trim().split('\n').length,2);
  }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test('#92 manual Worktree configuration is valid public JSON, not an undefined-valued property',()=>{
+ const input={managedWorktrees:true,workspaces:{source:'real-id'},finalization:{workspaceId:'final-id',autoMerge:true}};
+ const result=manualPublicationConfig(input);
+ assert.equal(Object.hasOwn(result,'managedWorktrees'),false);
+ assert.deepEqual(JSON.parse(JSON.stringify(result)),result);
+ assert.equal(input.managedWorktrees,true);
 });
