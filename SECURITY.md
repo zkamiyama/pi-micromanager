@@ -40,7 +40,7 @@ Production requires `/usr/bin/bwrap`, `/usr/bin/prlimit`, `/usr/bin/flock`, `/us
 
 ## Release gates and evidence
 
-Run `npm ci --no-audit --no-fund && npm run check`. CI includes Node 22/24 compatibility tests and a separate `successful-isolation` job with `MM_REQUIRE_SANDBOX=1`. In that job, missing or refused namespaces are failures, not passing refusal coverage. Portable hosts may skip only known sandbox-unavailability cases with an explicit diagnostic; these runs do not certify isolation success.
+Run `npm ci --no-audit --no-fund && npm run check`. CI includes portable Node 22/24 compatibility tests and a separate required `successful-isolation` job with `MM_REQUIRE_SANDBOX=1`, which unconditionally runs `tests/production-server-isolation.required.mjs` (delayed provider and actual sandbox-tool lifetime tests). In that job, missing or refused namespaces are failures, not passing refusal coverage. Portable hosts may skip only known sandbox-unavailability cases with an explicit diagnostic; these runs do not certify isolation success.
 
 The security suite uses synthetic secrets, disposable Git repositories and loopback servers, real SQLite/flock, and the real Durable Harness with a deterministic faux provider. It does not incur provider charges or publish an application PR. Authenticated compatibility smoke remains a separately approved, default-branch-only workflow; it is not production isolation certification.
 
