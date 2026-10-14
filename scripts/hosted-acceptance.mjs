@@ -224,7 +224,7 @@ export async function runHosted(args){
   checks.abortAndRestartNoReplay='passed';receipt.modelAdmissions=interrupted.requests;receipt.toolAdmissions=interrupted.tools;
   checks.browserPeerTransport='passed';checks.realModelAuthentication=options.mode==='oauth'?'passed':'not-verified';
   if(publication){
-   stage='product-publication';receipt.remotePublication=await runPublicationTrial({setup:publication,call,wait,restart,profile,definition});
+   stage='product-publication';receipt.remotePublication=await runPublicationTrial({setup:publication,call,wait,restart,profile,definition,onStage:s=>{stage='publication-'+s;}});
   }
   receipt.status='passed';receipt.code='ok';exit=0;
  }catch{receipt.status=root?'failed':'blocked';receipt.code=stage;exit=root?1:2;}

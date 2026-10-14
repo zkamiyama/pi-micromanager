@@ -80,8 +80,8 @@ export default {...${actualExport},async activate(host){
  }});
 }};`;
 }
-export async function runPublicationTrial({setup,call,wait,restart,profile,definition}){
- const workflowId='publication';
+export async function runPublicationTrial({setup,call,wait,restart,profile,definition,onStage=()=>{}}){
+ onStage('provision');const workflowId='publication';
  const spec=definition(workflowId,['source']);
  spec.permissions={default:'deny',actions:{'git.commit':'ask','git.integrate':'allow','git.push':'ask',
   'github.pr.create':'ask','github.pr.merge':'ask'}};
@@ -92,21 +92,24 @@ export async function runPublicationTrial({setup,call,wait,restart,profile,defin
  let state=await call('auto.status',{workflowId});
  assert.equal((await call('agents.list',{view:'all'})).some(r=>r.workflowId===workflowId),false);
  const allowed=new Set([state.config.workspaces.source,state.config.finalization.workspaceId]);
+ onStage('rename-idle-test-branches');
  for(const taskId of ['source','mm-final-integration']){
   const plan=await call('auto.worktree.status',{workflowId,taskId});assert.ok(plan?.path);assert.equal(plan.stage,'created');
-  assert.equal(realpathSync(plan.path),plan.path);assert.ok(plan.path.startsWith(join(setup.localRoot,'state','managed-worktrees')+'/'));assert.equal(plan.repoRoot,setup.project);
+  assert.equal(realpathSync(plan.path),plan.path);assert.ok(plan.path.startsWith(join(setup.localRoot,'state','plugin-data','micromanager','managed-worktrees')+'/'));assert.equal(plan.repoRoot,setup.project);
   const target=taskId==='source'?setup.source+'-task':setup.source;
   const branch=setup.git(['symbolic-ref','--short','HEAD'],plan.path);assert.equal(branch,plan.branch);
   setup.git(['branch','-m',target],plan.path);
  }
  // Only new idle test worktrees are renamed. Keep host-verified physical IDs;
  // no production plan is altered, and no Run has yet been launched.
+ onStage('admit-configured-workflow');
  const configured={...state.config,managedWorktrees:undefined};
  await call('auto.configure',{workflowId,config:configured});await call('auto.start',{workflowId});
+ onStage('await-approved-publisher');
  let reconciled=false,prUrl,finalSha;
  await wait(async()=>{
   if(existsSync(setup.lossMarker)&&!reconciled){
-   const proof=JSON.parse(readFileSync(setup.lossMarker,'utf8'));assert.equal(proof.responseDiscarded,true);
+   onStage('lost-response-restart');const proof=JSON.parse(readFileSync(setup.lossMarker,'utf8'));assert.equal(proof.responseDiscarded,true);
    await call('auto.pause',{workflowId});await restart();await call('auto.start',{workflowId});reconciled=true;
   }
   const current=await call('get',workflowId),status=await call('auto.permissions',{workflowId});
@@ -129,7 +132,7 @@ export async function runPublicationTrial({setup,call,wait,restart,profile,defin
   }
   return reconciled&&Object.values(current.tasks).filter(t=>t.spec.kind==='implementation').every(t=>t.status==='integrated');
  },600000);
- assert.ok(prUrl);assert.ok(finalSha);
+ onStage('verify-actual-remote');assert.ok(prUrl);assert.ok(finalSha);
  const remote=JSON.parse(setup.gh(['pr','view',prUrl,'--repo',TRIAL_REPOSITORY,'--json','state,headRefOid,headRefName,baseRefName,mergeCommit,url']));
  assert.equal(remote.state,'MERGED');assert.equal(remote.headRefOid,finalSha);assert.equal(remote.headRefName,setup.source);assert.equal(remote.baseRefName,setup.base);
  assert.equal(setup.gh(['api','repos/'+TRIAL_REPOSITORY+'/git/ref/heads/main','--jq','.object.sha']),setup.mainBefore);
