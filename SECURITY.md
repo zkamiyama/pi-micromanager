@@ -42,7 +42,7 @@ Production requires `/usr/bin/bwrap`, `/usr/bin/prlimit`, `/usr/bin/flock`, `/us
 
 Run `npm ci --no-audit --no-fund && npm run check`. CI includes portable Node 22/24 compatibility tests and a separate required `successful-isolation` job with `MM_REQUIRE_SANDBOX=1`, which unconditionally runs `tests/production-server-isolation.required.mjs` (delayed provider and actual sandbox-tool lifetime tests). In that job, missing or refused namespaces are failures, not passing refusal coverage. Portable hosts may skip only known sandbox-unavailability cases with an explicit diagnostic; these runs do not certify isolation success.
 
-The security suite uses synthetic secrets, disposable Git repositories and loopback servers, real SQLite/flock, and the real Durable Harness with a deterministic faux provider. It does not incur provider charges or publish an application PR. Authenticated compatibility smoke remains a separately approved, default-branch-only workflow; it is not production isolation certification.
+The security suite uses synthetic secrets, disposable Git repositories and loopback servers, real SQLite/flock, and the real Durable Harness with a deterministic faux provider. It does not incur provider charges or publish an application PR. Authenticated model-SDK smoke is a separately approved, default-branch-only workflow with explicit reviewed SHA and an in-memory test-only API key; it is not production isolation or hosted-browser certification. The former ambient-auth/unconfined Autopilot smoke is blocked and tracked in #92. See `docs/E2E_ACCEPTANCE.md`.
 
 The `security.readiness` peer operation reports bounded `pass`/`fail`/`not-verified` evidence for enforced code-level controls and explicitly unverified deployment conditions; it never returns a universal-safety guarantee. Before production rollout, record evidence for TLS/authentication and authorization, provider scopes/spend alerts, OS/SDK patching, cgroup memory/PID/CPU limits, disk quotas, isolation success on the **actual** execution host, offline backup/restore drills including external Git/provider state, and an independent security review.
 
@@ -53,3 +53,10 @@ Workspace size scanning and per-process rlimits are not a hard aggregate disk, m
 Private state and flock are not a verified full-system backup. The offline CLI offers `snapshot`, `verify`, and **fresh-root-only** `restore`, requiring a separately trusted manifest SHA-256 digest. Restore creates a new private directory and durably writes `RESTORE_REQUIRES_REVIEW` before copying verified payloads; errors or interruptions leave that directory quarantined. Production **and compatibility** activation reject the quarantine marker. No unquarantine or automatic replay command exists. Independently verify database integrity, immutable evidence, external Git Worktrees/PR branches, provider outcomes and native PI WEB sessions before a future manually reviewed production recovery. Never reset uncertain Runs, overwrite an existing or active state directory, or infer external side effects from local backup timestamps.
 
 These are explicit deployment release blockers, not silently waived checks. Code-level S01–S06/#18 acceptance evidence is mapped in `docs/PRODUCTION_ISSUE_ACCEPTANCE_72_77_18.md`; broader worker/resource/recovery and deployment obligations remain tracked in #36–#38. No production daemon is reloaded by the tests or configuration example.
+
+## Responsibility and acceptance ownership
+
+[ADR-0018](docs/adr/0018-runtime-deployment-and-evidence-ownership.md) separates product admission/evidence obligations from platform isolation,
+quotas, credential provisioning and real-environment acceptance. Existing
+production controls remain mandatory. Splitting an Issue does not certify a
+deployment, authorize production operations, or permit unsupported fallback.

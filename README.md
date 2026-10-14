@@ -65,6 +65,8 @@ The older preview-before-approval Sol workflow remains available. See
 
 ## Architecture and ADRs
 
+Product/runtime/deployment ownership and the #36–#38 work split: [ADR-0018](docs/adr/0018-runtime-deployment-and-evidence-ownership.md).
+
 - [ADR-0001 — Control plane and product boundaries](docs/adr/0001-control-plane-and-product-boundaries.md)
 - [ADR-0002 — Deterministic DAG, QC barriers, and Workflow Amendments](docs/adr/0002-deterministic-dag-and-live-interventions.md)
 - [ADR-0003 — Evidence, Live Journal, retention, knowledge promotion](docs/adr/0003-evidence-journal-retention-and-knowledge.md)
@@ -93,6 +95,11 @@ also exercises disposable real Git Worktrees and GitHub publication
 mocks. They do **not** replace authenticated PI WEB host soak tests.
 
 ## Development
+
+For the supported E2E tiers, test-only authentication, exact-commit receipts
+and the remaining hosted/browser acceptance work, see
+[E2E acceptance](docs/E2E_ACCEPTANCE.md). The old unconfined authenticated
+Autopilot smoke is blocked pending a qualified replacement (#92).
 
 Requires Node.js 22.19+ (PI WEB version constraint). Runtime plugin compatibility should be tested against the installed PI WEB version; source APIs are versioned and may evolve.
 

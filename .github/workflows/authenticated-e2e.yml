@@ -1,15 +1,29 @@
-name: Authenticated compatibility smoke (manual)
+name: Authenticated model SDK smoke (manual)
 on:
   workflow_dispatch:
     inputs:
       provider:
-        description: Exact provider already authenticated on the dedicated runner
+        description: Explicit test-only provider (openai or anthropic); no default
         type: string
         required: true
       model:
-        description: Exact model approved for this test
+        description: Exact model approved for bounded test billing; no fallback
         type: string
         required: true
+      reviewed_sha:
+        description: Full reviewed default-branch commit SHA, must equal this run SHA
+        type: string
+        required: true
+      approve_billed_test:
+        description: Authorize at most four test model requests (not a monetary cap)
+        type: boolean
+        required: true
+        default: false
+      test_identity_only:
+        description: Confirm MM_E2E_API_KEY is a dedicated test identity, never production
+        type: boolean
+        required: true
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -17,26 +31,47 @@ concurrency:
   cancel-in-progress: false
 jobs:
   smoke:
-    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-    runs-on: [self-hosted, linux, pi-authenticated]
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.approve_billed_test && inputs.test_identity_only }}
+    # Fresh GitHub-hosted runner; no persistent daemon user's credential store.
+    runs-on: ubuntu-22.04
     environment: authenticated-pi-e2e
-    timeout-minutes: 12
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Require the explicitly reviewed commit before dependency execution
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+          RUN_SHA: ${{ github.sha }}
+        run: test "$REVIEWED_SHA" = "$RUN_SHA"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           package-manager-cache: false
-      - run: npm ci --no-audit --no-fund && npm run check
-      - name: Real model turn and Durable resume (not OS-isolation certification)
+      - name: Build and verify harness without provider credentials
+        run: npm ci --no-audit --no-fund && npm run build && npm run test:e2e:faux
+      - name: Test-only model turn and durable reopen (no remote publication)
         env:
           PI_PROVIDER: ${{ inputs.provider }}
           PI_MODEL: ${{ inputs.model }}
-        run: node scripts/durable-auth-smoke.mjs
-      - name: Disposable compatibility coding and QC (no remote publication)
-        env:
-          PI_PROVIDER: ${{ inputs.provider }}
-          PI_MODEL: ${{ inputs.model }}
-        run: node scripts/real-durable-autopilot-smoke.mjs
+          EXPECTED_SHA: ${{ inputs.reviewed_sha }}
+          MM_E2E_API_KEY: ${{ secrets.MM_E2E_API_KEY }}
+          RECEIPT_PATH: ${{ runner.temp }}/mm-e2e-receipt.json
+        run: >-
+          timeout --signal=TERM --kill-after=10s 90s
+          node scripts/durable-auth-smoke.mjs
+          --mode authenticated --provider "$PI_PROVIDER" --model "$PI_MODEL"
+          --expected-sha "$EXPECTED_SHA" --approve-billed-test --test-identity-only
+          --receipt "$RECEIPT_PATH"
+      - name: Preserve only the bounded SDK test receipt in the job summary
+        if: ${{ always() }}
+        run: |
+          if test -f "$RUNNER_TEMP/mm-e2e-receipt.json"; then
+            printf '## SDK-only E2E receipt\n\n```json\n' >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/mm-e2e-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+            printf '```\n\nNo OS-isolation, hosted-browser or remote-publication certification.\n' >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## SDK E2E not certified\nNo completed receipt. Check failed/blocked steps.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi

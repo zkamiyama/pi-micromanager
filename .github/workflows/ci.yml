@@ -27,6 +27,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: npm ci --no-audit --no-fund
       - run: npm run check
+      - name: Credential-free SDK E2E receipt (not authenticated acceptance)
+        run: npm run test:e2e:faux
   successful-isolation:
     # Require real supported namespaces; never weaken AppArmor or use a fallback.
     runs-on: ubuntu-22.04
