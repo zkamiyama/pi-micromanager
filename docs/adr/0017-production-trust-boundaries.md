@@ -20,13 +20,25 @@ Existing unsafe/YOLO profiles and old unproved input inventories require explici
 
 Kernel/host compromise, same-UID malicious processes, authentication/TLS outside this plugin, hard machine-resource quotas, exact provider billing, external-state restore, and independent review remain deployment obligations. Git commit brokers and the publisher are trusted code and must stay small and separately tested. Ordinary state-machine core semantics are unchanged.
 
-## Continuation status: release still blocked
+## Continuation: public entrypoint hardening candidate
 
-The state-owner lock is now retained by the daemon's own open file descriptor;
-a disposable child only establishes it. Offline snapshot creation and trusted-digest
-verification are implemented, with external Git/provider/native-session dependencies
-recorded explicitly. Restore and external-state reconciliation are not implemented.
-New canonical path, production-mode, last-hop admission-fence and Durable-lifetime
-components have regression coverage but are not fully connected at the public
-server boundary. See [the continuation matrix](../PRODUCTION_REMEDIATION_PROGRESS.md).
-Issues #79, #80, #81 and #75 remain open; component tests do not authorize a production release.
+The state-owner lock is retained by the daemon's own file descriptor.
+The public server now invokes canonical Workspace/project separation,
+persists a production-mode marker, supplies a state-owner/lifetime signal to
+Durable Harnesses and joins all in-flight requests and worker shutdown before
+releasing flock. Every production Git operation captures a host-owned workflow
+generation/ownership admission fence and repeats it after asynchronous security
+inspection, immediately before native execution.
+
+Offline snapshot/verify retain committed SQLite WAL evidence and trusted SHA-256
+digests. Restore is limited to an atomic fresh directory with an immediate
+durable quarantine marker. It has no automatic external-state reconciliation,
+unquarantine, or replay mechanism. This is intentional: Git Worktrees,
+GitHub PRs, provider outcomes, credentials and native PI WEB sessions must be
+reconciled independently before any later production use.
+
+These code changes require exact-commit CI success, real namespace isolation
+and independent security review before merging. They do **not** certify a
+deployed production host or waive ingress authentication, OS patching,
+cgroups/quotas or spending controls. See
+[the continuation matrix](../PRODUCTION_REMEDIATION_PROGRESS.md).

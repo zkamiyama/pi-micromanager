@@ -1,12 +1,15 @@
 /** Security entrypoint around the existing public PI WEB control plane. */
 import base from "./control-plane.js";
-import {chmodSync,readdirSync,lstatSync,realpathSync} from "node:fs";
+import {chmodSync,readdirSync,lstatSync} from "node:fs";
 import {join} from "node:path";
+import {DatabaseSync} from "node:sqlite";
 import type {PiWebServerPlugin,PiWebHostWorkspacesV1} from "@jmfederico/pi-web/server-plugin-api";
 import {parseProductionPolicy,installProductionPolicy,assertProductionProject,
-  assertProductionConfig,assertProductionModel,isWithin} from "../security/policy.js";
+  assertProductionConfig,assertProductionModel} from "../security/policy.js";
 import {acquireStateOwner} from "../security/state-owner.js";
 import {guardedHostExecution} from "../security/host-execution.js";
+import {assertWorkspaceBoundary} from "../security/workspace-boundary.js";
+import {assertStateActivation,persistProductionMode} from "../security/state-mode.js";
 import {parseAutopilotConfig,AutopilotLedger} from "../automation/ledger.js";
 import {QuickLaunchLedger,parseQuickProfile} from "../automation/quick-launch.js";
 import {WorkflowStore} from "../core/store.js";
@@ -16,19 +19,62 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
   const owner=policy?await acquireStateOwner(host.dataDirectory):undefined;
   let uninstall:()=>void=()=>{};
   const signal=owner?AbortSignal.any([host.lifetimeSignal,owner.lost]):host.lifetimeSignal;
+  let generations:DatabaseSync|undefined;
+  // Capture an immutable cross-workflow control-generation snapshot at Git
+  // invocation, and compare it AFTER asynchronous repository inspection.
+  // This deliberately invalidates unrelated in-flight Git operations on an
+  // operator transition rather than allowing a stale push/merge.
+  const snapshotGenerations=()=>{
+    if(!generations)throw new Error("Production operation-generation ledger unavailable");
+    return JSON.stringify(generations.prepare(
+      "SELECT scope,workflow_id,enabled,generation FROM autopilots ORDER BY scope,workflow_id").all());
+  };
+  const captureFence=()=>{
+    signal.throwIfAborted();owner?.assertHeld();
+    const captured=policy?snapshotGenerations():undefined;
+    return ()=>{
+      signal.throwIfAborted();owner?.assertHeld();
+      if(policy&&snapshotGenerations()!==captured)
+        throw new Error("Operator control generation changed during Git preflight");
+    };
+  };
   let failedActivationCleanup:(()=>Promise<void>)|undefined;
   try{
+    assertStateActivation(host.dataDirectory,Boolean(policy));
+    if(policy){owner?.assertHeld();persistProductionMode(host.dataDirectory);}
     if(policy)uninstall=installProductionPolicy(host.dataDirectory,policy);
     const backend=await base.activate({...host,lifetimeSignal:signal,
-      execFile:guardedHostExecution(host.execFile,policy)});
+      execFile:guardedHostExecution(host.execFile,policy,captureFence)});
+    if(policy)generations=new DatabaseSync(join(host.dataDirectory,"autopilot.sqlite"),
+      {readOnly:true,allowExtension:false});
     let disposal:Promise<void>|undefined;
+    let draining=false;
+    const requestsInFlight=new Set<Promise<unknown>>();
     const dispose=(disposeSignal:AbortSignal):Promise<void>=>{
-      if(!disposal)disposal=(async()=>{
-        try{await backend.dispose?.(disposeSignal);}finally{uninstall();await owner?.release();}
+      if(!disposal){
+        draining=true;
+        disposal=(async()=>{
+        // A request that entered before owner loss may still be in asynchronous
+        // preflight. Join it before backend DBs close and before releasing flock.
+        await Promise.allSettled([...requestsInFlight]);
+        // Never release the state lock if active workers could not be joined.
+        await backend.dispose?.(disposeSignal);
+        signal.removeEventListener("abort",onLifetimeEnd);
+        generations?.close();
+        uninstall();
+        await owner?.release();
       })();
+      }
       return disposal;
     };
+    const onLifetimeEnd=()=>{
+      void dispose(new AbortController().signal).catch(()=>
+        host.logger.error("Control-plane shutdown failed; ownership retained for safety"));
+    };
+    signal.addEventListener("abort",onLifetimeEnd,{once:true});
+    if(signal.aborted)onLifetimeEnd();
     failedActivationCleanup=()=>dispose(new AbortController().signal);
+    signal.throwIfAborted();
     if(policy){
       for(const name of readdirSync(host.dataDirectory))if(/\.sqlite(?:-(?:wal|shm))?$/.test(name)){
         const file=join(host.dataDirectory,name),s=lstatSync(file);
@@ -62,14 +108,12 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
             const ws=api as PiWebHostWorkspacesV1;
             return {...ws,async resolve(selection:Parameters<typeof ws.resolve>[0]){
               const result=await ws.resolve(selection);
-              assertProductionProject(policy,result.project.path);
-              const canonical=realpathSync(result.workspace.path);
-              if(!policy.projectRoots.some(root=>isWithin(root,canonical))&&
-                !isWithin(join(realpathSync(host.dataDirectory),"managed-worktrees"),canonical))
-                throw new Error("Workspace is outside host production project/managed roots");
-              if(isWithin(host.dataDirectory,result.workspace.path)&&
-                !isWithin(join(host.dataDirectory,"managed-worktrees"),result.workspace.path))
-                throw new Error("Control-plane state cannot be an agent Workspace");
+              if(result.project.id!==selection.projectId||
+                result.workspace.id!==selection.workspaceId||
+                result.workspace.projectId!==selection.projectId)
+                throw new Error("Workspace authority does not match its selected project");
+              assertWorkspaceBoundary(policy,result.project.path,result.workspace.path,
+                host.dataDirectory,host.packageRoot);
               return result;
             }};
           }) as typeof ctx.capabilities.resolve}:ctx.capabilities;
@@ -77,6 +121,8 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
       },
       peer:{...backend.peer,async request(ctx){
         signal.throwIfAborted();
+        if(draining)throw new Error("Control plane is stopping");
+        const flight=(async()=>{
         if(ctx.operation==="security.readiness")return {
           mode:policy?"production":"compatibility",
           admissionPolicy:policy?"host-enforced":"not-production",
@@ -118,11 +164,19 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
           }
         }
         return request(ctx);
+        })();
+        requestsInFlight.add(flight);
+        try{return await flight;}finally{requestsInFlight.delete(flight);}
       }},
       dispose,
     };
   }catch(error){
-    try{await failedActivationCleanup?.();}finally{uninstall();await owner?.release();}
+    if(failedActivationCleanup){
+      // A failed join must not hand the lock to another control plane.
+      try{await failedActivationCleanup();}catch{
+        host.logger.error("Activation cleanup failed; ownership retained for safety");
+      }
+    }else{uninstall();await owner?.release();}
     throw error;
   }
 }};

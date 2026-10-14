@@ -201,3 +201,56 @@ export function verifySnapshot(source:string,expectedDigest:string):StateManifes
   }
   return parsed as unknown as StateManifest;
 }
+
+
+/** Restore only into a newly allocated root, retaining a durable quarantine.
+ * This deliberately has no unlock or replay operation: external GitHub, Git,
+ * native-session and provider facts need independent human reconciliation. */
+export async function restoreSnapshotToFreshRoot(snapshotPath:string,expectedDigest:string,
+  destination:string,reason:string,signal?:AbortSignal):
+  Promise<{root:string;files:number;quarantined:true;externalDependencies:string[]}>{
+  text(reason);
+  signal?.throwIfAborted();
+  const manifest=verifySnapshot(snapshotPath,expectedDigest);
+  const snapshot=directory(snapshotPath);
+  if(isWithin(manifest.sourceRoot,destination)||isWithin(destination,manifest.sourceRoot))
+    throw new Error("Restore target cannot overlap the original state root");
+  // mkdir (not mkdir -p) is atomic: even an existing empty directory is refused.
+  const target=newDestination(destination,snapshot);
+  const marker=join(target,"RESTORE_REQUIRES_REVIEW");
+  // Persist quarantine before copying ANY restorable state. Failed/interrupted
+  // attempts keep this marker and cannot be activated even in compatibility mode.
+  const record=JSON.stringify({
+    version:1,mode:"quarantined",manifestSha256:expectedDigest,
+    originalStateRoot:manifest.sourceRoot,reason,
+    createdAt:new Date().toISOString(),
+    requirements:manifest.external.requirements,
+    note:"No automatic Run, GitHub, worktree or provider replay. Manual external reconciliation required."
+  },null,2)+"\n";
+  writeFileSync(marker,record,{flag:"wx",mode:0o600});
+  flush(marker);
+  flush(target,true);
+  const directories=new Set<string>([target]);
+  const payload=join(snapshot,"payload");
+  for(const entry of manifest.files){
+    signal?.throwIfAborted();
+    if(!safePath(entry.path))throw new Error("Unsafe restore entry");
+    const to=join(target,entry.path);
+    const proof=transfer(join(payload,entry.path),to);
+    if(proof.size!==entry.size||proof.sha256!==entry.sha256)
+      throw new Error("Snapshot changed during restore; root remains quarantined");
+    if(entry.kind==="sqlite")checkDatabase(to);
+    let parent=dirname(to);
+    while(isWithin(target,parent)){
+      directories.add(parent);if(parent===target)break;parent=dirname(parent);
+    }
+    // Permit a cooperative cancellation between files, but never undo the
+    // protective marker or convert interrupted work into a usable state.
+    await new Promise<void>(resolve=>setImmediate(resolve));
+  }
+  signal?.throwIfAborted();
+  for(const path of [...directories].sort((a,b)=>b.length-a.length))flush(path,true);
+  flush(dirname(target),true);
+  return {root:target,files:manifest.files.length,quarantined:true,
+    externalDependencies:manifest.external.requirements};
+}

@@ -16,7 +16,10 @@ export function assertWorkspaceBoundary(policy:ProductionPolicy,project:string,
     /^[a-f0-9]{16}\/[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9-]{0,63}$/.test(relative(managedRoot,canonical));
   if(isWithin(state,canonical)&&!managed)
     throw new Error("Only an exact managed Worktree leaf may be mounted from the state root");
-  if(!isWithin(realpathSync(project),canonical)&&!managed)
+  const selected=realpathSync(project);
+  if(!isWithin(selected,canonical)&&!managed)
     throw new Error("Workspace is outside its selected project or exact managed Worktree root");
+  if(policy.projectRoots.some(root=>root!==selected&&isWithin(selected,root)&&isWithin(root,canonical)))
+    throw new Error("Workspace belongs to a different authorized project");
   return canonical;
 }

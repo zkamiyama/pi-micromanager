@@ -121,7 +121,7 @@ const plugin:PiWebServerPlugin={
   const quickFlights=new Map<string,Promise<void>>();
   const startFlights=new Map<string,Promise<AutopilotRecord>>();
   const durable=new DurableRunHost({
-    dataDirectory:host.dataDirectory,agents,ledger,
+    dataDirectory:host.dataDirectory,lifetimeSignal:host.lifetimeSignal,agents,ledger,
     finalContracts:binding=>{
       const workflow=store.get(binding.projectId,binding.orchestraWorkspaceId,binding.workflowId);
       const final=workflow.tasks[binding.taskId];

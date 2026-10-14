@@ -44,4 +44,4 @@ jobs:
       - name: Require real successful isolation, not only refusal coverage
         env:
           MM_REQUIRE_SANDBOX: '1'
-        run: node --test tests/production-safety.test.mjs tests/production-runtime.test.mjs
+        run: node --test tests/production-safety.test.mjs tests/production-runtime.test.mjs tests/production-server-integration.test.mjs tests/offline-backup.test.mjs tests/state-owner-lifetime.test.mjs

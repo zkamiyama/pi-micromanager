@@ -1,68 +1,61 @@
-# Production remediation continuation
+# Production safety remediation — PR #78 continuation
 
-Release decision: **BLOCKED**. This document distinguishes implemented components
-from end-to-end production integration. A successful test of an optional callback
-is not proof that the server actually supplies that callback.
+Release status: **candidate pending exact-commit CI and independent deployment review**.
+Code-level remediation does not certify the running host, deployment, ingress or provider billing.
 
-## Implemented in this continuation
+## Integration and acceptance matrix
 
-| Issue | Change | Remaining acceptance work |
-|---|---|---|
-| #79 | `workspace-boundary.ts` rejects canonical state/package overlap in both directions, foreign project roots and non-leaf managed roots. `state-mode.ts` persists and validates a production-only marker. | Neither helper is yet connected to `src/pi-web/server.ts`; actual activation/capability paths remain vulnerable. |
-| #80 | `StateOwner` keeps the flock open file description in the daemon, rather than a long-lived helper. `DurableRunHost` accepts an explicit lifetime signal, cancels active tools, joins close, and persists uncertain interruption before reconnect. | The control plane does not yet pass its lifetime signal to Durable. Automatic joined server disposal on owner loss and public API fault injection remain required. |
-| #81 | `guardedHostExecution` checks the request signal after awaited Git inspection, and supports a captured final admission fence. The previously failing low-level Pause/lifetime tests now pass. | The server does not yet supply a control-generation fence; low-level injected-Pause coverage is not end-to-end Pause coverage. |
-| #75 | Parent-owned OS lock; bounded offline SQLite/WAL-aware snapshots, SHA-256 manifest verification, exact payload inventory and explicit external dependency records. | Restore-to-new-root, automatic replay quarantine, reviewed external-state reconciliation and an actual restore drill remain unimplemented. |
+| Issue | Runtime change | Disposable regression evidence |
+| --- | --- | --- |
+| #79 | The public PI WEB Workspaces resolver invokes canonical, project-scoped `assertWorkspaceBoundary` and checks exact selected IDs. Server activation persists/verifies a production-only marker and rejects implicit compatibility downgrade. | `tests/production-server-integration.test.mjs` exercises state/package ancestors, aliases, foreign project, managed parent and leaf, and a marked-root activation. |
+| #80 | The combined state-owner/host lifetime signal reaches the live `DurableRunHost`, model admissions, tool cancellations, and backend disposal. Shutdown joins in-flight public requests and active Harness/tool processes **before** releasing flock; failed joins retain ownership rather than silently transferring it. | Public server startup and fault-injected owner loss during a delayed faux model and an actual isolated shell tool, plus direct Harness and OS owner tests. |
+| #81 | A host-owned control-generation snapshot and owner check is captured on production Git invocation, checked again **after** asynchronous repository-config preflight, directly before native execution. A changed generation is a fail-closed denial. | Public `auto.worktree.create` with actual temporary Git and deferred config preflight: Pause, configuration change and owner loss cause zero `git worktree add` mutations. |
+| #75 | Offline SQLite/WAL snapshot and SHA-256 verification remain. Restore requires an independently trusted digest and **creates** a new canonical directory; it never overwrites existing state, writes `RESTORE_REQUIRES_REVIEW` before any payload, verifies each copy, and has no unquarantine or replay command. | `tests/offline-backup.test.mjs`: WAL round-trip, tampering, traversal, overwrite refusal, interrupted partial restore, preserved quarantine and dependency inventory. |
 
-The intended server-entrypoint/control-plane wiring and restore implementation
-were not applied: the tooling rejected those writes. They were not rerouted
-through another transport. Do not close the above issues from helper tests alone.
+Use `npm ci --no-audit --no-fund && npm run check` and the dedicated
+`MM_REQUIRE_SANDBOX=1` job on the **exact final PR commit**. A skipped/refused
+sandbox is not a successful-isolation certification. Record job names, results,
+test counts and the reviewed diff before considering a merge.
 
-## Offline snapshot tool
+## Offline snapshot / restore runbook (no live production operations)
 
-After building, `scripts/offline-state.mjs --help` lists two commands: `snapshot`
-and `verify`. The snapshot command requires explicit `--offline-confirmed` and
-`--reason` values. Stop **all** state writers first. The flag records the
-operator's prerequisite acknowledgement; it is not a process-level proof.
-Production owners cooperate using the same local-filesystem lock. Legacy tools
-that ignore this lock must also be stopped.
+These commands must only be used after the operator has independently stopped
+all state writers and confirmed the state root is offline. The confirmation
+flag is an explicit acknowledgement, **not** a daemon-state oracle.
 
-Snapshots use SQLite's backup API to include committed WAL data. They never
-copy WAL/SHM files as independent databases, follow symbolic/hard links, overwrite
-an existing destination or create a missing source directory. Every payload file
-is hashed and the completed manifest digest is returned only after synchronization.
-Keep that digest in a separately trusted record. Recomputing a digest from an
-untrusted archive does not authenticate the archive.
+```sh
+node scripts/offline-state.mjs snapshot --source /offline/state --destination /new/snapshot --reason "offline receipt" --offline-confirmed
+node scripts/offline-state.mjs verify --source /new/snapshot --digest TRUSTED_64_HEX_RECEIPT
+node scripts/offline-state.mjs restore --source /new/snapshot --destination /brand-new/private-state --digest TRUSTED_64_HEX_RECEIPT --reason "offline recovery drill" --offline-confirmed
+```
 
-Managed Git Worktrees, project repositories, remote PR/branch states, provider
-submissions and PI WEB-hosted native session storage are **external dependencies**,
-not falsely included in a complete machine backup. Known Run, Worktree-plan and
-publication identities are recorded when present in the copied control databases.
-Raw snapshot files may contain private project material; retain them in private,
-access-controlled storage. Encryption, independent/off-host copies and disk quotas
-remain deployment responsibilities.
+The manifest receipt digest must be retained in a separately trusted record:
+recomputing it from an untrusted archive does not authenticate the backup.
+No command takes an existing or live state directory as a restore destination.
+A restore interrupted after creating its root leaves a quarantined partial
+directory. Destroy *only disposable test fixtures* when exercising deletion.
 
-There is deliberately **no restore or unquarantine command** in this version.
-A failure may leave a newly allocated partial snapshot directory, but no successful
-receipt is returned. Do not auto-activate extracted databases or clear quarantine
-markers as a substitute for the missing restore/reconciliation implementation.
+### External-state reconciliation required before any later production use
 
-## Ownership trust boundary
+The snapshot is a plugin-state archive, **not** a machine snapshot. The
+manifest records known Run, Worktree and publication identifiers where present
+and explicitly excludes managed and linked Git Worktrees, remote branches/PRs,
+provider submissions, native PI WEB session storage and credentials. After
+restoring, an operator must independently reconcile exact worktree/Git SHA,
+publication/remote outcome, uncertain provider results, native sessions and
+host credentials/authorizations. No uncertain Run may be automatically
+replayed or relabeled successful. Production and compatibility activation
+both refuse the quarantine marker. There is intentionally **no automatic
+unquarantine** or reviewed-migration bypass in this PR.
 
-The daemon opens the lock descriptor and lets a short-lived `flock` invocation
-lock an inherited duplicate. The invocation exits before acquisition is returned;
-the parent descriptor retains the lock until explicit release or process exit.
-No PID-based stale-lock deletion or lock stealing is performed. Normal shutdown
-must join workers before calling release. Canonical private paths and a trusted
-local filesystem are required. Same-UID malicious processes, ignored advisory
-locks, or namespace/host compromise are not covered by this mechanism.
+### Ownership trust boundary
 
-## Verification scope
-
-Tests use disposable local files, real SQLite/WAL databases, temporary local Git,
-OS locks and the real Durable Harness with a deterministic faux provider. They do
-not use production state, paid models or application publication. End-to-end
-server wiring and restored-system behavior are not certified by these tests.
-
-The release obligations in SECURITY.md and issues #36–#38/#72–#81 remain in force:
-ingress authentication/authorization, deployment isolation, resource and provider
-billing limits, external-state recovery and independent review need actual evidence.
+The state lock is an OS flock on a daemon-owned file descriptor. The short-lived
+launcher only acquires the inherited description; the daemon keeps it until
+joined close. The in-process generation fence protects cooperating local
+operations and assumes trusted local filesystem, unmodified host SDK/Git and
+no malicious same-UID process. It does not provide distributed fencing across
+independent state roots. Quotas, auth/TLS, cgroups, provider spend limits,
+actual host namespace success, OS patching and independent security review
+remain external deployment obligations. None of these tests reloads a production
+daemon, deploys code, publishes application changes or accesses a paid provider.

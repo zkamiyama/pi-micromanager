@@ -85,12 +85,15 @@ export class DurableRunHost {
   private modelsPromise:Promise<Models>|undefined;
   private readonly active=new Map<string,Active>();
   private readonly opening=new Map<string,Promise<Active>>();
+  private readonly stopping=new Set<Promise<void>>();
+  private stopFailure:unknown;
+  private latchFailure:unknown;
   private readonly safety:RunSafetyLedger;
   private closing=false;
   private readonly stopSignal=new AbortController();
-  private readonly onLifetimeAbort=()=>{
-    // Persist an uncertain interrupted outcome before closing watchers; a new
-    // daemon must not replay an input whose previous owner lost authority.
+  private latchInterruptedOutcomes():void{
+    // Explicit dispose and owner loss have identical uncertainty semantics:
+    // an unfinished input must never become a successful or replayable Run.
     for(const live of this.active.values()){
       try{
         const current=this.current(live.binding),key=sessionHash(this.reservation(live.binding));
@@ -98,10 +101,14 @@ export class DurableRunHost {
         if(!this.safety.get(key)?.outcome)this.safety.finish(key,"uncertain");
         const stopped=this.options.agents.requestAbort(current);
         this.options.changed(this.options.agents.update(stopped,"uncertain"));
-      }catch{/* Closing must still cancel every active executor. */}
+      }catch(error){
+        // Preserve the failure for close(); workers still receive abort, but
+        // ownership must not be transferred if uncertainty was not persisted.
+        this.latchFailure=error;
+      }
     }
-    void this.close().catch(()=>{});
-  };
+  }
+  private readonly onLifetimeAbort=()=>{void this.close().catch(()=>{});};
   private closeFlight:Promise<void>|undefined;
   constructor(private readonly options:DurableCallbacks){
     this.safety=new RunSafetyLedger(join(options.dataDirectory,"run-safety.sqlite"));
@@ -430,22 +437,36 @@ export class DurableRunHost {
   async stopRun(binding:AgentBinding):Promise<void>{
     if(!binding.sessionId)return;const live=this.active.get(binding.sessionId);if(!live)return;
     live.closed=true;if(live.timer)clearTimeout(live.timer);this.active.delete(binding.sessionId);
-    await live.stream.stop().catch(()=>{});await live.harness.close(BACKGROUND_CONTEXT);
-    if(live.completion)await live.completion;
+    // A sealed Run remains a live shutdown obligation until close is proven.
+    const flight=(async()=>{
+      await live.stream.stop().catch(()=>{});
+      await live.harness.close(BACKGROUND_CONTEXT);
+      if(live.completion)await live.completion;
+    })();
+    this.stopping.add(flight);
+    try{await flight;}catch(error){this.stopFailure=error;throw error;}
+    finally{this.stopping.delete(flight);}
   }
   close():Promise<void>{
     if(this.closeFlight)return this.closeFlight;
     this.closing=true;
+    this.latchInterruptedOutcomes();
     this.options.lifetimeSignal?.removeEventListener("abort",this.onLifetimeAbort);
     this.stopSignal.abort(new Error("Durable host shutting down"));
     this.closeFlight=(async()=>{
       await Promise.allSettled([...this.opening.values()]);
       const closing=[...this.active.values()];
       for(const live of closing){live.closed=true;if(live.timer)clearTimeout(live.timer);}
-      await Promise.allSettled(closing.map(async live=>{
-        try{await live.stream.stop();}finally{await live.harness.close(BACKGROUND_CONTEXT);}
-        if(live.completion)await live.completion;
-      }));
+      const results=await Promise.allSettled([
+        ...this.stopping,
+        ...closing.map(async live=>{
+          try{await live.stream.stop();}finally{await live.harness.close(BACKGROUND_CONTEXT);}
+          if(live.completion)await live.completion;
+        }),
+      ]);
+      // Never mask an unjoined Harness/tool and release the state owner lock.
+      if(this.latchFailure||this.stopFailure||results.some(result=>result.status==="rejected"))
+        throw new Error("Durable worker shutdown could not be proved; retain state ownership");
       this.active.clear();this.safety.close();
     })();
     return this.closeFlight;
