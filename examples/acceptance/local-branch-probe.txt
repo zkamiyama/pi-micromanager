@@ -1,0 +1,7 @@
+Synthetic same-repository branch trial, 2026-10-14.
+Repository: zkamiyama/pi-micromanager
+Authorized source: e2e/local-luna-20261014-wa0uyh-source
+Authorized target: e2e/local-luna-20261014-wa0uyh-base
+This file must not be merged into main or deployed.
+It proves only branch/PR mechanics, not model, browser, or orchestrator end-to-end acceptance.
+No credential, user data, or model transcript is included.
