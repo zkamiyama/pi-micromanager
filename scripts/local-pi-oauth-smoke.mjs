@@ -93,10 +93,10 @@ export function localReceipt(config,source,result){
 }
 
 /** Single disposable SDK process. No parent environment or raw worker output forwarded. */
-export function supervise(config,directory,authFile){
+export function supervise(config,directory,authFile,launch=fork){
   return new Promise(resolveResult=>{
     let evidence,reason,killTimer,totalMessages=0;
-    const child=fork(SELF,['--worker'],{cwd:directory,execArgv:[],
+    const child=launch(SELF,['--worker'],{cwd:directory,execArgv:[],
       env:{PATH:'/usr/bin:/bin',HOME:directory,TMPDIR:directory,LANG:'C.UTF-8'},
       stdio:['ignore','ignore','ignore','ipc']});
     const stop=code=>{
@@ -107,7 +107,7 @@ export function supervise(config,directory,authFile){
     const onInterrupt=()=>stop('interrupted');
     process.once('SIGINT',onInterrupt);process.once('SIGTERM',onInterrupt);
     const timer=setTimeout(()=>stop('timed-out'),config.timeoutMs+10000);
-    child.on('error',()=>{reason='runtime-failed';});
+    child.on('error',()=>stop('runtime-failed'));
     child.on('message',message=>{
       if(++totalMessages!==1||!message||typeof message!=='object'||
         !resultCodes.has(message.code)||!['passed','failed'].includes(message.status)||
@@ -168,7 +168,7 @@ export async function runLocalCli(args){
     if(run.joined){rmSync(directory,{recursive:true,force:true});directory=undefined;result.cleanup='removed';}
   }catch(error){
     result={status:directory?'failed':'blocked',code:error instanceof E2EFailure?error.code:'runtime-failed',
-      requests:0,cleanup:directory?'retained':'not-created',joined:false};
+      requests:directory?result.requests:0,cleanup:directory?'retained':'not-created',joined:false};
   }
   let receipt=localReceipt(config,source,result);
   try{writeReceipt(config?.receipt,receipt);}

@@ -4,7 +4,8 @@ import {mkdtempSync,writeFileSync,readFileSync,rmSync,chmodSync,symlinkSync,link
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {parseLocalArguments,validateAuthFile,localReceipt} from '../scripts/local-pi-oauth-smoke.mjs';
+import {EventEmitter} from 'node:events';
+import {parseLocalArguments,validateAuthFile,localReceipt,supervise} from '../scripts/local-pi-oauth-smoke.mjs';
 import {REPO_ROOT} from '../scripts/e2e-contract.mjs';
 
 const sha='a'.repeat(40);
@@ -104,4 +105,19 @@ test('Local receipt output refuses existing destination before starting an SDK p
     assert.equal(result.receipt.requests,0);assert.equal(result.receipt.cleanup,'not-created');
     assert.equal(readFileSync(target,'utf8'),'preserve');
   }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test('Local supervisor process error actively stops the child instead of disabling its timeout',async()=>{
+  const child=new EventEmitter(),signals=[];
+  child.kill=signal=>{signals.push(signal);return true;};
+  child.send=(_message,callback)=>callback();
+  const flight=supervise({timeoutMs:100},'/synthetic',undefined,()=>child);
+  child.emit('error',new Error('SYNTHETIC PROCESS ERROR'));
+  // Always close our synthetic child to release supervisor timers/listeners,
+  // including when testing an implementation with the original faulty branch.
+  child.emit('close',1,null);
+  const result=await flight;
+  assert.deepEqual(signals,['SIGTERM']);
+  assert.equal(result.code,'runtime-failed');
+  assert.equal(result.joined,false);
 });
