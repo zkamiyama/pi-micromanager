@@ -10,12 +10,15 @@ import {acquireStateOwner} from "../security/state-owner.js";
 import {guardedHostExecution} from "../security/host-execution.js";
 import {assertWorkspaceBoundary} from "../security/workspace-boundary.js";
 import {assertStateActivation,persistProductionMode} from "../security/state-mode.js";
+import {validateModelAuthFile} from "../security/auth-source.js";
 import {parseAutopilotConfig,AutopilotLedger} from "../automation/ledger.js";
 import {QuickLaunchLedger,parseQuickProfile} from "../automation/quick-launch.js";
 import {WorkflowStore} from "../core/store.js";
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==="object"&&!Array.isArray(v);
 const plugin:PiWebServerPlugin={...base,async activate(host){
   const policy=parseProductionPolicy(host.settings.productionSecurity);
+  if(policy?.modelAuthFile)validateModelAuthFile(policy.modelAuthFile,
+    [...policy.projectRoots,host.dataDirectory,host.packageRoot]);
   const owner=policy?await acquireStateOwner(host.dataDirectory):undefined;
   let uninstall:()=>void=()=>{};
   const signal=owner?AbortSignal.any([host.lifetimeSignal,owner.lost]):host.lifetimeSignal;

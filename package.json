@@ -28,19 +28,21 @@
     "doctor": "node scripts/doctor.mjs",
     "test:e2e:faux": "node scripts/durable-auth-smoke.mjs --mode faux",
     "test:e2e:contracts": "node --test tests/e2e-contract.test.mjs",
-    "test:e2e:local-luna": "node scripts/local-pi-oauth-smoke.mjs"
+    "test:e2e:local-luna": "node scripts/local-pi-oauth-smoke.mjs",
+    "test:e2e:hosted": "npm run build && node scripts/local-hosted-e2e.mjs"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^1.2.0",
     "@earendil-works/pi-coding-agent": "^1.0.0",
     "@jmfederico/pi-web": "^1.202610.1",
     "@types/node": "^24.13.3",
-    "typescript": "^6.0.3",
-    "@earendil-works/pi-ai": "^1.2.0"
+    "playwright": "1.64.0",
+    "typescript": "^6.0.3"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "^1.2.0",
     "@earendil-works/pi-coding-agent": "^1.0.0",
-    "@jmfederico/pi-web": "^1.202610.1",
-    "@earendil-works/pi-ai": "^1.2.0"
+    "@jmfederico/pi-web": "^1.202610.1"
   },
   "piWeb": {
     "plugins": [
@@ -60,7 +62,7 @@
     ]
   },
   "dependencies": {
-    "@earendil-works/pi-durable": "1.2.0",
-    "@earendil-works/chord": "1.2.0"
+    "@earendil-works/chord": "1.2.0",
+    "@earendil-works/pi-durable": "1.2.0"
   }
 }

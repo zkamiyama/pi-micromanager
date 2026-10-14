@@ -19,6 +19,7 @@ import type {AutopilotLedger,ModelProfile} from "../automation/ledger.js";
 import type {RunReport} from "../automation/report.js";
 import {readonlyDiscoveryTools} from "./repository-discovery.js";
 import {productionPolicy,assertProductionModel} from "../security/policy.js";
+import {validateModelAuthFile} from "../security/auth-source.js";
 import {productionTools} from "./production-tools.js";
 import {sandboxExec,inspectSandboxWorkspace} from "../security/sandbox.js";
 import {reportTools} from "./durable-reports.js";
@@ -79,7 +80,7 @@ export function durableActivity(event:AgentEvent,text:string,sequence:number):{e
   return;
 }
 export async function createDurableModels(authPath?:string):Promise<Models>{
-  return ModelRuntime.create({allowModelNetwork:false,refreshOnCreate:false,...(authPath?{authPath}:{})});
+  return ModelRuntime.create({allowModelNetwork:false,refreshOnCreate:false,...(authPath?{authPath,modelsPath:null}:{})});
 }
 export class DurableRunHost {
   private modelsPromise:Promise<Models>|undefined;
@@ -133,7 +134,10 @@ export class DurableRunHost {
   }
   private configuredModels():Promise<Models>{
     if(this.options.models)return Promise.resolve(this.options.models);
-    if(!this.modelsPromise)this.modelsPromise=createDurableModels().catch(error=>{this.modelsPromise=undefined;throw error;});
+    const policy=productionPolicy(this.options.dataDirectory);
+    const authFile=policy?.modelAuthFile;
+    if(authFile)validateModelAuthFile(authFile,[...policy.projectRoots,this.options.dataDirectory]);
+    if(!this.modelsPromise)this.modelsPromise=createDurableModels(authFile).catch(error=>{this.modelsPromise=undefined;throw error;});
     return this.modelsPromise;
   }
   private async validatedModels(model:ModelProfile):Promise<Models>{
@@ -205,7 +209,10 @@ export class DurableRunHost {
       },Date.parse(binding.createdAt),contracts?()=>seen.size===contracts.length:undefined);
       const provided=kind==="qc"?reports.qc:kind==="planning"?reports.plan:kind==="workflow_plan"?reports.proposal:reports.task;
       const allowedMerges=production&&kind==="implementation"&&binding.taskId==="mm-final-integration"?
-        this.options.ledger.launchFor(binding).requiredAncestors??[]:[];
+        this.options.ledger.launchFor(binding).allowedMergeShas??[]:[];
+      if(production&&kind==="implementation"&&binding.taskId==="mm-final-integration"&&
+        (!allowedMerges.length||allowedMerges.length>64||allowedMerges.some(sha=>!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha))))
+        throw new Error("Final integration lacks a frozen broker merge allowlist; legacy Run needs reconciliation");
       const coding=(production?productionTools(canonical,kind==="implementation",allowedMerges,
         production,()=>this.safety.assertActive(key)):CodingTools.tools??[]).map(tool=>{
         if(tool.name==="read")return {...tool,replay:"safe" as const};
