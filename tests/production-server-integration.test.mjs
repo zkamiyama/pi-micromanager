@@ -4,6 +4,7 @@ import {mkdirSync,symlinkSync,existsSync} from 'node:fs';
 import {join} from 'node:path';
 import serverPlugin from '../dist/pi-web/server.js';
 import {acquireStateOwner} from '../dist/security/state-owner.js';
+import {AutopilotLedger} from '../dist/automation/ledger.js';
 import {fixture,workflow,configuration} from './helpers/production-server-fixture.mjs';
 
 test('#79 public server: reject state ancestor, package overlap, foreign project and symlink',async()=>{
@@ -81,3 +82,54 @@ for(const scenario of ['pause','reconfigure','owner-loss']){
       }finally{await x.close();}
     });
 }
+
+test('S05 public security.readiness differentiates proved application controls and unverified deployment facts',async()=>{
+ const x=fixture();
+ try{
+  await x.activate();
+  const evidence=await x.peer('security.readiness',null);
+  assert.equal(evidence.mode,'production');
+  assert.equal(evidence.universalSafetyGuarantee,false);
+  assert.equal(evidence.checks.find(c=>c.id==='host-policy')?.status,'pass');
+  assert.equal(evidence.checks.find(c=>c.id==='state-owner')?.status,'pass');
+  const unknown=evidence.checks.filter(c=>c.status==='not-verified');
+  assert.ok(unknown.length>=4);
+  assert.ok(unknown.every(c=>typeof c.evidence==='string'&&c.evidence.length>10));
+  assert.ok(unknown.some(c=>c.id==='worker-isolation-on-deployment-host'));
+  assert.ok(unknown.some(c=>c.id==='ingress-auth-and-tls'));
+ }finally{await x.close();}
+});
+test('S05 public production peer denies native/runtime/test/permission/model policy downgrades',async()=>{
+ const x=fixture();
+ try{
+  await x.activate();
+  await x.peer('create',workflow);
+  const proposed=[
+   {...configuration,runtime:'pi-web'},
+   {...configuration,test:{execution:'trusted-host',file:'node',args:[]}},
+   {...configuration,models:{...configuration.models,qc:{provider:'foreign',model:'unexpected'}}},
+  ];
+  for(const cfg of proposed)await assert.rejects(
+    x.peer('auto.configure',{workflowId:'wf',config:cfg}),/Production|allowlist/);
+  await assert.rejects(x.peer('auto.propose',{
+    goal:'Do not run',provider:'foreign',model:'unknown',runtime:'durable'}),/allowlist/);
+  await assert.rejects(x.peer('auto.propose',{
+    goal:'Do not run',provider:'faux',model:'faux-1',runtime:'pi-web'}),/Durable/);
+  await assert.rejects(x.peer('agents.create',{}),/forbidden/);
+  await x.peer('auto.configure',{workflowId:'wf',config:configuration});
+ }finally{await x.close();}
+});
+test('S05 public startup rejects persisted enabled compatibility config before scheduling recovery',async()=>{
+ const x=fixture();
+ try{
+  await x.activate();await x.peer('create',workflow);
+  await x.plugin.dispose(new AbortController().signal);
+  const db=new AutopilotLedger(join(x.state,'autopilot.sqlite'));
+  try{
+   db.save('p','orchestra','wf',{...configuration,runtime:'pi-web',
+     test:{execution:'trusted-host',file:'node',args:['--test']}});
+   db.setStatus('p','orchestra','wf',true,'Synthetic invalid restored profile');
+  }finally{db.close();}
+  await assert.rejects(x.activate(),/Production requires/);
+ }finally{await x.close();}
+});

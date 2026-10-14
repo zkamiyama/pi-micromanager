@@ -134,3 +134,52 @@ test('#80 public server: explicit dispose fences a delayed provider without a pr
       try{successor.assertHeld();}finally{await successor.release();}
     }finally{await x.close();ModelRuntime.create=previous;}
   });
+
+test('S01/F06 public proposal API refuses a provisional typed workflow after provider failure',
+  {timeout:18000},async()=>{
+  const old=ModelRuntime.create,models=createModels();
+  const faux=fauxProvider({tokensPerSecond:100000});
+  models.setProvider(faux.provider);
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('mm_workflow_proposal',{
+      id:'proposed-workflow',title:'Synthetic untrusted proposal',
+      summary:'Provisional and not approved',maxQcRounds:2,
+      tasks:[{id:'task',title:'Synthetic task',description:'No external action',
+        acceptanceCriteria:['Never execute on a failed provider result'],dependsOn:[]}]},
+      {id:'provisional-workflow'})],{stopReason:'toolUse'}),
+    fauxAssistantMessage('Synthetic provider failed',
+      {stopReason:'error',errorMessage:'Rejected after provisional report'}),
+  ]);
+  ModelRuntime.create=async()=>models;
+  const x=fixture();
+  try{
+    await x.activate();
+    const proposal=await x.peer('auto.propose',{
+      goal:'Propose only, do not run',provider:'faux',model:'faux-1',runtime:'durable'});
+    const agents=new AgentRegistry(join(x.state,'agents.sqlite'));
+    try{
+      let current;
+      const deadline=Date.now()+10000;
+      while(Date.now()<deadline){
+        current=agents.getRun('p','orchestra',proposal.draftWorkflowId,proposal.runId);
+        if(current?.phase==='uncertain')break;
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      assert.equal(current?.phase,'uncertain');
+      const inspected=await x.peer('auto.proposal',{
+        draftWorkflowId:proposal.draftWorkflowId,runId:proposal.runId});
+      assert.equal(inspected.canAccept,false);
+      // Fault injection: reproduce a stale/lost settlement projection while
+      // the authoritative Durable input outcome remains failed. Before the
+      // persisted-outcome fence this phase alone could accept the draft.
+      agents.update(current,'settled');
+      const stale=await x.peer('auto.proposal',{
+        draftWorkflowId:proposal.draftWorkflowId,runId:proposal.runId});
+      assert.equal(stale.phase,'settled');
+      assert.equal(stale.canAccept,false);
+      await assert.rejects(x.peer('auto.acceptProposal',{
+        draftWorkflowId:proposal.draftWorkflowId,runId:proposal.runId}),
+        /persisted successful input outcome/i);
+    }finally{agents.close();}
+  }finally{await x.close();ModelRuntime.create=old;}
+});

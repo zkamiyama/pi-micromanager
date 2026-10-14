@@ -13,7 +13,7 @@ import type { WorkflowStore } from "../core/store.js";
 import type { TaskState } from "../core/workflow.js";
 import type { AgentBinding, AgentRegistry, Reservation, Seat } from "../runtime/registry.js";
 import type { PiSessionBridge } from "../runtime/session-bridge.js";
-import type { DurableRunHost } from "../runtime/durable-runner.js";
+import {isDurableSession,type DurableRunHost} from "../runtime/durable-runner.js";
 import type { AgentRuntime } from "./ledger.js";
 import type { ExecutorPort, LaunchJob } from "./engine.js";
 
@@ -74,6 +74,12 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
     return w;
   }
   return {
+    assertCompleted(binding){
+      if(isDurableSession(binding.sessionId)){
+        if(!options.durable)throw new Error("Durable runtime authority unavailable");
+        options.durable.assertProvedCompleted(binding);
+      }
+    },
     recoverReport:options.replaySettledReport,
     async launch(job:LaunchJob){
       const admitted=()=>{assertActive();options.assertAdmitted?.(job);};

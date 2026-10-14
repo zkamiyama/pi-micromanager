@@ -25,6 +25,8 @@ export interface ExecutorPort {
   checkSnapshot?(binding:AgentBinding,expectedSha:string):Promise<void>;
   /** Re-read an already settled Pi Session's durable report without replaying a turn. */
   recoverReport?(binding:AgentBinding):Promise<void>;
+  /** Host-owned persisted Durable proof, required before using any report. */
+  assertCompleted?(binding:AgentBinding):void;
   onTransition?(binding:AgentBinding):void;
   /** Optional backwards-compatible host-operated publication. Legacy Workflows
    * with no configured target never publish to a remote. */
@@ -284,6 +286,7 @@ export class AutopilotEngine {
         if(!existing.requestId.startsWith("auto:"))
           throw new Error("Human-owned planning Run cannot be automatically adopted");
         if(existing.phase==="settled"){
+          this.port.assertCompleted?.(existing);
           if(existing.abortRequested===1||
             existing.latestKind==="agent_settled"&&existing.latestText==="Agent interrupted")
             throw new Error("Interrupted planner cannot arm a human intervention");
@@ -544,6 +547,7 @@ export class AutopilotEngine {
   }
   private async finalize(record:AutopilotRecord,current:WorkflowInstance,task:TaskState,
     binding:AgentBinding,kind:JobKind):Promise<void>{
+    this.port.assertCompleted?.(binding);
     if(kind!=="implementation"&&!this.ledger.report(binding)&&this.port.recoverReport)
       await this.port.recoverReport(binding);
     const report=this.ledger.report(binding);
