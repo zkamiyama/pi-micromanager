@@ -96,6 +96,11 @@ mocks. They do **not** replace authenticated PI WEB host soak tests.
 
 ## Development
 
+For the supported E2E tiers, test-only authentication, exact-commit receipts
+and the remaining hosted/browser acceptance work, see
+[E2E acceptance](docs/E2E_ACCEPTANCE.md). The old unconfined authenticated
+Autopilot smoke is blocked pending a qualified replacement (#92).
+
 Requires Node.js 22.19+ (PI WEB version constraint). Runtime plugin compatibility should be tested against the installed PI WEB version; source APIs are versioned and may evolve.
 
 ```bash

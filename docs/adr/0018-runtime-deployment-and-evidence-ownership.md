@@ -105,6 +105,15 @@ authentication, browser and remote-publication children stay open until their
 own evidence exists. Parent closure requires all retained acceptance items or
 an explicit reviewed scope decision; a split itself is not completion.
 
+### Split tracking map
+
+- #36: product/backend contract #85; actual isolated host and hard quotas #86.
+- #37: admission/capacity #87; owned-evidence retention #88; external owner-API lifecycle #89; platform quota dependency #86.
+- #38: bounded test harness #90; real test-only authentication #91; hosted browser and remote-publication acceptance #92.
+
+Original parent requirements remain visible. See [E2E acceptance](../E2E_ACCEPTANCE.md)
+for tested tiers, exact source/lock versions and what remains unverified.
+
 ## Non-goals and consequences
 
 No custom OAuth manager, general container scheduler, credential-provisioning

@@ -34,7 +34,17 @@ test('S06 authenticated E2E remains manual, default-branch-only, least privilege
  assert.doesNotMatch(workflow,/^  (?:push|pull_request|schedule):/m);
  assert.match(workflow,/github\.event\.repository\.default_branch/);
  assert.match(workflow,/environment: authenticated-pi-e2e/);
- assert.match(workflow,/runs-on: \[self-hosted, linux, pi-authenticated\]/);
+ assert.match(workflow,/runs-on: ubuntu-22\.04/);
+ assert.doesNotMatch(workflow,/runs-on: \[self-hosted/);
+ assert.match(workflow,/inputs\.approve_billed_test && inputs\.test_identity_only/);
+ assert.match(workflow,/REVIEWED_SHA: \$\{\{ inputs\.reviewed_sha \}\}/);
+ assert.ok(workflow.includes('test "$REVIEWED_SHA" = "$RUN_SHA"'));
+ assert.match(workflow,/ref: \$\{\{ github\.sha \}\}/);
+ assert.ok(workflow.includes('--provider "$PI_PROVIDER" --model "$PI_MODEL"'));
+ assert.match(workflow,/--expected-sha "\$EXPECTED_SHA" --approve-billed-test --test-identity-only/);
+ assert.match(workflow,/secrets\.MM_E2E_API_KEY/);
+ assert.doesNotMatch(workflow,/real-durable-autopilot-smoke\.mjs/);
+ assert.match(workflow,/timeout --signal=TERM --kill-after=10s 90s/);
  assert.match(workflow,/permissions:\s*\n  contents: read/);
  assert.doesNotMatch(workflow,/contents: write|id-token: write|pull-requests: write/);
  assert.match(workflow,/no remote publication/i);

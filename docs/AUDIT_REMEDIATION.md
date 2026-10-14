@@ -67,6 +67,11 @@ and do not treat prompt instructions or regex shell guards as a sandbox.
 
 ## Reproducibility and E2E
 
+**Current policy:** ADR-0018 and [E2E acceptance](E2E_ACCEPTANCE.md) supersede
+the historical runner/authenticated-smoke description below. The previous
+ambient-auth coding smoke is blocked; SDK-only test authentication is separate
+from hosted PI WEB/browser and real remote acceptance (#91/#92).
+
 `npm ci` now uses a committed lockfile. CI runs Node 22 and 24.
 `.github/workflows/authenticated-e2e.yml` is **manually dispatched only**,
 for a dedicated `pi-authenticated` runner with an environment approval

@@ -1,88 +1,40 @@
 #!/usr/bin/env node
-/**
- * Explicit, opt-in real-provider acceptance test.
- * Uses the daemon OS user's Pi credential store (including OAuth); NEVER
- * copies/logs tokens. Writes only to a disposable SQLite under os.tmpdir().
- * The model receives no coding/shell/file tools or repository contents.
- */
-import {mkdtempSync,rmSync} from "node:fs";
-import {tmpdir} from "node:os";
-import {join} from "node:path";
-import {ModelRuntime} from "@earendil-works/pi-coding-agent";
-import {Type} from "@earendil-works/pi-ai";
-import {Harness,createRegistry,defineExtension,defineTool}
-  from "@earendil-works/pi-durable";
-import {openNodeSqliteStorage} from "@earendil-works/pi-durable/storage/sqlite/node";
-import {BACKGROUND_CONTEXT} from "@earendil-works/chord/context";
+/** Explicit model-SDK acceptance only, not hosted PI WEB or OS isolation. */
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {E2EFailure,parseE2EArguments,sourceEvidence,authorizeE2E,
+  isolateTestEnvironment,e2eReceipt,writeReceipt,assertReceiptDestination} from './e2e-contract.mjs';
 
-const [provider,model]=process.argv.slice(2);
-if(!provider||!model||process.argv.length!==4||
-   !/^[a-z0-9][a-z0-9._-]*$/i.test(provider)||
-   !/^[a-z0-9][a-z0-9._-]*$/i.test(model)){
-  console.error("Usage: node scripts/durable-auth-smoke.mjs <provider> <model>");
-  console.error("Example: node scripts/durable-auth-smoke.mjs openai gpt-5.5");
-  console.error("This performs one authenticated model/tool call (usage may be billed).");
-  process.exit(2);
+export async function runCli(args,env=process.env){
+  let config,source,directory,result={status:'blocked',code:'invalid-arguments',requests:0,cleanup:'not-created'};
+  try{
+    config=parseE2EArguments(args);
+    assertReceiptDestination(config.receipt);
+    source=sourceEvidence();
+    const apiKey=config.mode==='authenticated'?env.MM_E2E_API_KEY:undefined;
+    authorizeE2E(config,source,apiKey);
+    directory=mkdtempSync(join(tmpdir(),'mm-e2e-model-'));
+    isolateTestEnvironment(directory);
+    // SDKs are loaded only AFTER all opt-in/source/identity checks.
+    const {runSdkSmoke}=await import('./e2e-sdk-smoke.mjs');
+    const run=await runSdkSmoke(config,{directory,apiKey});
+    result={...run,cleanup:'retained'};
+    if(run.joined){rmSync(directory,{recursive:true,force:true});directory=undefined;result.cleanup='removed';}
+  }catch(error){
+    result={status:directory?'failed':'blocked',code:error instanceof E2EFailure?error.code:'runtime-failed',
+      requests:result.requests,cleanup:directory?'retained':'not-created'};
+  }
+  let receipt=e2eReceipt(config,source,result);
+  try{writeReceipt(config?.receipt,receipt);}
+  catch{
+    receipt=e2eReceipt(config,source,{...result,status:'failed',code:'receipt-refused'});
+  }
+  // Fixed-schema facts only; no exception messages, transcripts, paths or auth.
+  process.stdout.write(JSON.stringify(receipt)+'\n');
+  return receipt.status==='passed'?0:receipt.status==='blocked'?2:1;
 }
-
-const context=BACKGROUND_CONTEXT;
-const directory=mkdtempSync(join(tmpdir(),"mm-durable-auth-smoke-"));
-const db=join(directory,"harness.sqlite");
-let first,second,deadline;
-let reports=0;
-try{
-  const models=await ModelRuntime.create({
-    allowModelNetwork:false,refreshOnCreate:false,
-  });
-  if(!models.getModel(provider,model))
-    throw new Error("Model not in this Pi user's configured catalog");
-  const report=defineTool({
-    name:"mm_auth_smoke_report",
-    description:"Acknowledge one Pi Durable authenticated model and tool turn.",
-    parameters:Type.Object({ok:Type.Literal(true)}),
-    replay:"safe",
-    async execute(){
-      reports++;
-      return {output:[{type:"text",text:"Local smoke report committed."}]};
-    },
-  });
-  const registry=createRegistry();
-  registry.install(defineExtension({name:"mm-auth-smoke",tools:[report]}));
-  const options={models,registry};
-  const agent={
-    model:{provider,modelId:model},cwd:directory,
-    tools:[report],modelTools:[report],
-    instructions:"Call mm_auth_smoke_report with ok=true exactly once. Do not execute code or request files. Then finish.",
-  };
-  first=await Harness.open(await openNodeSqliteStorage(db),options,context);
-  const root=await first.root(context,{agent});
-  const sent=await root.submit({
-    type:"input",
-    content:"Call mm_auth_smoke_report exactly once with ok=true.",
-    requestId:"mm-smoke-single-turn",
-  },context);
-  const settled=await Promise.race([
-    sent.wait(context),
-    new Promise((_,reject)=>{
-      deadline=setTimeout(()=>reject(new Error("Model/tool turn timed out")),60000);
-    }),
-  ]);
-  if(settled.status!=="done"||reports!==1)
-    throw new Error("Expected exactly one successful model/tool report");
-  await first.close(context);first=undefined;
-  second=await Harness.open(await openNodeSqliteStorage(db),options,context);
-  const reopened=await second.root(context,{agent});
-  if(reopened.id!==root.id||reports!==1)
-    throw new Error("SQLite reopen changed Conversation ID or replayed a tool");
-  console.log("PASS: authenticated Pi Durable model + typed tool");
-  console.log("PASS: SQLite Conversation ID persisted; no duplicate tool call");
-  console.log("Backend: "+provider+"/"+model+" (credentials never printed)");
-}catch(error){
-  console.error("FAIL: "+String(error instanceof Error?error.message:error).slice(0,220));
-  process.exitCode=1;
-}finally{
-  if(deadline!==undefined)clearTimeout(deadline);
-  if(first)await first.close(context).catch(()=>{});
-  if(second)await second.close(context).catch(()=>{});
-  rmSync(directory,{recursive:true,force:true});
+if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+  process.exitCode=await runCli(process.argv.slice(2));
 }
