@@ -30,6 +30,33 @@ export function parseHostedArguments(args){
  if(values.get('--approve-test-publication')&&!sha)throw Error('reviewed-source-required');
  return {mode,sha,receipt:values.get('--receipt'),authFile:values.get('--pi-auth-file'),publish:values.get('--approve-test-publication')===true};
 }
+/** Verify observed execution metadata, not a model's claim of independence. */
+export function verifyHostedDiagnosis(workflow,runs,jobs,expectedModel){
+ const amendment=workflow.amendments.find(a=>a.id==='review');
+ const parent=workflow.tasks.alpha;
+ const diagnosis=Object.values(workflow.tasks).filter(t=>t.parentTaskId==='alpha'&&t.spec.kind==='diagnosis');
+ if(!amendment||amendment.status!=='activated'||amendment.agents.length!==2||
+   parent?.status!=='held'||!parent.lastQc||!['pass','fail','inconclusive'].includes(parent.lastQc.verdict)||
+   !/^[a-f0-9]{40}$/.test(parent.lastQc.headSha)||diagnosis.length!==2||
+   workflow.tasks[amendment.synthesisTaskId]?.status!=='done')throw Error('two-independent-diagnoses-unproved');
+ const sessions=new Set();
+ for(const task of diagnosis){
+  const observed=runs.filter(r=>r.workflowId===workflow.definition.id&&r.taskId===task.spec.id);
+  if(task.status!=='done'||observed.length!==1||observed[0].phase!=='sealed'||!observed[0].sessionId)
+   throw Error('diagnostic-outcome-unproved');
+  const run=observed[0],launches=jobs.filter(j=>j.runId===run.runId);
+  if(launches.length!==1)throw Error('diagnostic-launch-unproved');
+  const job=launches[0];
+  if(job.kind!=='diagnosis'||job.taskId!==task.spec.id||job.workflowId!==workflow.definition.id||
+   job.headSha!==parent.lastQc.headSha||job.projectId!==run.projectId||job.orchestraWorkspaceId!==run.orchestraWorkspaceId||
+   job.model.provider!==expectedModel.provider||job.model.model!==expectedModel.model||job.model.effort!==expectedModel.effort||
+   run.provider!==job.model.provider||run.model!==job.model.model||
+   expectedModel.effort!==undefined&&run.effort!==expectedModel.effort)throw Error('frozen-diagnostic-evidence-mismatch');
+  sessions.add(run.sessionId);
+ }
+ if(sessions.size!==2)throw Error('diagnostic-sessions-not-independent');
+ return {investigators:2,sourceSha:parent.lastQc.headSha,humanResumeRequired:true};
+}
 export const shouldRemoveHostedFixture=(joined,status)=>joined===true&&status==='passed';
 const HERE=fileURLToPath(new URL('../',import.meta.url));
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
@@ -216,11 +243,21 @@ export async function runHosted(args){
   assert.ok(peak>=4);assert.ok(steered);assert.ok(qcSteered);assert.ok(humanRequested);
   checks.parallelRuns='passed';checks.steerReceipt='passed';receipt.peakRunning=peak;
   wf=await call('get','pair');assert.equal(wf.tasks.alpha.status,'held');
-  const resume={workflowId:'pair',expectedRevision:wf.revision,commandId:'acceptance-resume',action:{type:'resume_after_diagnosis',amendmentId:'review',decision:'accept_pass'}};
+  stage='frozen-independent-diagnosis';
+  const observed=await call('agents.list',{view:'all'});
+  const launchDb=new DatabaseSync(join(state,'plugin-data/micromanager/autopilot.sqlite'),{readOnly:true,allowExtension:false});
+  let launches;
+  try{const rows=launchDb.prepare('SELECT job_json FROM autopilot_launches WHERE workflow_id=? LIMIT 65').all('pair');
+   if(rows.length>64)throw Error('unexpected-launch-cardinality');launches=rows.map(r=>JSON.parse(r.job_json));}
+  finally{launchDb.close();}
+  receipt.diagnosis=verifyHostedDiagnosis(wf,observed,launches,qcModel);
+  checks.twoIndependentDiagnoses='passed';checks.frozenDiagnosisSnapshot='passed';checks.humanResumeRequired='passed';
+  const decision=wf.tasks.alpha.lastQc.verdict==='pass'?'accept_pass':'rework';
+  const resume={workflowId:'pair',expectedRevision:wf.revision,commandId:'acceptance-resume',action:{type:'resume_after_diagnosis',amendmentId:'review',decision}};
   const resumed=await call('act',resume),repeated=await call('act',resume);assert.equal(resumed.revision,repeated.revision);
   checks.interventionHoldAndResumeOnce='passed';
   await call('auto.start',{workflowId:'pair'});
-  await wait(async()=>{const w=await call('get','pair');return ['alpha','beta','gamma','delta'].every(t=>w.tasks[t].lastQc?.verdict==='pass'&&w.tasks[t].status==='passed');});
+  await wait(async()=>{const w=await call('get','pair');return ['alpha','beta','gamma','delta'].every(t=>w.tasks[t].lastQc?.verdict==='pass'&&w.tasks[t].status==='passed');},options.mode==='faux'?90000:240000);
   await call('auto.pause',{workflowId:'pair'});const stable=(await call('agents.list',{view:'all'})).filter(r=>r.workflowId==='pair');
   assert.ok(stable.filter(r=>r.seat==='qc').length>=2);assert.ok(stable.every(r=>r.phase==='sealed'));
   assert.equal(new Set(stable.filter(r=>r.seat==='implementer').map(r=>r.workspaceId)).size,4);
