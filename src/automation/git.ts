@@ -6,12 +6,14 @@ const GIT_ENV_KEYS=["GIT_ALTERNATE_OBJECT_DIRECTORIES","GIT_COMMON_DIR","GIT_DIR
   "GIT_OBJECT_DIRECTORY","GIT_PREFIX","GIT_QUARANTINE_PATH","GIT_WORK_TREE"];
 export interface GitOutput {exitCode:number|null;signal:string|null;stdout:string;stderr:string;stdoutTruncated:boolean;stderrTruncated:boolean}
 export type GitHost=Pick<ServerPluginActivationContext,"execFile"|"lifetimeSignal">;
-export async function git(host:GitHost,root:string,args:readonly string[],timeoutMs=10000):Promise<GitOutput>{
+export async function git(host:GitHost,root:string,args:readonly string[],timeoutMs=10000,assertOperation?:()=>void):Promise<GitOutput>{
   host.lifetimeSignal.throwIfAborted();
   if(!root||args.length<1||args.some(a=>typeof a!=="string"||a.includes("\0")))throw new Error("Invalid Git argv");
+  assertOperation?.();
   const guard=gitExecutionEnvironment();
   const response=await host.execFile({file:"git",args:["-C",root,...args],timeoutMs,
-    env:guard.env,unsetEnv:[...new Set([...GIT_ENV_KEYS,...guard.unsetEnv])],signal:host.lifetimeSignal});
+    env:guard.env,unsetEnv:[...new Set([...GIT_ENV_KEYS,...guard.unsetEnv])],signal:host.lifetimeSignal,
+    ...(assertOperation?{assertOperation}:{})});
   if(response.stdoutTruncated||response.stderrTruncated||response.signal)throw new Error("Git command truncated/interrupted: "+args[0]);
   return response;
 }

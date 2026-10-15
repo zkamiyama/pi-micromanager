@@ -1,3 +1,6 @@
+import type {LocalArtifact} from "./local-artifacts.js";
+import type {AdrLink} from "./local-journal.js";
+import type {WorktreeRetirement} from "./owned-worktree-retention.js";
 /** Derived, finite workflow journal: no Pi reasoning, credentials, tool args or transcript copies. */
 import type {WorkflowInstance} from "../core/workflow.js";
 import type {AgentBinding} from "../runtime/registry.js";
@@ -15,6 +18,8 @@ export interface JournalRun {
   evidence?:{ref:string;kind:string;summary:string;createdAt:string};
 }
 export interface WorkflowJournal {
+  local?:{artifacts:LocalArtifact[];adrLinks:AdrLink[];usage:{storedBytes:number;maxBytes:number;maxAgeDays:number;unresolved:number};
+    retirements:WorktreeRetirement[];status:{phase:string;message:string}};
   workflowId:string;revision:number;updatedAt:string;title:string;
   tasks:JournalTask[];runs:JournalRun[];
   screenshots:ScreenshotArtifact[];

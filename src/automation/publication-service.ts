@@ -1,3 +1,4 @@
+import {productionPolicy,assertProductionDestination} from "../security/policy.js";
 /** YOLO publication with exact QC SHA, untrusted Pi isolation boundary,
  * durable no-repeat reservations and optional workflow-scoped approvals.
  * Only host-owned Git/gh may publish or synchronously merge an exact SHA.
@@ -504,6 +505,8 @@ export class PublicationManager {
         throw new Error("Publication requires exactly one effective Git push URL");
       const pushUrl=destinations[0]!;
       const repo=publicRepo(pushUrl);
+      const security=productionPolicy(dirname(this.options.path));
+      if(security)assertProductionDestination(security,repo,pub.baseBranch);
       if(repo!==fetchRepo)
         throw new Error("Git fetch and push repositories differ; reconcile destination explicitly");
       const publicationTarget:PublicationTarget={repository:repo,sourceBranch:branch,pushUrl};

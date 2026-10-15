@@ -9,7 +9,7 @@ import {parseProductionPolicy,installProductionPolicy,assertProductionProject,
 import {acquireStateOwner} from "../security/state-owner.js";
 import {guardedHostExecution,type HostRequest} from "../security/host-execution.js";
 import {assertWorkspaceBoundary} from "../security/workspace-boundary.js";
-import {assertStateActivation,persistProductionMode} from "../security/state-mode.js";
+import {assertStateActivation,persistProductionMode,assertLocalOwnerState} from "../security/state-mode.js";
 import {validateModelAuthFile} from "../security/auth-source.js";
 import {parseAutopilotConfig,AutopilotLedger} from "../automation/ledger.js";
 import {QuickLaunchLedger,parseQuickProfile} from "../automation/quick-launch.js";
@@ -51,6 +51,7 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
   let failedActivationCleanup:(()=>Promise<void>)|undefined;
   try{
     assertStateActivation(host.dataDirectory,Boolean(policy));
+    assertLocalOwnerState(host.dataDirectory,policy?.mode==="local-owner");
     if(policy){owner?.assertHeld();persistProductionMode(host.dataDirectory);}
     if(policy)uninstall=installProductionPolicy(host.dataDirectory,policy);
     const backend=await base.activate({...host,lifetimeSignal:signal,
@@ -139,7 +140,10 @@ const plugin:PiWebServerPlugin={...base,async activate(host){
           return {...capacity,limits:{...capacity.limits}};
         }
         if(ctx.operation==="security.readiness")return {
-          mode:policy?"production":"compatibility",
+          mode:policy?.mode??"compatibility",
+          supportedAutomation:policy?"durable-only":"legacy-not-supported",
+          nativeSessionLifecycle:"human-owned",
+          publicationAuthority:policy?.mode==="local-owner"?"owner-preauthorized-exact-destination":"per-operation",
           admissionPolicy:policy?"host-enforced":"not-production",
           controlPlaneOwnership:owner&&!owner.lost.aborted?"locked":"not-enforced",
           workerTools:policy?"sandbox-only-with-fixed-git-broker":"unconfined-compatibility",

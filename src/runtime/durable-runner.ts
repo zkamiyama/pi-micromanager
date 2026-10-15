@@ -1,6 +1,8 @@
 /** Pi Durable one-shot sessions. Runtime success is proved from committed input
  * outcomes, not merely from an idle Harness or a model-authored report. */
 import {createHash} from "node:crypto";
+import {DatabaseSync} from "node:sqlite";
+import {unlinkSync,openSync,closeSync,fsyncSync,constants} from "node:fs";
 import {mkdirSync,realpathSync,existsSync,lstatSync,chmodSync} from "node:fs";
 import {join,resolve,isAbsolute} from "node:path";
 import {BACKGROUND_CONTEXT,withAbortSignal} from "@earendil-works/chord/context";
@@ -113,6 +115,7 @@ export class DurableRunHost {
   }
   private readonly onLifetimeAbort=()=>{void this.close().catch(()=>{});};
   private closeFlight:Promise<void>|undefined;
+  private readonly stoppingRuns=new Map<string,Promise<void>>();
   constructor(private readonly options:DurableCallbacks){
     this.safety=new RunSafetyLedger(join(options.dataDirectory,"run-safety.sqlite"));
     if(options.lifetimeSignal?.aborted)this.onLifetimeAbort();
@@ -479,7 +482,9 @@ export class DurableRunHost {
     return {requestId,status:"ok",message:"Durable "+action+" admitted durably"};
   }
   async stopRun(binding:AgentBinding):Promise<void>{
-    if(!binding.sessionId)return;const live=this.active.get(binding.sessionId);if(!live)return;
+    if(!binding.sessionId)return;
+    const pending=this.stoppingRuns.get(binding.sessionId);if(pending)return pending;
+    const live=this.active.get(binding.sessionId);if(!live){if(this.stopFailure)throw this.stopFailure;return;}
     live.closed=true;if(live.timer)clearTimeout(live.timer);this.active.delete(binding.sessionId);
     // A sealed Run remains a live shutdown obligation until close is proven.
     const flight=(async()=>{
@@ -487,9 +492,50 @@ export class DurableRunHost {
       await live.harness.close(BACKGROUND_CONTEXT);
       if(live.completion)await live.completion;
     })();
-    this.stopping.add(flight);
+    this.stopping.add(flight);this.stoppingRuns.set(binding.sessionId,flight);
     try{await flight;}catch(error){this.stopFailure=error;throw error;}
-    finally{this.stopping.delete(flight);}
+    finally{this.stopping.delete(flight);this.stoppingRuns.delete(binding.sessionId);}
+  }
+  /** Retire only OUR closed one-shot database, not PI WEB native session files.
+   * Minimal safety/input/evidence records survive; tombstones fence every reopen. */
+  async retireCompleted(binding:AgentBinding,artifactId:string,assertAuthority:()=>void):Promise<string>{
+    this.assertLive();
+    if(productionPolicy(this.options.dataDirectory)?.mode!=="local-owner")throw new Error("Run retirement requires explicit local-owner policy");
+    const key=sessionHash(this.reservation(binding)),old=this.safety.retirement(key);
+    if(old){if(old.state!=="completed")throw new Error("Run file retirement unconfirmed; no replay");return old.state;}
+    const check=()=>{
+      this.assertLive();assertAuthority();const current=this.current(binding);
+      if(!current||current.phase!=="sealed"||current.sessionId!==binding.sessionId||current.evidenceRef!==binding.evidenceRef||
+        !current.evidenceRef||this.options.ledger.evidence(current)?.ref!==current.evidenceRef)
+        throw new Error("Run retirement lost its sealed evidence authority");
+      this.assertProvedCompleted(current);
+    };
+    check();await this.stopRun(binding);check();
+    if(this.opening.has(binding.sessionId!))throw new Error("Run Harness is opening; retain database");
+    const path=this.path(this.reservation(binding));
+    if(!existsSync(path))throw new Error("Original Run database missing without retirement receipt");
+    const db=new DatabaseSync(path,{allowExtension:false});
+    try{
+      const checkpoint=db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as {busy:number};
+      if(checkpoint.busy!==0||db.prepare("PRAGMA quick_check(1)").get()?.quick_check!=="ok")
+        throw new Error("Run database is busy or damaged; retain it");
+    }finally{db.close();}
+    const files=[path,path+"-wal",path+"-shm"].filter(existsSync).map(file=>{
+      const s=lstatSync(file);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.uid!==process.getuid?.()||realpathSync(file)!==file)
+        throw new Error("Unsafe owned Run storage alias");
+      return {file,dev:s.dev,ino:s.ino,size:s.size};
+    });
+    check();this.safety.reserveRetirement(key,binding.evidenceRef!,artifactId);
+    // If any unlink/flush fails, the reserved tombstone persists. Never retry
+    // an uncertain deletion or open a new empty Harness at the old identity.
+    for(const oldFile of files){
+      check();const s=lstatSync(oldFile.file);
+      if(s.dev!==oldFile.dev||s.ino!==oldFile.ino||s.size!==oldFile.size||!s.isFile())throw new Error("Run file changed before retirement");
+      unlinkSync(oldFile.file);
+    }
+    const fd=openSync(join(this.options.dataDirectory,"durable-runs"),constants.O_RDONLY|constants.O_DIRECTORY);
+    try{fsyncSync(fd);}finally{closeSync(fd);}
+    this.safety.completeRetirement(key);return "completed";
   }
   close():Promise<void>{
     if(this.closeFlight)return this.closeFlight;

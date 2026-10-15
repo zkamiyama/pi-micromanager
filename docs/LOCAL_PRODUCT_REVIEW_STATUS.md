@@ -1,3 +1,5 @@
+> CI-first follow-up (2026-10-15): the retained draft is now copied into a separate review candidate with executable fail-closed acceptance suites. See [CI-first local-owner acceptance](LOCAL_OWNER_CI_ACCEPTANCE.md). This candidate is not accepted or merged; the original draft described below remains unchanged.
+
 # Local-owner product draft: review status and remaining acceptance
 
 Date: 2026-10-15. Scope: #5, #89, #86 and parent trackers #36/#37, under [ADR-0020](adr/0020-local-owner-durable-product.md).
