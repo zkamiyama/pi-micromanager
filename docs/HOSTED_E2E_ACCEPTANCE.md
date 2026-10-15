@@ -1,37 +1,24 @@
-> 2026-10-15: The owner-approved local real model/GitHub run passed, with 15/15 receipt checks and actual PR #100 merged to test-only base. See [2026-10-15 accepted real-host receipt](HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md). The earlier Draft/blocked descriptions below are historical and the steps remain useful for reproduction; the result does not certify production TLS/quotas.
+# Hosted PI WEB, parallel Runs, QC and publication recovery acceptance
 
-# 実PI WEB・並列Run・QC・公開復旧の受け入れ試験
+**Accepted on 2026-10-15 for the approved local test profile:** the actual model/GitHub trial passed all 15 required receipt checks and merged test PR #100 into its test-only base. See the [exact-source acceptance record](HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md). Earlier draft failures are preserved in [the historical progress log](HOSTED_E2E_PROGRESS.md); they are not the current #92/#38 status.
 
-**現在は未完了のDraft実装です。実行結果と障害は [進捗記録](HOSTED_E2E_PROGRESS.md) を参照してください。**
+This suite covers #92, under parent #38. It is not a rerun of #91's separately accepted owner-operated Luna Low SDK smoke. The runner combines the registered Micromanager plugin in actual PI WEB, an actual browser/public peer, Durable, isolated tools, QC, publication approvals, and reconciliation after lost replies.
 
-対象は #92（親 #38）。#91 の所有者実行によるLuna Low SDKスモーク成功は
-受け入れ済みであり、同じ試験をやり直す手順ではありません。
-本書のランナーは実PI WEBに登録したMicromanager、実ブラウザの公開peer、
-実Durable、隔離ツール、QC、公開承認・応答喪失後の照合を一つのシナリオにします。
+A successful implementation build or faux rehearsal is not authenticated-provider or external-GitHub acceptance. Existing services, main/release branches and production state are not test targets. The accepted historical trial also does not validate the unfinished ADR-0020 `local-owner` profile or its new lifecycle draft.
 
-**実装や模擬予行の成功は、実認証・実GitHub受け入れの成功ではありません。**
-`--mode live` の実測JSONが確認できるまで #92 / #38 は未完了です。
-既存サービス、main/releaseブランチ、本番状態は試験対象にしません。
+## Three modes
 
-## 3つのモード
-
-| モード | 実際に動くもの | 意図的に動かさないもの |
+| Mode | Actually exercised | Deliberately excluded |
 | --- | --- | --- |
-| `ui` | 独立PI WEB、サンドボックス有効Chromium、ローカルBasic認証入口、Workflow保存・daemon再起動後の読込 | モデル、GitHub |
-| `rehearsal` | 上記＋実製品の並列Run・隔離ツール・QC・公開許可と再起動処理、実ローカルGit | モデルはfaux、GitHub通信はローカルbare Gitと明示的な応答模擬 |
-| `live` | 上記の製品経路＋既存Pi ChatGPT OAuth / Luna Low、QCはMax、実GitHubの専用試験ブランチ | main/release公開、本番daemon、任意モデル、無制限再試行 |
+| `ui` | Separate PI WEB, sandboxed Chromium, loopback Basic-auth ingress, Workflow persistence and test-daemon restart | Models and GitHub |
+| `rehearsal` | The above plus real product parallel Runs, isolated tools, QC, authorization, restart and local Git | Model responses are faux; GitHub is explicitly simulated using local bare Git and response fixtures |
+| `live` | The product path plus existing Pi ChatGPT OAuth, Luna Low/Max QC and actual GitHub test-only refs | Main/release publication, existing daemons, arbitrary models and unlimited retries |
 
-UIのBasic認証はこの試験用のランダム値で、ブラウザ・HTTP/WebSocketを同じ
-loopback入口に通します。未認証要求が401になることを確認します。
-TLS、マルチテナント隔離、実デプロイ先の認証設定を証明するものではありません。
-モデルやGitHubの資格情報をブラウザへ渡しません。
+Basic authentication uses a random test-only value. HTTP and WebSocket browser traffic share that loopback ingress, and unauthenticated requests must return 401. This does not certify TLS, tenant isolation or deployment authentication. Provider and GitHub credentials are not sent to the browser.
 
-## 準備
+## Preparation
 
-Linux、Node 22/24、Bubblewrap/prlimit/flock/git、liveの場合はghと既存ログインが必要です。
-PlaywrightはdevDependencyの固定バージョンを使い、Chromium sandboxを必ず有効にします。
-必要なシステム依存関係は運用者が用意してください。名前空間が使えない場合に
-`--no-sandbox`、権限昇格、OS保護解除で代用する手順はありません。
+Use Linux, Node 22 or 24, Bubblewrap, prlimit, flock and Git; live mode also requires gh and the approved existing login. Use pinned Playwright from the lockfile and keep Chromium sandboxing enabled. The operator provisions system libraries. Missing namespace support is not a reason to use `--no-sandbox`, elevate privileges or disable OS security.
 
 ```sh
 npm ci --no-audit --no-fund
@@ -41,16 +28,13 @@ npm run test:e2e:hosted -- --mode ui
 npm run test:e2e:hosted -- --mode rehearsal
 ```
 
-CIの `hosted-acceptance-rehearsal` は新しい使い捨てrunnerに依存関係を入れて
-予行だけを実行します。秘密情報や書込みトークンを供給しません。
-既存のNode 22/24および実隔離必須ジョブもそのまま維持します。
+`test:e2e:hosted` invokes `scripts/local-hosted-e2e.mjs`. The separate quartet runner uses `test:e2e:hosted-quartet` with `faux` or `oauth`; see [HOSTED_ACCEPTANCE.md](HOSTED_ACCEPTANCE.md). Their modes are not interchangeable.
 
-## 所有者が実認証・実公開を実行する
+CI's `hosted-acceptance-rehearsal` installs dependencies in a disposable runner and executes rehearsal only, without secrets or a write token. Existing Node 22/24 and mandatory successful-isolation jobs remain required.
 
-ユーザーが許可した `openai/gpt-6-luna` Low / QC Max、同一リポジトリの
-新規 `e2e/local-luna-*` 作業・基準ブランチだけを使います。
-ローカルのレビュー済みmainをクリーンにし、更新直後のコミットSHAを確認してください。
-実行開始時にはGitHubのmainと指定SHAが一致することも検証します。
+## Owner-operated real authentication and publication
+
+Use only the approved `openai/gpt-6-luna` Low/Max profiles and fresh `e2e/local-luna-*` source/base branches in this repository. Start from a reviewed clean main checkout, inspect its exact SHA, and pass that SHA explicitly. Live admission also verifies it against GitHub's main.
 
 ```sh
 SHA=$(git rev-parse HEAD)
@@ -64,97 +48,51 @@ printf 'exitCode=%s\n' "$RESULT"
 cat "$RESULTS/hosted.json"
 ```
 
-これはSDKスモークより多い呼出しを伴います。2つの独立した合成Task、独立QC、
-最終統合と最終QC、停止確認用Taskを使います。1Runのモデル要求は最大12、
-ツール50、180秒、同時Runは4、Workflowは最大2試行です。
-全体にも有限の監督期限があります。これらは金額の厳密な上限ではありません。
-QCの初回PASSを確認するシナリオで、意図的なQC失敗からのreworkは別の試験です。
+This uses more calls than the SDK smoke: two independent synthetic Tasks, independent QC, final integration/final QC and a deliberate interruption Task. Each Run has at most 12 model admissions, 50 tool admissions and 180 seconds; concurrency is four, and each Workflow has at most two attempts. An overall supervisor deadline also applies. These are not exact monetary limits. The scenario tests successful QC, not deliberately failing QC followed by rework.
 
-モデル認証元は既定 `~/.pi/agent/auth.json`、GitHub設定は `~/.config/gh` です。
-異なる承認済みプロファイルだけ `--pi-auth-file` / `--gh-config-dir` の絶対パスで
-指定できます。資格情報はコピーせず、内容を表示せず、モデルのツールへマウントしません。
-公開Pi SDKが通常のOAuth更新を扱います。APIキーや別providerへ暗黙に切り替えません。
-既存ファイルの権限を自動で変更して通す機能はありません。
+The default sources are `~/.pi/agent/auth.json` and `~/.config/gh`. Use `--pi-auth-file` or `--gh-config-dir` only to name another explicitly approved absolute path. Do not copy or display credentials or mount them into model tools. The public Pi SDK owns normal OAuth refresh. There is no implicit API-key/provider fallback or automatic permission change to make an existing file acceptable.
 
-## 実際の試験順序
+## Scenario sequence
 
-1. 新しいprivate HOME、agent/session/state、socket、loopback port、ブラウザを作成。
-2. 実PI WEBの標準実行ファイルを起動。文書化されたplugin登録と公開Browser APIの
-   `context.peer.request` を使います。非公開ホストルートは呼びません。
-3. UIで合成Workflowを保存。試験daemonだけを終了・再起動し、同じWorkflowを取得。
-4. 2つの異なるGit Worktreeで実装Runを観測し、公開peer経由でSteerを一度送信。
-5. 実装・独立QC・最終統合・最終QCを製品に処理させる。モデル変更は生成された
-   fixtureの `a.txt` / `b.txt` だけ。テストコードやCIの変更は公開前に拒否。
-6. `ask` のまま作られた承認のTask、QC SHA、repository、base/sourceを確認して、
-   この試験専用の対象だけ公開peer経由で承認。全体の権限をallowへ変更しません。
-7. 製品の `Host.execFile` を包む試験専用アダプターが、成功したpushとmergeの
-   応答だけを各一回失わせる。副作用実施前に成功を捏造するものではありません。
-8. 試験daemonを再起動。製品が実remote状態を照合し、同じpush/mergeを再実行せず
-   完了することを確認。曖昧な結果は再試行せず停止します。
-9. 別の遅延TaskをAbortし、再起動後にRun・モデル要求が増えないことを確認。
-10. 試験用ブラウザ・子孫プロセスの終了を確認。PID再利用やD-stateを終了と誤認しません。
+1. Allocate fresh private HOME, agent/session/state roots, socket, loopback ports and browser state.
+2. Launch the shipped PI WEB executables and use documented plugin registration plus public Browser API `context.peer.request`, not private routes.
+3. Save a synthetic Workflow through the UI; restart only the test daemon and retrieve the same Workflow.
+4. Observe implementations in two distinct Git Worktrees and send one public-peer Steer command.
+5. Let product paths complete implementation, independent QC, final integration and final QC. Model changes are limited to the generated fixture's `a.txt` and `b.txt`; test or CI changes are refused before publication.
+6. Check each `ask` approval's Task, QC SHA, repository, base and source, then approve only that test subject through the public peer. Do not change general permissions to `allow`.
+7. A test-owned `Host.execFile` wrapper loses one successful Push reply and one successful Merge reply. It never fabricates success before the actual side effect.
+8. Restart the test daemon. The product inspects actual remote state and completes without a second Push/Merge. Unproved outcomes stop rather than being blindly retried.
+9. Abort a separate delayed Task; after restart, prove no extra Run or model request was admitted.
+10. Verify browser and descendant-process completion. A stopped parent, reused PID or D-state child is not a joined process tree.
 
-非mainへの試験PRでも同じリポジトリのActionsは動きます。workflow定義や保護を
-変更せず、製品側が実CIの結果を確認するまでmergeしません。試験refは削除せず
-証拠として残します。失敗時に生成された一時状態も、未確定な結果を消すために
-自動削除しません。JSONのtrial情報で専用refを特定できます。
+Actions run even for a PR targeting a non-main test base. Workflow definitions and branch protections remain unchanged; the product does not merge until real CI succeeds. Keep test refs as evidence. Failed trials retain local state rather than erase uncertain outcomes; receipt trial fields identify the external refs.
 
-## 製品の修正点と互換性
+## Product fixes and compatibility
 
-### 最終統合の許可済みSHA
+### Separate final merge authority from required ancestors
 
-従来は、最終統合がマージすべきQC済みSHAを `requiredAncestors` と混同しており、
-最終Runには空の許可リストが渡っていました。隔離内にはGitメタデータがないため、
-これは実統合を止める接続漏れです。新しい `allowedMergeShas` をimmutableな
-launch記録に保存し、ホスト実行境界で現在のQCと再照合して、最終Runの固定Git brokerへ
-渡します。依存Taskが起動前に含むべき祖先の条件とは分離します。
+The earlier final-integration path confused QC-approved SHAs to be merged with `requiredAncestors`, leaving an empty broker merge allowlist. Because sandboxed workers do not receive Git administration data, this was a real integration-path omission.
 
-修正前コードで回帰テストが `undefined` と期待SHA配列の不一致により失敗し、
-修正後に同じテストが成功しました。旧最終Runに新しい許可証拠がない場合は
-安全側に拒否します。既存の不確実Runへ許可リストを後付けして自動再実行しません。
+`allowedMergeShas` now persists in the immutable launch record, is rechecked against current QC at the host boundary, and reaches the final Run's fixed Git broker. It is separate from ancestors that must already exist before an ordinary dependent Task starts. The regression failed before the fix and passed afterward. Old final Runs missing that proof are refused; do not inject authority into an uncertain legacy Run and replay it.
 
-### 独立テストホストの認証元
+### Explicit host-only model credential source
 
-`productionSecurity.modelAuthFile` はホスト設定限定の任意項目です。
-省略時の既存動作は変えません。指定時はprivateな所有者ファイル・canonical pathを
-検査し、プロジェクト・制御状態・実行パッケージ内の認証元を拒否します。
-Workflowやモデル引数からこの値を変更できません。選択された認証元は
-公開 `ModelRuntime` へ渡し、暗黙のcustom models.jsonは読みません。
-readiness応答にパスや資格情報を追加しません。
+`productionSecurity.modelAuthFile` is optional and host-owned. Omitting it preserves existing behavior. Selecting it requires a private owner file and canonical path outside projects, control state and executable packages. Workflow/model arguments cannot change it. The public `ModelRuntime` receives the selected source without implicitly loading custom models.json. Readiness responses do not disclose the path or credentials.
 
-## 結果の共有と残る保証範囲
+## Sharing results and assurance limits
 
-共有するのは最後のJSONとexitCodeだけです。認証ファイル、SDK生ログ、SQLite、
-モデル本文は送らないでください。`live`、`rehearsal`、`ui`を入れ替えて解釈しません。
-`productionSafetyGuaranteed` は常にfalseです。プラットフォームのハードクォータ、
-カーネル状態、独立セキュリティレビュー、運用GC等は別Issueの責務のままです。
+Share only the final JSON and exit code, not authentication files, raw SDK logs, SQLite or model text. Do not relabel `live`, `rehearsal` and `ui` results. `productionSafetyGuaranteed` is always false. Platform hard quotas, kernel status, independent review and operational GC are not certified by this test; ADR-0020 separately narrows the intended product profile.
 
-## この変更の開発中に観測したローカル環境の障害
+## Historical local environment failure
 
-資格情報不要の実ホスト予行中、試験用Bubblewrapの子がLinuxのD-stateに残り、
-`/proc/<test-pid>/wchan` は `exp_funnel_lock` を示しました。単独の `/bin/true`
-子プロセスとWorkspace検査は完了しましたが、同じ実隔離呼出しは完了しませんでした。
-根本的なカーネル原因は未確定です。OS保護解除や既存サービス再起動は行わず、
-このタスクの試験を停止しました。途中のfull checkは完了・成功と数えません。
+During development, a credential-free hosted rehearsal left test Bubblewrap children in Linux D-state, with `exp_funnel_lock` in their wait channel. Ordinary `/bin/true` and Workspace inspection completed, but the isolated invocation did not join. The precise kernel cause was not established. The attempt stopped without disabling OS protections or restarting an existing service; incomplete checks were not counted as success.
 
-終了した親だけを見て子孫を終了済みとする問題を、ランナーのプロセス追跡で修正しました。
-未終了の子孫、PID再利用、再親化は別に扱います。CIは新しい使い捨てホストで実隔離を
-必須にした独立したコード検証であり、このローカルホストの修復や本番適格性の証明ではありません。
+The process tracker was hardened so an exited parent cannot prove descendant completion. Child survival, PID reuse and reparenting are treated separately. After the owner's WSL restart, later accepted trials completed. CI on a fresh runner is independent code/isolation evidence, not proof that a particular local kernel was repaired or certified.
 
-## Actions枠不足時のローカル検証
+## Local gates when Actions capacity is unavailable
 
-所有者は、Actionsの利用枠を待たず、同等の検証をローカルで行うことを承認しました。
-これはテスト省略や保護解除の承認ではありません。正確な候補SHA、クリーンな作業ツリー、
-Nodeの実バージョン、終了コード、件数、未実施項目を記録します。
+The owner authorized equivalent local validation rather than waiting for Actions capacity. That does not authorize skipped tests or weakened branch protection. Record the exact candidate SHA, clean-tree status, actual Node versions, exit codes, counts and exclusions.
 
-必要なゲートは、Node 22/24それぞれの `npm run check`、既存の
-`successful-isolation` に記載された全ファイル（検索・診断の追加テストを含む）、
-`npm run test:e2e:hosted-quartet -- --mode faux` と
-`npm run test:e2e:hosted -- --mode rehearsal` です。
-隔離スイートは `MM_REQUIRE_SANDBOX=1` を維持し、ブラウザもsandboxを有効にします。
-模擬モデルの予行を実認証・実GitHubの完了と数えません。
+Required gates are `npm run check` on Node 22 and 24, every file in the current CI `successful-isolation` step (including search, diagnostics and later required additions), `npm run test:e2e:hosted-quartet -- --mode faux`, and `npm run test:e2e:hosted -- --mode rehearsal`. Keep `MM_REQUIRE_SANDBOX=1` and browser sandboxing. A faux rehearsal is not real authentication/GitHub acceptance.
 
-現在確認したWSL環境では、最小の使い捨てBubblewrapプローブも終了できませんでした。
-そこで再実行を重ねたり、`--no-sandbox` 等で回避したりせず、実隔離が正常に終了する
-検証ホストでのみ上記を完遂します。既存サービスの再起動やOSの変更はこのスクリプトの
-操作対象ではありません。新しい候補の全ゲートが未完了の間はPRをDraftとして保持します。
+If the smallest disposable Bubblewrap probe cannot join, stop rather than repeat it or use `--no-sandbox`. Complete these gates only on a working isolation host. Existing service restarts and OS reconfiguration are outside the script. A candidate whose necessary gates are incomplete is not ready to merge.

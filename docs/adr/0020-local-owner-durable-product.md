@@ -1,103 +1,107 @@
-# ADR-0020: 単一所有者のWSL・Durable製品とローカル資源の扱い
+# ADR-0020: Single-owner WSL/Durable product and local resource lifecycle
 
-- 日付: 2026-10-15
-- 状態: **製品範囲として採択。下記の新機能は実装・検証完了の宣言ではない。**
-- 決定者: リポジトリ所有者。会話中の「native同等化は不要」「Journalはローカル」「ADRはGitのdocs」「自分のWorktreeは回収」「Windows内WSLでYOLOを第一とする」という明示判断を記録する。
-- 基準コード: `6dcb050aa3bdbb0e4fd28ed2173a8d64589596ec`。
-- 関係: ADR-0018/0019のレイヤー分担を維持し、正式に対応する利用環境と必須機能を限定する。
+- Date: 2026-10-15
+- Status: **Accepted product scope. The new capabilities described below are not declarations of completed implementation or verification.**
+- Decision maker: the repository owner, who explicitly selected Durable without native parity, a local Journal, Git-owned ADR documents, reclamation of owned Worktrees, and Windows/WSL YOLO as the primary use case.
+- Code baseline: `6dcb050aa3bdbb0e4fd28ed2173a8d64589596ec`.
+- Relationship: retain the responsibility boundaries in ADR-0018/0019 while narrowing the supported environment and required capabilities.
 
-## 1. 製品の正式対応範囲
+## 1. Supported product scope
 
-**所有者一人がWindows内のWSL 2からlocalhostで使う、Pi Durableを用いたPI WEB開発ツール。** 公開GitHubリポジトリであることは、多人数向け公開Webサービスを運用するという意味ではない。
+**A PI WEB development tool using Pi Durable, accessed through localhost by one owner on Windows with WSL 2.** Publishing the GitHub repository does not mean operating a public, multi-user Web service.
 
-正式対応の自動実行経路はDurableのみ。native Piと同等にすること、nativeをDurable失敗時の退避先にすること、人間のnative Sessionを本製品で掃除することは要求しない。既存のnative互換コードや過去の状態を、文書の変更だけで黙って実行・移行・削除してはならない。
+Durable is the only officially supported automation runtime. Native Pi parity, automatic fallback to native execution when Durable refuses, and cleanup of human-created native Sessions are not requirements. A documentation change must not silently run, migrate, or delete existing native compatibility code or state.
 
-OS、所有者、Pi/PI WEB SDK、Git/gh、Bubblewrap、Windows/WSLカーネルは信頼基盤とする。悪意ある同一OSユーザー、管理者、カーネル侵害、tenant間隔離、公開SaaSの認証/TLS基盤を、このリリースの検証済み能力とは呼ばない。
+The OS, owner, Pi/PI WEB SDKs, Git/gh, Bubblewrap, and Windows/WSL kernel are trusted components. This release does not certify resistance to a malicious same-UID process, administrator or compromised kernel, nor tenant isolation or public SaaS authentication/TLS infrastructure.
 
-## 2. YOLOと隔離を分離する
+## 2. Separate YOLO authority from isolation
 
-YOLOとは、所有者が先に指定したプロジェクト・モデル・リポジトリ・ベースブランチ・操作の範囲で、逐次承認なしに実行すること。対象の拡張、結果不明操作の再送、QCやGitHub checksの省略ではない。
+YOLO means executing without repeated approval **inside the project, model, repository, base branch, and operation scope authorized by the owner in advance**. It does not authorize scope expansion, resending uncertain operations, skipping QC, or bypassing GitHub checks.
 
-従来の`productionSecurity.mode="production"`における外部変更の`ask`/`deny`条件は維持する。追加する`local-owner`は、所有者の明示設定と新規の専用状態領域を条件とし、旧production/native状態の暗黙の降格・移行を認めない。これは新しい設定契約であり、このADRの採択だけで利用可能になるわけではない。
+Preserve the existing `ask`/`deny` requirement for external mutations under `productionSecurity.mode="production"`. The proposed `local-owner` profile requires explicit owner settings and a fresh, dedicated state root. No implicit downgrade or migration of old production/native state is allowed. Adoption of this ADR does not itself make the new setting available.
 
-両プロファイルで、Bubblewrap、制御データ/Workspace分離、固定Git broker、ホストallowlist、所有ロック、停止・終了確認、操作世代、有限予算、保存済み成否、exact-SHA merge、GitHub側の保護を必須とする。Workflowやモデルが隔離を自己申告することや、無効化して成功に見せることは認めない。
+Both profiles require Bubblewrap, control-data/Workspace separation, the fixed Git broker, host allowlists, the ownership lock, cancellation and joined completion, operation generations, finite budgets, persisted outcomes, exact-SHA merge, and GitHub protections. A Workflow or model cannot self-certify isolation or disable it to obtain a passing result.
 
-## 3. ローカルJournalとGitのADR
+## 3. Local Journal and Git-owned ADRs
 
-| データ | 正本 | Journalの役割 |
+| Data | Source of truth | Journal responsibility |
 | --- | --- | --- |
-| 短い実行経過・判断理由・テスト結果 | ローカル管理領域 | 派生ビューとして表示 |
-| 画像 | ローカルの限定されたオブジェクト領域 | 必要時だけ読み込む |
-| 採択したADR | 対象Gitリポジトリの`docs/adr/*.md` | 検証したファイルとコミットへリンク |
-| 再実行防止・QC・外部操作の最小receipt | 制御プレーンの権威ある記録 | 成否と来歴を参照 |
+| Short execution history, public decision summaries and test results | Local managed state | Display a derived view |
+| Images | A bounded local object store | Read on demand |
+| Accepted ADRs | `docs/adr/*.md` in the target Git repository | Link to the verified file and commit |
+| Minimum no-replay, QC and external-operation receipts | Authoritative control-plane records | Reference outcomes and provenance |
 
-Journal専用のクラウド公開・同期基盤、ADR専用のcommit/push/PRエンジン、ADR本文の二重管理は作らない。ADRの編集・レビュー・commitは通常のGit経路を使う。既存のレビュー用stageは残せるが、stageしたことを採択・公開完了とは呼ばない。
+Do not build a Journal cloud-publishing/synchronization service, a separate ADR commit/push/PR engine, or a second canonical copy of ADR text. ADR editing, review and commit use ordinary Git operations. Existing reviewed staging may remain, but staging is not adoption or completed publication.
 
-ADRリンクはproject/workspace・追跡された通常ファイル・対象コミットを検証する。可変ブランチの最新表示と、根拠になった固定コミットは区別する。短命なJournalを削除してもADRの決定・理由・代替案は本文だけで理解できるようにする。
+Verify project/Workspace authority, a tracked regular file, and its source commit when linking an ADR. Distinguish a mutable branch's latest version from the immutable commit used as evidence. The decision, rationale and alternatives must remain understandable from the ADR itself after short-lived Journal details expire.
 
-画像はGitへの格納を既定条件にしない。ローカル取り込みにはRun/QC・ソースSHA・内容ハッシュ・生成元/選択元を記録する。操作者が選んだ画像は`operator-upload`であり、自動撮影やQC成功の証拠とは別である。画像を指すソースSHAがあっても、画像の中身がその実行の真実だと自動認定しない。既存のGit追跡済み画像の厳密な取り込みは別経路として維持できる。
+Images need not be stored in Git. Local ingestion records Run/QC identity, source SHA, content hash and producer/selection provenance. An operator-selected image is `operator-upload`, not automatically captured or independently attested QC evidence. Recording a source SHA does not establish that the image truthfully depicts that execution. Keep the existing strict tracked-Git-image ingestion as a separate supported path.
 
-ファイルへ直接アクセスできるOSユーザーも信頼境界内にいる。localhostであることを、任意の同一OSユーザーや悪意あるWebページに対する認証保証と取り違えない。ホストの既存認証・認可は維持し、外部公開は別プロファイルを要する。
+OS users able to read the files are within the trusted local boundary. Localhost alone is not authentication against arbitrary local processes or malicious Web pages. Preserve the host's authentication and authorization. External exposure needs a separately reviewed profile.
 
-## 4. 詳細ログを有限にする
+## 4. Bound detailed logs
 
-完了Runの公開活動・短い判断理由はRun単位のJSONLをZstandardで圧縮する方針とし、まず総容量256 MiB・30日を既定値とする。圧縮形式/レベルはプロトコルではなく内部保存方式であり、読取時間と展開後サイズを制限する。
+Store completed Runs' public activity and short decision summaries as per-Run JSONL compressed with Zstandard, initially using a total capacity of 256 MiB and a 30-day retention default. Compression format and level are internal storage choices, not a protocol. Bound read time, decoder resources and decompressed size.
 
-秘密値、隠れた思考過程、無制限の生トランスクリプト複製は対象外。画像/詳細ログは、完了・非pin・復旧不要の条件下で古いものから回収する。容量満杯なら処分可能な詳細を先に回収し、保護対象しか残っていなければ新しい詳細保存や新規実行を安全側に止める。
+Exclude secrets, hidden chain-of-thought and unlimited copies of native transcripts. Reclaim older image/detail artifacts only after completion, with no pin or recovery dependency. Reclaim disposable details before admitting new storage; if only protected data remains, safely refuse new detail storage or new execution rather than deleting protected evidence.
 
-権威あるWorkflow、成功/失敗、Run/入力/操作ID、QC SHA、終了確認、外部照合、回収receiptは詳細ログとは別。ログを消した結果、古いRunを未実行扱いに戻してはならない。稼働中・不明状態のDurable SQLiteを、単なる圧縮ログとして動かさない。
+Authoritative Workflow state, success/failure, Run/input/operation IDs, QC SHA, completion proof, external reconciliation and reclamation receipts are separate from detailed logs. Deleting logs must never make an old Run appear unexecuted. Active or uncertain Durable SQLite is not an ordinary compression/archive target.
 
-## 5. 自分のWorktreeとDurableデータだけを回収する
+## 5. Reclaim only owned Worktrees and Durable data
 
-Worktreeは一時的な作業用コピーであり、長期保存する根拠そのものではない。次を全て証明できる**Micromanagerが作ったWorktree**は自動回収してよい。
+A Worktree is an expendable working copy, not the durable evidence itself. Automatic reclamation is permitted only for a **Micromanager-created Worktree** for which all of the following are proved:
 
-1. 元の作成receipt、Git登録、正規パス、project/workspace IDが一致する。
-2. 関係するRunは終了・sealed済みで、未確定外部操作・人間待ち・未完了依存がない。
-3. 必要な画像/詳細ログの回収と最小証拠の保存が済んでいる。
-4. 必要コミットは保持するGit参照から到達できる。SHAを文字列で記録しただけでは保持証明にしない。
-5. dirty、untracked、未確認のignoredファイル、submodule、別所有者のpathやleaseがない。
-6. 非同期事前検査の後、実際の変更直前にも世代・権限・対象を再確認する。
+1. Original creation receipt, Git registration, canonical path and project/Workspace identity match.
+2. Related Runs have finished and are sealed, with no uncertain external operation, human hold or unfinished dependency.
+3. Required images/detail logs have been collected and minimum evidence is preserved.
+4. Necessary commits are reachable through retained Git refs. A SHA stored as plain text is not a Git retention root.
+5. There are no dirty, untracked or unclassified ignored files, submodules, unrelated ownership or active leases.
+6. Generation, authority and target are rechecked after asynchronous preflight, immediately before mutation.
 
-削除はGitのWorktree管理操作で行い、`--force`や任意pathの再帰削除で検証を代用しない。Worktreeディレクトリ、Git branch/ref、ログ/画像の削除は別操作であり、作業コピーの回収と同時に成果の参照を消さない。
+Use Git's Worktree management operation. Do not substitute `--force` or recursive deletion of arbitrary paths. Worktree directories, Git branches/refs, and image/log artifacts have distinct lifecycles. Reclaiming a working copy must not also remove the refs preserving its result.
 
-削除前に意図を永続化し、操作が不明なら自動再送しない。対象が無いだけで「自分の削除が成功した」と記録しない。失敗時のlease/tombstoneは照合のため保持する。
+Persist intent before deletion. Do not automatically repeat an operation with an unknown outcome. Absence alone is not proof that this controller completed its deletion. Retain failure leases/tombstones for reconciliation.
 
-自分のDurable Run DBを回収する場合も、実runtimeの終了と保存済み成功、必要記録、同一Runの再作成を拒否するtombstoneが先行する。native Pi/PI WEB Sessionのファイル、JSONL、SQLite、ユーザーWorktreeは一切この回収権限に含めない。人間が作成したnative Sessionは人間とPI WEBが管理する。
+Owned Durable Run database reclamation similarly requires actual runtime shutdown, persisted successful completion, required records, and a tombstone refusing recreation of the same Run. This authority excludes native Pi/PI WEB Session files, native JSONL/SQLite, and user-created Worktrees. Humans and PI WEB manage human-created native Sessions.
 
-## 6. WSLで確認する範囲
+## 6. WSL acceptance boundary
 
-対象は一人のWindows/WSL環境であり、全WSL/Linux/SaaSの適格性認定は不要。localhostと既存認証、実際のworkerファイル/ネットワーク隔離、プロセス終了、入力/操作重複防止、容量/時間/要求上限、WSL再起動後の照合を実測する。
+Qualify the owner's specific Windows/WSL environment, not all WSL/Linux/SaaS deployments. Measure localhost access with existing authentication, actual worker file/network isolation, process completion, input/operation deduplication, capacity/time/request limits, and reconciliation following WSL restart.
 
-`.wslconfig`、Windows firewall、AppArmor、OS権限、本番daemonをテストが変更してはならない。WSL全体のメモリ/CPU設定は他の作業にも影響する運用設定であり、製品が自動で書き換えない。論理上限・容量スキャン・rlimitはハードaggregate quotaや正確な請求上限ではないことを表示する。
+Tests must not change `.wslconfig`, Windows Firewall, AppArmor, OS permissions or existing production daemons. WSL-wide memory/CPU settings affect other workloads and are operator-managed, not automatically rewritten by this product. Clearly distinguish logical limits, capacity scans and per-process rlimits from hard aggregate quotas or exact billing ceilings.
 
-## 7. Issue・旧PRの明示的な処置
+## 7. Explicit Issue and old-PR disposition
 
-| 対象 | この判断による処置 |
+| Item | Disposition under this decision |
 | --- | --- |
-| #2 | 既存の実測済みDurableアダプターで正式対応の受け入れ完了。native同等化は明示的非目標、実装済みとはしない |
-| #5 | ローカル画像・有限な詳細ログ・Git ADRリンクに限定。UI接続/保存/回収/改変試験が完了するまでOpen |
-| #89 | 自分のWorktree/Durable関連データだけ。任意native Session API待ちは完成条件から外すが、所有資源回収自体の試験は必要 |
-| #86 | 単一所有者WSLのlocal-owner設定と実測。SaaS/tenant/TLS一般は対象外。新設定が実環境で受け入れられるまでOpen |
-| #36/#37 | 上記の限定された契約と証拠をまとめる親。設計採択だけで実装完了とはしない |
-| PR #40–#47 | 現行mainの代替実装/回帰テストを対応付け、未マージのままsupersededとしてClose。元のbranch/履歴は保持 |
-| PR #10 | 診断/Cockpitは#103/#104で代替。旧native同等化/専用ADR publisherは非採用。未完了のローカル要件は#5/#89へ残す |
-| PR #99 | 以前停止した試験として未マージでClose。別の成功試験#100と混同せず、元のrefs/状態は削除しない |
-| PR #82/#83 | 型だけNode26へ上げる#82は今のNode22/24対応に不要。TypeScript major更新#83は独立の未検証保守提案 |
+| #2 | Accept the already measured Durable adapter for the supported scope; native parity is an explicit non-goal, not a verified implementation |
+| #5 | Limit to local images, bounded detailed logs and Git ADR links; remain open until UI, persistence, reclamation and tamper tests pass |
+| #89 | Reclaim only owned Worktrees/Durable data; arbitrary native-Session APIs are no longer a prerequisite, but owned-resource lifecycle tests remain required |
+| #86 | Verify `local-owner` on the selected single-owner WSL host; generic SaaS/tenant/TLS certification is out of scope |
+| #36/#37 | Track the scoped contracts and evidence above; design adoption is not implementation completion |
+| PR #40–#47 | Close without merge as superseded after mapping current-main replacements and tests; retain branches/history |
+| PR #10 | Diagnostics/Cockpit are replaced by #103/#104; do not adopt old native parity or dedicated ADR publication design; retain unfinished local work in #5/#89 |
+| PR #99 | Close the earlier stopped trial without merge; do not confuse it with successful trial #100 or delete its refs/state |
+| PR #82/#83 | Node-26-only types are unnecessary for current Node 22/24 support; evaluate the TypeScript major separately, with its own exact-head evidence |
 
-## 8. 実装状態と受け入れを混同しない
+## 8. Keep implementation state distinct from acceptance
 
-基準mainには、Durable実行・実OAuth/PI WEB・QC直接介入・保存済み成果・実GitHub応答喪失復旧の受け入れがある。しかし、今回追加するlocal-owner設定、ローカル画像/圧縮ストア、Git docsリンク、所有資源の自動回収は、その既存証拠だけでは完成しない。
+The baseline main has scoped acceptance for Durable, actual OAuth/PI WEB, direct QC intervention, committed outcomes and real GitHub lost-response recovery. None of that alone validates the proposed local-owner profile, local image/compressed-log store, Git document links or automatic owned-resource reclamation.
 
-2026-10-15の開発用一時チェックアウトでは、新設定に関する公開サーバー/厳格モード/操作フェンスの重点26テストが成功し、後続サーバーコードもTypeScriptビルドまで成功した。一方、Journal画面の編集コマンド、および後続の差分/ビルド確認コマンドがツールの安全性チェックで拒否された。拒否理由の詳細は不明。拒否された操作を再表現や別経路で実行しない。
+During development on 2026-10-15, 26 focused public-server, strict-profile and operation-fence tests passed. Later backend code built successfully with TypeScript. However, a Journal UI editing command and a subsequent diff/build command were refused by the tool safety check without a detailed reason. Refused operations were not rephrased or rerouted.
 
-したがって、新しいruntime/UI/回収コードは未コミットの開発状態に留め、**この文書だけのPRには含めない**。新コードの全面回帰・実隔離/実ホスト・破壊的境界試験は未完了であり、#5/#89/#86と親はOpenを維持する。文書PRのCI成功を新コードの成功と呼ばない。所有者の許可やモデル指定の不足ではない。
+The runtime/UI/reclamation draft therefore remained uncommitted and was **not included in the original documentation-only PR #106**. Its full regression, actual host/isolation and destructive-boundary acceptance remained incomplete. #5/#89/#86 and their parents stayed open; a documentation PR's green CI is not evidence that the local draft passed. Owner authorization and model selection were not missing.
 
-## 根拠
+Follow-up on 2026-10-15: after the owner restarted Desktop Commander, source reads worked, but a proposed runtime patch addressing media limits and archive/pin handling was again tool-safety refused. The patch was not applied through another route. Independent documentation translation and compiler maintenance are separate work, not acceptance of that runtime draft. Consult the current Issue evidence for later status rather than treating this historical account as a permanent implementation claim.
 
-- [ADR-0018: 責務境界](0018-runtime-deployment-and-evidence-ownership.md)
-- [ADR-0019: 能力・受け入れの分離](0019-bounded-product-capabilities-and-issue-disposition.md)
-- [実OAuth Quartet受け入れ](../ADR19_DIAGNOSTICS_AND_COCKPIT_ACCEPTANCE.md)
-- [実GitHub公開・復旧受け入れ](../HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md)
-- [Git Worktreeの公式仕様](https://git-scm.com/docs/git-worktree)
+For the follow-up source-review findings and exact unfinished gates, see [Local product review status](../LOCAL_PRODUCT_REVIEW_STATUS.md).
+
+## References
+
+- [ADR-0018: responsibility boundaries](0018-runtime-deployment-and-evidence-ownership.md)
+- [ADR-0019: capabilities and acceptance](0019-bounded-product-capabilities-and-issue-disposition.md)
+- [Actual OAuth quartet acceptance](../ADR19_DIAGNOSTICS_AND_COCKPIT_ACCEPTANCE.md)
+- [Actual GitHub publication/recovery acceptance](../HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md)
+- [Git Worktree specification](https://git-scm.com/docs/git-worktree)
 - [Node 22 Zstandard API](https://nodejs.org/download/release/v22.23.3/docs/api/zlib.html)
 - [Microsoft WSL networking](https://learn.microsoft.com/windows/wsl/networking)
