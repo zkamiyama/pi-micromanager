@@ -12,7 +12,7 @@ import type {
   PiWebHostWorkspacesV1,
 } from "@jmfederico/pi-web/server-plugin-api";
 import type { WorkflowStore } from "../core/store.js";
-import type { TaskState,WorkflowInstance } from "../core/workflow.js";
+import {automaticTaskContract,type TaskState,type WorkflowInstance} from "../core/workflow.js";
 import type { AgentBinding, AgentRegistry, Reservation, Seat } from "../runtime/registry.js";
 import type { PiSessionBridge } from "../runtime/session-bridge.js";
 import {isDurableSession,type DurableRunHost} from "../runtime/durable-runner.js";
@@ -59,6 +59,18 @@ export function assertFinalMergeSources(job:LaunchJob,current:WorkflowInstance):
   if(!expected.length||JSON.stringify(expected)!==JSON.stringify(job.allowedMergeShas))
     throw new Error("Final integration broker authority differs from frozen QC sources");
 }
+/** No reduced-budget diagnostic can be relabeled as a normal unlimited Run. */
+export function assertAutomaticDiagnosisJob(job:LaunchJob,current:WorkflowInstance,now=Date.now()):void{
+  const task=current.tasks[job.taskId];
+  if(!task)throw new Error("Unknown diagnostic Task");
+  const contract=automaticTaskContract(current,task);
+  if(!contract){if(job.diagnosticBudget)throw new Error("Unexpected diagnostic episode authority");return;}
+  if(task.attempts!==1||task.status!=="running"||
+    !["diagnosis","synthesis"].includes(job.kind)||job.kind!==task.spec.kind||
+    JSON.stringify(contract.budget)!==JSON.stringify(job.diagnosticBudget)||
+    JSON.stringify(contract.model)!==JSON.stringify(job.model)||now>=contract.budget.deadline)
+    throw new Error("Automatic diagnostic contract changed, expired, or retry refused");
+}
 export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
   resumeUnstarted(binding:AgentBinding,job:LaunchJob,assertAdmitted:()=>void):Promise<AgentBinding>;
 } {
@@ -93,6 +105,11 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
     return w;
   }
   return {
+    canLaunch(job){
+      assertActive();
+      return options.getRuntime?.(job.projectId,job.orchestraWorkspaceId,job.workflowId)!=="durable"||
+        Boolean(options.durable?.hasAdmissionCapacity());
+    },
     assertCompleted(binding){
       if(isDurableSession(binding.sessionId)){
         if(!options.durable)throw new Error("Durable runtime authority unavailable");
@@ -101,7 +118,12 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
     },
     recoverReport:options.replaySettledReport,
     async launch(job:LaunchJob){
-      const admitted=()=>{assertActive();options.assertAdmitted?.(job);};
+      const admitted=()=>{
+        assertActive();options.assertAdmitted?.(job);
+        assertAutomaticDiagnosisJob(job,workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId));
+        if(job.diagnosticBudget&&options.getRuntime?.(job.projectId,job.orchestraWorkspaceId,job.workflowId)!=="durable")
+          throw new Error("Native runtime cannot enforce diagnostic episode budgets");
+      };
       admitted();
       let executablePath:string;
       if(job.kind==="implementation"||job.kind==="qc"||job.kind==="diagnosis"){
@@ -205,7 +227,11 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
       return binding;
     },
     async resumeUnstarted(binding,job,assertAdmitted){
-      const admitted=()=>{assertActive();assertAdmitted();};
+      const admitted=()=>{
+        assertActive();assertAdmitted();
+        assertAutomaticDiagnosisJob(job,workflows.get(job.projectId,job.orchestraWorkspaceId,job.workflowId));
+        if(job.diagnosticBudget&&!isDurableSession(binding.sessionId))throw new Error("Diagnostic recovery requires Durable");
+      };
       admitted();
       if(!binding.sessionId||!binding.requestId.startsWith("auto:")||binding.abortRequested===1||
         !["created","connected","configured"].includes(binding.phase))
@@ -331,7 +357,9 @@ export function createHostExecutor(options:HostPortOptions):ExecutorPort & {
       const actionable=testsPassed?"":" redactedFailure="+
         boundedFailureDiagnostics(result.stdout,result.stderr,diagnosticPolicy)+
         (localRaw?" privateDiagnostic="+JSON.stringify(localRaw):"");
-      return {headSha:after.sha,clean,testsPassed,details:details+actionable};
+      const testsCompleted=Number.isSafeInteger(result.exitCode)&&result.exitCode!==null&&result.exitCode>=0&&
+        !result.signal&&!result.stdoutTruncated&&!result.stderrTruncated;
+      return {headSha:after.sha,clean,testsPassed,testsCompleted,details:details+actionable};
     },
     onTransition:notify,
   };

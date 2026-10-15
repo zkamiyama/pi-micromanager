@@ -296,3 +296,7 @@ PI WEBがexact-ID archive/retire/status receiptや認可付き横断パネルを
 ### 残存Issue（2026-10-15確認時点）
 
 [#2](https://github.com/zkamiyama/pi-micromanager/issues/2)、[#3](https://github.com/zkamiyama/pi-micromanager/issues/3)、[#4](https://github.com/zkamiyama/pi-micromanager/issues/4)、[#5](https://github.com/zkamiyama/pi-micromanager/issues/5)、[#36](https://github.com/zkamiyama/pi-micromanager/issues/36)、[#37](https://github.com/zkamiyama/pi-micromanager/issues/37)、[#86](https://github.com/zkamiyama/pi-micromanager/issues/86)、[#89](https://github.com/zkamiyama/pi-micromanager/issues/89)。Issue本文は可変なので、設計根拠には上の固定コード/APIと日付付き観測を併記した。
+
+## Implementation follow-up: bounded diagnostics and scoped cockpit
+
+See [the concrete feature and test map](../ADR19_DIAGNOSTICS_AND_COCKPIT.md) for the implemented optional automatic episode contract, immutable budget shares and per-Run inspector/command scope checks. Original native-runtime, screenshot/knowledge, physical owner-lifecycle and target-deployment requirements remain separate. Issue completion still requires the exact appropriate evidence, particularly actual authenticated four-Run/QC/human-diagnosis acceptance for #3/#4.

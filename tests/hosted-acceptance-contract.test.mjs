@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {parseHostedArguments} from '../scripts/hosted-acceptance.mjs';
+import {parseHostedArguments,shouldRemoveHostedFixture} from '../scripts/hosted-acceptance.mjs';
 import {publicationServerWrapper,manualPublicationConfig,TRIAL_REPOSITORY} from '../scripts/hosted-publication-trial.mjs';
 
 test('#92 hosted runner requires explicit real-account and exact-source publication authority',()=>{
@@ -47,4 +47,11 @@ test('#92 manual Worktree configuration is valid public JSON, not an undefined-v
  assert.equal(Object.hasOwn(result,'managedWorktrees'),false);
  assert.deepEqual(JSON.parse(JSON.stringify(result)),result);
  assert.equal(input.managedWorktrees,true);
+});
+
+test('ADR19 an incomplete hosted trial always retains its own evidence, including non-publication mode',()=>{
+ for(const joined of [false,undefined,true])for(const status of ['blocked','failed','unknown',undefined])
+  assert.equal(shouldRemoveHostedFixture(joined,status),false);
+ assert.equal(shouldRemoveHostedFixture(false,'passed'),false);
+ assert.equal(shouldRemoveHostedFixture(true,'passed'),true);
 });

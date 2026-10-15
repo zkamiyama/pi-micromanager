@@ -1,5 +1,6 @@
 /** Pure, deterministic workflow state machine. No model or filesystem I/O. */
 import {internalRunId,diagnosisTaskId,synthesisTaskId} from "./identifiers.js";
+import {validateAutomaticDirective,automaticEpisodeId,diagnosticBudget,type AutomaticDiagnosisDirective,type DiagnosticRunBudget,type DiagnosticModel} from "./automatic-diagnosis.js";
 import {validatePermissions,type WorkflowPermissions} from "./permissions.js";
 export type Role = "planner" | "implementer" | "reviewer" | "architect";
 export type TaskKind = "implementation" | "diagnosis" | "synthesis";
@@ -48,6 +49,10 @@ export interface TaskState {
   lastQc?: QCRecord;
   pendingWork?: { headSha: string; criteriaRevision: number; attempt: number };
   parentTaskId?: string;
+  /** Counts only eligible explicit model QC failures for one fixed policy. */
+  automaticFailures?:{fingerprint:string;count:number};
+  /** Sticky for the entire Task; neither restart nor reconfigure resets it. */
+  automaticDiagnosisId?:string;
 }
 export interface DiagnosticAgent {
   id: string;
@@ -64,6 +69,7 @@ export interface Amendment {
   planRationale?: string;
   agents: DiagnosticAgent[];
   synthesisTaskId?: string;
+  automatic?:{directive:AutomaticDiagnosisDirective;deadline:number};
 }
 export interface WorkflowEvent {
   revision: number;
@@ -83,7 +89,7 @@ export interface WorkflowInstance {
 export type WorkflowAction =
   | { type: "start"; taskId: string }
   | { type: "implementation_finished"; taskId: string; headSha: string; criteriaRevision: number; testsPassed: boolean }
-  | { type: "qc_finalized"; taskId: string; runId: string; headSha: string; criteriaRevision: number; attempt: number; verdict: QCResult }
+  | { type: "qc_finalized"; taskId: string; runId: string; headSha: string; criteriaRevision: number; attempt: number; verdict: QCResult; automaticDiagnosis?:AutomaticDiagnosisDirective }
   | { type: "arm_diagnosis"; amendmentId: string; targetTaskId: string; afterQcRunId: string; agents: DiagnosticAgent[] }
   | { type: "request_intervention"; interventionId: string; targetTaskId: string; afterQcRunId: string; instruction: string }
   | { type: "plan_intervention"; interventionId: string; agents: DiagnosticAgent[]; rationale: string }
@@ -395,6 +401,30 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
         t.status = action.verdict === "pass" ? "passed" : t.qcRounds >= (t.qcBudget??instance.definition.maxQcRounds) ? "needs_human" : "ready";
         message = `QC ${action.runId} finalized (${action.verdict}); status=${t.status}`;
       }
+      if(action.automaticDiagnosis){
+        invariant(action.verdict==="fail","invalid_automatic_diagnosis","Only a proved explicit failing QC can trigger diagnosis");
+        const directive=validateAutomaticDirective(action.automaticDiagnosis);
+        const count=(t.automaticFailures?.fingerprint===directive.fingerprint?t.automaticFailures.count:0)+1;
+        t.automaticFailures={fingerprint:directive.fingerprint,count};
+        if(!barrier&&!t.automaticDiagnosisId&&count>=directive.policy.afterFailures){
+          const epoch=Date.parse(at);
+          invariant(Number.isSafeInteger(epoch)&&epoch>=0,"invalid_time","Automatic diagnosis requires exact QC commit time");
+          const id=automaticEpisodeId(t.spec.id),profiles=directive.profiles;
+          const agents:DiagnosticAgent[]=[
+            {id:"safety",title:"Independent safety diagnosis",role:"architect",model:profiles.architect.provider+"/"+profiles.architect.model},
+            {id:"compatibility",title:"Independent compatibility diagnosis",role:"reviewer",model:profiles.reviewer.provider+"/"+profiles.reviewer.model},
+          ];
+          invariant(!instance.amendments.some(a=>a.id===id),"duplicate_amendment","Automatic episode identity already exists");
+          checkInvestigators(instance,id,agents);
+          const amendment:Amendment={id,targetTaskId:t.spec.id,afterQcRunId:action.runId,status:"activated",agents,
+            instruction:"Read the frozen failing QC independently. Propose corrections only; human resume is required.",
+            planRationale:"Explicit operator opt-in threshold reached; one finite episode for this Task.",
+            automatic:{directive,deadline:epoch+directive.policy.maxDurationMs}};
+          t.status="held";t.automaticDiagnosisId=id;instance.amendments.push(amendment);
+          installDiagnosis(instance,amendment);
+          message+=`; automatic diagnosis ${id} held before any rework`;
+        }
+      }else delete t.automaticFailures;
       break;
     }
     case "complete": {
@@ -519,6 +549,24 @@ export function applyAction(current: WorkflowInstance, action: WorkflowAction, a
   if (instance.events.length > 200) instance.events.splice(0, instance.events.length - 200);
   releaseReady(instance);
   return instance;
+}
+
+/** Find the immutable automatic episode contract; manual diagnoses have none. */
+export function automaticTaskContract(workflow:WorkflowInstance,task:TaskState):
+  {budget:DiagnosticRunBudget;model:DiagnosticModel}|undefined{
+  const a=workflow.amendments.find(a=>a.automatic&&
+    (a.synthesisTaskId===task.spec.id||a.agents.some(g=>diagnosisTaskId(a.id,g.id)===task.spec.id)));
+  if(!a)return;
+  if(a.status!=="activated"||!a.automatic||workflow.tasks[a.targetTaskId]?.status!=="held"||
+    workflow.tasks[a.targetTaskId]?.automaticDiagnosisId!==a.id||
+    workflow.tasks[a.targetTaskId]?.lastQc?.runId!==a.afterQcRunId||
+    workflow.tasks[a.targetTaskId]?.lastQc?.verdict!=="fail"||task.parentTaskId!==a.targetTaskId||
+    task.attempts>1||!['diagnosis','synthesis'].includes(task.spec.kind))
+    throw new Error("Automatic diagnosis is no longer authorized by its held Task");
+  const directive=validateAutomaticDirective(a.automatic.directive);
+  const profile=task.spec.kind==='synthesis'?directive.profiles.synthesis:
+    task.spec.role==='architect'?directive.profiles.architect:directive.profiles.reviewer;
+  return {budget:diagnosticBudget(a.id,directive.policy,a.automatic.deadline),model:profile};
 }
 
 /** Parse untrusted JSON at the workflow admission boundary. */

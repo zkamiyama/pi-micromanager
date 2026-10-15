@@ -563,3 +563,116 @@ test('#92 final integration freezes merger allowlist separately from pre-existin
   assert.deepEqual(x.ledger.launchFor(x.run(final.runId)).allowedMergeShas,[sha]);
  }finally{x.close();}
 });
+
+const autoPolicy={afterFailures:1,maxModelRequests:12,maxToolCalls:30,maxDurationMs:60000,maxOutputTokens:1024};
+const autoSettings={...config,runtime:'durable',automaticDiagnosis:autoPolicy};
+async function finishFirstQc(x,verdict='fail'){
+ await x.tick();await x.tick();x.settled('impl-api-1');await x.tick();await x.tick();
+ const b=x.settled('qc-api-1');x.ledger.recordReport(b,{kind:'qc',runId:b.runId,verdict,summary:'Bounded synthetic QC',at:Date.now()});
+ await x.tick();
+}
+test('ADR19 actual engine atomically starts finite readonly diagnosis on explicit QC failure and never resumes automatically',async()=>{
+ const x=setup(definition,autoSettings);
+ try{
+  await finishFirstQc(x);assert.equal(x.wf().tasks.api.status,'held');assert.equal(x.run('qc-api-1').phase,'sealed');
+  const episode=x.wf().amendments[0];
+  for(let i=0;i<8;i++)await x.tick();
+  const jobs=x.launches.filter(j=>j.kind==='diagnosis');assert.equal(jobs.length,2);
+  assert.equal(jobs[0].headSha,sha);assert.equal(jobs[1].headSha,sha);
+  assert.notEqual(jobs[0].runId,jobs[1].runId);
+  assert.ok(jobs.every(j=>j.diagnosticBudget.episodeId===episode.id&&j.diagnosticBudget.maxModelRequests===4));
+  assert.equal(x.launches.filter(j=>j.kind==='implementation').length,1);
+  for(const j of jobs){const b=x.settled(j.runId);x.ledger.recordReport(b,{kind:'task',runId:b.runId,summary:'Independent frozen evidence',at:Date.now()});}
+  for(let i=0;i<8;i++)await x.tick();
+  const synthesis=x.launches.find(j=>j.kind==='synthesis');assert.ok(synthesis);
+  assert.equal(synthesis.diagnosticBudget.deadline,jobs[0].diagnosticBudget.deadline);
+  const b=x.settled(synthesis.runId);x.ledger.recordReport(b,{kind:'task',runId:b.runId,summary:'Propose manual corrections only',at:Date.now()});
+  for(let i=0;i<5;i++)await x.tick();
+  assert.equal(x.status().enabled,false);assert.match(x.status().status,/human resume/);
+  assert.equal(x.wf().tasks.api.status,'held');assert.equal(x.launches.filter(j=>j.kind==='implementation').length,1);
+  const w=x.wf(),resume={type:'resume_after_diagnosis',amendmentId:episode.id,decision:'rework'};
+  const result=x.store.act('project','orchestra','wf',w.revision,'approved-resume',resume);
+  assert.equal(x.store.act('project','orchestra','wf',w.revision,'approved-resume',resume).revision,result.revision);
+  x.ledger.setStatus('project','orchestra','wf',true,'Approved retry');await x.tick();await x.tick();
+  assert.equal(x.launches.filter(j=>j.kind==='implementation').length,2);
+  assert.equal(x.wf().tasks.api.automaticDiagnosisId,episode.id);
+ }finally{x.close();}
+});
+test('ADR19 host test failure and inconclusive model report cannot auto-escalate as an explicit model fail',async()=>{
+ for(const verdict of ['pass','inconclusive']){
+  const x=setup(definition,autoSettings);
+  try{
+   await x.tick();await x.tick();x.settled('impl-api-1');await x.tick();await x.tick();
+   x.setVerification({headSha:sha,clean:true,testsPassed:false,details:'Synthetic failed host check'});
+   const b=x.settled('qc-api-1');x.ledger.recordReport(b,{kind:'qc',runId:b.runId,verdict,summary:'Not an explicit failing QC',at:Date.now()});
+   await x.tick();assert.equal(x.wf().amendments.length,0);assert.equal(x.wf().tasks.api.lastQc.verdict,'fail');
+  }finally{x.close();}
+ }
+});
+test('ADR19 a failed diagnostic keeps the parent held with no synthesis, retry, or automatic rework',async()=>{
+ const x=setup(definition,autoSettings);
+ try{
+  await finishFirstQc(x);for(let i=0;i<8;i++)await x.tick();
+  const j=x.launches.find(j=>j.kind==='diagnosis'),b=x.run(j.runId);x.registry.update(b,'uncertain');
+  await x.tick();assert.equal(x.status().enabled,false);assert.equal(x.wf().tasks.api.status,'held');
+  assert.equal(x.launches.some(j=>j.kind==='synthesis'),false);assert.equal(x.launches.filter(j=>j.kind==='implementation').length,1);
+ }finally{x.close();}
+});
+test('ADR19 pause during asynchronous QC verification cannot leave automatic episode or dispatch after generation loss',async()=>{
+ const x=setup(definition,autoSettings);
+ try{
+  await x.tick();await x.tick();x.settled('impl-api-1');await x.tick();await x.tick();
+  const b=x.settled('qc-api-1');x.ledger.recordReport(b,{kind:'qc',runId:b.runId,verdict:'fail',summary:'Synthetic failure',at:Date.now()});
+  let release,entered;const gated=new Promise(r=>{release=r;}),started=new Promise(r=>{entered=r;});
+  const engine=new AutopilotEngine(x.store,x.registry,x.ledger,{
+   async launch(){throw Error('No new dispatch permitted');},
+   async verify(){entered();await gated;return {headSha:sha,clean:true,testsPassed:true,details:'Checked'};},
+  });
+  const flight=engine.tick(x.status());await started;
+  x.ledger.setStatus('project','orchestra','wf',false,'Human Pause');release();await flight;await engine.stop();
+  assert.equal(x.wf().tasks.api.status,'awaiting_qc');assert.equal(x.wf().amendments.length,0);
+  assert.equal(x.status().enabled,false);assert.equal(x.launches.length,2);
+ }finally{x.close();}
+});
+
+test('ADR19 a human planner waits for total Workflow capacity while the matching QC is still running',async()=>{
+ const x=setup(definition,{...config,maxConcurrentRuns:1});
+ try{
+  await x.tick();await x.tick();x.settled('impl-api-1');await x.tick();await x.tick();
+  const current=x.wf();x.store.act('project','orchestra','wf',current.revision,'in-flight-qc-hold',{
+   type:'request_intervention',interventionId:'capacity-hold',targetTaskId:'api',afterQcRunId:'qc-api-1',instruction:'Wait for this QC, then investigate'});
+  await x.tick();assert.equal(x.launches.length,2,'Planner must not bypass occupied Workflow run capacity');
+  assert.equal(x.status().enabled,true);
+  const qc=x.settled('qc-api-1');x.ledger.recordReport(qc,{kind:'qc',runId:qc.runId,verdict:'pass',summary:'Frozen code approved',at:Date.now()});
+  for(let i=0;i<3;i++)await x.tick();
+  assert.ok(x.launches.some(j=>j.kind==='planning'));assert.equal(x.wf().tasks.api.status,'held');
+ }finally{x.close();}
+});
+
+test('ADR19 explicit model failure may diagnose a definite failing test but not an unproved timeout',async()=>{
+ for(const completed of [true,false]){
+  const x=setup(definition,autoSettings);
+  try{
+   await x.tick();await x.tick();x.settled('impl-api-1');await x.tick();await x.tick();
+   x.setVerification({headSha:sha,clean:true,testsPassed:false,testsCompleted:completed,details:'Known synthetic test status'});
+   const b=x.settled('qc-api-1');x.ledger.recordReport(b,{kind:'qc',runId:b.runId,verdict:'fail',summary:'Explicit independent QC failure',at:Date.now()});
+   await x.tick();assert.equal(x.wf().amendments.length,completed?1:0);
+   assert.equal(x.wf().tasks.api.status,completed?'held':'ready');
+  }finally{x.close();}
+ }
+});
+test('ADR19 runtime capacity hint defers new sessions without changing operator generation or losing a hold',async()=>{
+ const x=setup();
+ try{
+  let free=false,count=0;
+  const engine=new AutopilotEngine(x.store,x.registry,x.ledger,{
+   canLaunch(){return free;},async launch(){count++;throw Error('Synthetic post-admission refusal');},
+   async verify(){throw Error('No worker exists');}
+  });
+  await engine.tick(x.status());const generation=x.status().generation;
+  await engine.tick(x.status());await engine.tick(x.status());
+  assert.equal(count,0);assert.equal(x.status().enabled,true);assert.equal(x.status().generation,generation);
+  assert.match(x.status().status,/Waiting for host-wide/);assert.equal(x.registry.listWorkflow('project','orchestra','wf','all').length,0);
+  free=true;await engine.tick(x.status());assert.equal(count,1);assert.equal(x.status().enabled,false);await engine.stop();
+ }finally{x.close();}
+});

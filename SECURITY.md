@@ -108,3 +108,7 @@ TLS, tenant separation, provider budgets, hard quotas, or independent security r
 ## Owner-approved local live acceptance (not production qualification)
 
 The [actual local Pi/PI WEB/Luna and GitHub test-branch receipt](docs/HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md) passed on 2026-10-15 (PR #100 to synthetic test base). This verifies one approved single-tenant product path, not deployed TLS, publisher/process identity separation, hard CPU/RAM/PID/disk limits, tenant isolation, exact spend or physical native-session/worktree GC. Production qualification remains open in #86/#89/#5.
+
+## Opt-in automatic diagnostic authority
+
+The [bounded diagnostic policy](docs/ADR19_DIAGNOSTICS_AND_COCKPIT.md) is Durable-only and off by default. Only an explicit committed QC fail and known complete host test outcome can atomically create one diagnostic episode per Task. Its two readonly investigators and synthesis have disjoint immutable request/tool shares and a common absolute deadline; current host limits remain the ceiling. Authentication, sandbox, timeout, unproved input and verification truncation never trigger automatic privilege or budget expansion. Model text cannot resume held implementation; only an explicit idempotent human decision can. New UI scope/run checks supplement, not replace, the existing server authorization and no-replay controls.
