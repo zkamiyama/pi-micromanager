@@ -1,5 +1,7 @@
 # pi-micromanager
 
+> **Current local-product scope:** [ADR-0020](docs/adr/0020-local-owner-durable-product.md) defines single-owner Windows/WSL, Durable-only supported automation, local artifacts and Git ADR links. Its new local-owner storage/reclamation implementation is **not yet accepted or merged**; see the [specific review findings and remaining gates](docs/LOCAL_PRODUCT_REVIEW_STATUS.md). Existing accepted Durable/hosted tests do not qualify the uncommitted draft.
+
 > **Current execution contract (ADR-0016):** host verification defaults to Linux Bubblewrap (`test.execution:"sandbox"`); there is no automatic privileged fallback. Final PR merges use synchronous exact-SHA REST requests rather than new deferred `--auto` reservations. `autoMerge:false` still observes a human merge. See [R01–R23 remediation](docs/AUDIT_REMEDIATION_R01_R23.md) for recovery, limits and migration.
 
 

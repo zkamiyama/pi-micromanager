@@ -1,40 +1,29 @@
-# ローカルPi ChatGPTログインによるLunaスモークテスト
+# Local Luna smoke test using the existing Pi ChatGPT login
 
-対象: #91（親 #38）。所有者の実行許可は
-[LOCAL_LUNA_ACCEPTANCE_AUTHORIZATION.md](LOCAL_LUNA_ACCEPTANCE_AUTHORIZATION.md) に記録済み。
-このスクリプトはユーザー自身が同じ手順で実行し、結果JSONだけを共有できるようにするものです。
+Scope: #91 under parent #38. [Owner authorization](LOCAL_LUNA_ACCEPTANCE_AUTHORIZATION.md) is already recorded. This CLI lets the owner execute the same bounded procedure locally and share only its result JSON.
 
-## 検証範囲
+**Current acceptance:** #91 was completed from the owner's successful OAuth/Luna Low receipt at `6c1454215679c0cb79dc886ee3ea47c96e5956b4`. The separately accepted hosted/browser/GitHub test is documented in [the #92 receipt](HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md). The original tool-refused attempt below is historical, not a claim that these later successful runs never happened.
 
-Piの公開 `ModelRuntime` / Durable SDKで、既存のOpenAI OAuthログインを使い、
-`openai/gpt-6-luna` が型付き確認ツールを一度実行して正常終了することを確認します。
-保存された入力結果が完了していること、SQLiteを閉じて再読込してもモデル要求と
-ツール応答が再実行されないことまで検証します。
+## What this suite verifies
 
-`low` が通常の指定です。明示的に `--effort max` とした場合だけMaxで実行します。
-Maxの成功は高い推論設定での疎通試験であり、独立QCループの完了を意味しません。
-実PI WEBのブラウザ、並列エージェント、公開PR、再起動時の外部状態照合は #92 に残ります。
-このスクリプトはGitHubへpushせず、PRを作らず、既存daemonを操作しません。
+The public Pi `ModelRuntime` and Durable SDK use the existing OpenAI OAuth login to call `openai/gpt-6-luna`, obtain one typed confirmation-tool result, and finish successfully. The suite verifies committed input completion and closes/reopens SQLite without replaying model requests or tool responses.
 
-## 準備
+Use `low` normally. `max` runs only when explicitly selected with `--effort max`; that demonstrates connectivity at the higher setting, not an independent QC loop. Real PI WEB/browser interaction, parallel agents, PR publication and external-state recovery are separate hosted assertions. This script does not push, create a PR or manipulate an existing daemon.
 
-Linux、Node 22または24、対象リポジトリのクリーンなレビュー済みチェックアウトを使います。
-PiでChatGPTにログインしているのと同じOSユーザーで実行してください。
-実行前に `git status --short` と `git rev-parse HEAD` を確認します。
-未保存の変更を消すためのresetや、認証ファイルのコピーは不要です。
+## Preparation
+
+Use Linux, Node 22 or 24, and a clean reviewed checkout. Run as the OS user logged into ChatGPT through Pi. Inspect `git status --short` and `git rev-parse HEAD`; do not reset unrelated changes or copy an authentication file just to run this test.
 
 ```sh
 npm ci --no-audit --no-fund
 npm run test:e2e:local-luna -- --mode faux
 ```
 
-fauxは認証情報を読みません。実SDKと模擬モデルで監督プロセス・保存・再読込を確認します。
-結果には必ず `authentication: "not-verified"` と記録されます。
+Faux mode reads no credentials. It verifies supervision, SDK persistence and reopen using a synthetic model and always reports `authentication: "not-verified"`.
 
-## Luna Lowを一度実行する
+## Run Luna Low once
 
-レビューしたコミットのSHAを明示し、既存アカウントの利用と通常のOAuth更新を承認します。
-アカウント利用枠を消費する可能性があります。秘密値をコマンドやチャットへ貼らないでください。
+Pass the reviewed commit and explicitly approve account use and normal OAuth refresh. The call may consume account allowance. Do not paste secrets into a command or chat.
 
 ```sh
 SHA=$(git rev-parse HEAD)
@@ -48,83 +37,43 @@ printf 'exitCode=%s\n' "$RESULT"
 cat "$RECEIPTS/luna-low.json"
 ```
 
-`npm run` の見出しを省き、JSONだけの標準出力が必要なら、同じ引数で
-`node scripts/local-pi-oauth-smoke.mjs` を直接実行できます。
-このコマンドはその実装の正規のCLIであり、認証・隔離・権限検証の回避経路ではありません。
+The equivalent documented CLI is `node scripts/local-pi-oauth-smoke.mjs` with the same arguments. Calling it directly omits npm's headings; it does not bypass source, authentication, authority or isolation checks. Do not change routes to evade a refused operation.
 
-認証ファイルは既定で `~/.pi/agent/auth.json` です。別のPiプロファイルを所有者が
-選択している場合のみ、`--pi-auth-file /絶対パス/auth.json` で明示してください。
-`PI_CODING_AGENT_DIR`、APIキー、models.json、プロキシ設定などの暗黙の代替は使いません。
-認証ファイルが存在しない、OAuthでない、シンボリックリンク、共有読取可能等の場合は拒否します。
-スクリプトはそのファイルの権限変更・コピー・手動トークン書換えをしません。
-Piの標準ストアが必要な通常のOAuth更新を担当します。
+The default auth file is `~/.pi/agent/auth.json`. Only for another owner-selected Pi profile, provide `--pi-auth-file /absolute/path/auth.json`. There is no implicit fallback through `PI_CODING_AGENT_DIR`, API keys, models.json or proxy settings. Missing, non-OAuth, symlinked or shared-readable credential sources are refused. The script does not change their permissions, copy credentials or manually rewrite tokens. Pi's standard credential store handles ordinary refresh.
 
-## Luna Maxの確認（必要なときだけ）
+## Optional Luna Max check
 
-Lowの結果を確認した後、Maxの疎通も確認する場合は、上記の `--effort low` を
-`--effort max` に、結果ファイルを新しい `luna-max.json` に変更して実行します。
-既存の結果ファイルは上書きしません。自動的な再試行やMaxへの切替はありません。
+After reviewing the Low result, use `--effort max` and a new `luna-max.json` destination when a Max connectivity check is needed. Do not overwrite existing receipts. The script does not automatically retry or switch to Max.
 
-## 上限と状態の扱い
+## Limits and state handling
 
-| 設定 | Low | Max |
+| Setting | Low | Max |
 | --- | --- | --- |
-| モデル | openai/gpt-6-luna | 同左 |
-| SDK要求受付数 | 最大4回 | 最大4回 |
-| 1要求の最大出力トークン指定 | 1024 | 4096 |
-| SDK全体の制限時間 | 60秒 | 120秒 |
+| Model | `openai/gpt-6-luna` | `openai/gpt-6-luna` |
+| SDK request admissions | At most 4 | At most 4 |
+| Requested output-token ceiling per request | 1024 | 4096 |
+| SDK deadline | 60 seconds | 120 seconds |
 
-SDK側の再試行を無効にし、上限の外側では監督プロセスが停止を要求します。
-終了しなければ、今回開始した子プロセスだけを強制停止します。
-モデルには確認ツールしか与えず、シェル・ファイル・Git・任意拡張は提供しません。
-これはSDK接続試験であって、モデルプロバイダーのネットワーク処理全体のOS隔離試験ではありません。
+SDK retries are disabled. A supervisor requests termination on timeout and, if necessary, terminates only the test child it created. The model receives only a confirmation tool, not shell, file, Git or arbitrary extension tools. This is an SDK integration test, not an OS-isolation test of all provider network processing.
 
-一時SQLiteは新規のprivateディレクトリに作成し、SDK終了と子プロセス終了の確認後だけ削除します。
-終了を確認できない場合は成功にせず、一時状態を保持します。
-既存セッションや本番データを復元・削除しません。
-出力トークンやSDK要求数は厳密な金額保証ではありません。
+SQLite is created in a new private directory and removed only after SDK and child-process completion are confirmed. Unproved shutdown fails and retains temporary state. The suite neither restores nor deletes existing Sessions or production data. Output-token and SDK-request limits are not exact monetary guarantees.
 
-## 共有するもの・しないもの
+## Share only the final receipt
 
-共有するのは**最後の結果JSONとexitCode**です。
-そのJSONにはコミット、依存関係のバージョン、lockfileのハッシュ、要求数、各検証の成否が含まれます。
-トークン、アカウントID、認証ファイル、SQLite、モデル本文、SDKの生のエラーログは共有しないでください。
-親プロセスはSDK子プロセスの標準出力・標準エラーを転送しません。
+Share **the final JSON and exit code**. The receipt identifies source commit, versions, lockfile digest, request count and each assertion. Do not share tokens, account identifiers, auth files, SQLite, model text or raw SDK errors. The parent does not forward child stdout/stderr.
 
-| exitCode / status | 意味 |
+| Exit code / status | Meaning |
 | --- | --- |
-| 0 / passed | 今回の型付き応答・完了保存・再読込の条件を満たした |
-| 1 / failed | 実行または証拠の保存が失敗。成功として扱わない |
-| 2 / blocked | 承認・ソース・認証ファイル等の事前条件を満たさず、実行しなかった |
+| `0 / passed` | Typed response, committed completion and reopen checks passed for this run |
+| `1 / failed` | Execution or evidence persistence failed; do not count as success |
+| `2 / blocked` | An approval, source, credential or other prerequisite was not met |
 
-`approval-required` は承認不足、`sha-mismatch` は指定SHAと不一致、
-`dirty-checkout` は作業ツリーの変更、`credential-required` は認証ファイル等の不適合です。
-`model-unavailable` は固定モデル/推論設定を確認できなかったこと、
-`input-not-completed` / `runtime-failed` は正常完了を証明できなかったことを示します。
-`timed-out` / `shutdown-unproved` の場合も無制限に再試行しないでください。
-結果が不明な場合はJSONを共有し、その原因を先に確認します。
+`approval-required` means explicit approval is absent; `sha-mismatch` means the checkout differs from the selected SHA; `dirty-checkout` means local source changes; `credential-required` means the credential source is unsuitable. `model-unavailable` means the fixed model/effort could not be validated. `input-not-completed` or `runtime-failed` means successful completion was not proved. Do not retry `timed-out` or `shutdown-unproved` indefinitely; inspect the receipt first.
 
-## 前回の拒否との関係
+## Historical tool refusal and later owner acceptance
 
-前回のツール拒否と未実施項目は [過去の状態記録](LOCAL_LUNA_ACCEPTANCE_STATUS.md) に残します。
-今回の所有者の再試験/手動実行依頼を受け、同じDesktop Commanderのファイル作成ツールが
-この制限付きスクリプトを受け入れました。ツール設定やセキュリティ設定は変更していません。
-もし実行が拒否された場合はその結果を明記し、別の実行経路から自動再試行しません。
-スクリプトの回帰テスト成功だけで #91/#92 を完了とはしません。
+[The historical status record](LOCAL_LUNA_ACCEPTANCE_STATUS.md) preserves the earlier refusal and missing assertions. The owner's later request to retry/provide a manual test resulted in successful creation of this bounded script, with no tool/security-setting change. A refused execution must be recorded, not automatically retried through another tool or command.
 
-## 今回の自動実行結果（2026-10-14）
+On 2026-10-14, after 25 credential-free old/new-runner regressions passed without failure or skip, a single Low execution was requested at `e41c536252dccc0570803ae314c047dcb93b0cfe`. OpenAI's tool-safety check blocked the execution itself without a detailed reason, so that attempt produced no model-result JSON. No alternate-path rerun was made.
 
-所有者の再試験依頼を受け、Desktop Commanderの同じファイル作成ツールで
-スクリプト追加は成功しました。資格情報なしの旧/新ランナー計25件の回帰テストが
-失敗・skipともに0で成功した後、コミット
-`e41c536252dccc0570803ae314c047dcb93b0cfe` を指定し、
-上記の正規CLIでLuna Lowの実行を**一度**要求しました。
-
-この実行コマンド自体はOpenAIのツール安全性チェックでブロックされました。
-詳細理由は返されず、モデル結果のJSONファイルも作成されていません。
-別ツール・別コマンドでの再実行はしていません。
-
-したがってこのPRは、ユーザーが依頼した**手動実行可能なスクリプトの提供**です。
-本物のLunaの応答・認証・QCループの成功を報告するものではありません。
-#91 と #92 は実測結果を受け取って監査するまでOpenのままです。
-共有するのはスクリプトの結果JSONとexitCodeだけで、認証情報は不要です。
+The original PR therefore delivered an owner-runnable script, not an observed real-model success. The owner subsequently executed the merged script and supplied a passing receipt at `6c1454215679c0cb79dc886ee3ea47c96e5956b4`, with two requests, successful authentication/typed report/committed input/reopen checks and `cleanup: removed`. That later evidence completed #91. Keep the failed tool attempt, the later owner-run SDK pass and the separate hosted #92 acceptance distinct.
