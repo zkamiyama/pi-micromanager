@@ -89,4 +89,6 @@ Maintenance has a 120-second side-effect admission deadline, four concurrent ope
 
 ## Post-merge WSL check
 
+For the operator's exact Windows browser, disposable local-owner UI start/stop, observed WSL evidence, and remaining real-account acceptance, follow the [step-by-step WSL acceptance runbook](WSL_LOCAL_OWNER_ACCEPTANCE_RUNBOOK.md). It distinguishes previously passed 47/47 credential-free gates from untested live-profile qualification.
+
 Use the exact merged commit and the credential-free commands in [CI-first acceptance](LOCAL_OWNER_CI_ACCEPTANCE.md) on a separate disposable checkout. Supply only the resulting counts, code, commit and environment metadata, not tokens or native databases. Record actual namespaces, localhost/auth assumptions and stop/restart behavior for the selected WSL installation. The remaining approved real-account/test-target check is separate from these faux-provider tests. No production deployment or data migration is performed by merging this implementation.
