@@ -18,7 +18,7 @@ export type WorktreeStage="prepared"|"reserved"|"created";
 export interface WorktreePlan {
   id:string;workflowId:string;taskId:string;repoRoot:string;path:string;
   branch:string;baseSha:string;revision:number;expiresAt:number;
-  stage:WorktreeStage;
+  stage:WorktreeStage;directoryIdentity?:string|null;
 }
 interface PlanRow extends WorktreePlan {scope:string}
 interface ProvisionOptions {
@@ -28,7 +28,7 @@ interface ProvisionOptions {
 const PLAN_TTL=10*60*1000;
 const FIELDS="id,scope,workflow_id AS workflowId,task_id AS taskId,"+
   "repo_root AS repoRoot,path,branch,base_sha AS baseSha,revision,"+
-  "expires_at AS expiresAt,stage";
+  "expires_at AS expiresAt,stage,creation_identity AS directoryIdentity";
 
 function safeId(value:string):boolean{return /^[a-z][a-z0-9-]{0,63}$/.test(value);}
 function managedPath(dataRoot:string,scope:string,workflowId:string,taskId:string){
@@ -76,6 +76,8 @@ export class ManagedWorktreeProvisioner {
         branch TEXT NOT NULL,base_sha TEXT NOT NULL,revision INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,stage TEXT NOT NULL,
         UNIQUE(scope,workflow_id,task_id));`);
+    const columns=this.db.prepare("PRAGMA table_info(worktree_plans)").all() as {name:string}[];
+    if(!columns.some(c=>c.name==="creation_identity"))this.db.exec("ALTER TABLE worktree_plans ADD COLUMN creation_identity TEXT");
   }
   close():void{this.db.close();}
   /** Restore the exact persisted plan after browser/server restart. Read-only. */
@@ -176,8 +178,13 @@ export class ManagedWorktreeProvisioner {
     if(row.stage==="prepared")return row;
     const created=await this.inspectExact(row);
     if(!created)throw new Error("Git Worktree absent; reserved creation is uncertain and cannot be retried");
-    this.db.prepare("UPDATE worktree_plans SET stage='created' WHERE id=?").run(id);
-    return {...row,stage:"created"};
+    const info=lstatSync(row.path),identity=info.dev+":"+info.ino+":"+info.uid;
+    if(row.directoryIdentity&&row.directoryIdentity!==identity)throw new Error("Worktree directory identity changed since creation");
+    // Legacy created rows are not silently promoted to automatic-GC authority.
+    // Only a reserved creation being reconciled receives its first identity.
+    const directoryIdentity=row.directoryIdentity??(row.stage==="reserved"?identity:null);
+    this.db.prepare("UPDATE worktree_plans SET stage='created',creation_identity=? WHERE id=?").run(directoryIdentity,id);
+    return {...row,stage:"created",directoryIdentity};
   }
   async create(projectId:string,orchestraWorkspaceId:string,id:string,
     currentProjectRoot?:string,assertAdmitted?:()=>void):Promise<WorktreePlan>{

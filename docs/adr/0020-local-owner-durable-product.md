@@ -105,3 +105,9 @@ For the follow-up source-review findings and exact unfinished gates, see [Local 
 - [Git Worktree specification](https://git-scm.com/docs/git-worktree)
 - [Node 22 Zstandard API](https://nodejs.org/download/release/v22.23.3/docs/api/zlib.html)
 - [Microsoft WSL networking](https://learn.microsoft.com/windows/wsl/networking)
+
+## Implementation follow-up: PR #108
+
+The scope decision above is now implemented through the explicit fresh-root local-owner policy, bounded local images/public archives, Git ADR references, persistent maintenance receipts and exact owned-resource retirement. See [operation](../LOCAL_OWNER_OPERATION.md) and [CI acceptance](../LOCAL_OWNER_CI_ACCEPTANCE.md) for the actual API and executable gates. The initial draft's failing JPEG/pin/archive/UI tests remain historical evidence, not accepted behavior.
+
+The owner explicitly authorized merging the corrected software after exact-commit CI succeeds, with the Windows/WSL-specific #86 check **after merge**. No CI result is a claim that this target check has already passed. Strict-production policies, native-session exclusion and all uncertainty protections above remain in effect.

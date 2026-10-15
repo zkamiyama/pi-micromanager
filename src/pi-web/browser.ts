@@ -1,4 +1,5 @@
 /** PI WEB workspace panel: distinct simulation preview and real, opt-in Pi Autopilot. */
+import {createLocalJournalPanel} from "./local-journal-panel.js";
 import { createLiveRunPanel, selectOrchestraTask } from "./fleet.js";
 import type { PiWebPlugin, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { WorkflowAction, WorkflowDefinition, WorkflowInstance, TaskState, Role } from "../core/workflow.js";
@@ -161,6 +162,7 @@ const plugin: PiWebPlugin = {
   name: "pi-micromanager",
   activate({ html, lifetimeSignal, runtimePluginId }) {
     let disposed = false;
+    const localJournalPanel=createLocalJournalPanel(html,lifetimeSignal);
     let quickContext:WorkspacePanelContext|undefined;
     const quickTimer=setInterval(()=>{
       const context=quickContext;
@@ -1318,6 +1320,9 @@ const plugin: PiWebPlugin = {
                           · Git <code>${t.lastQc.headSha}</code></p>`:null}
                       </article>`)}
 
+                      ${localJournalPanel(context,state.journal,
+                        ()=>!disposed&&!!quickContext&&keyFor(quickContext)===keyFor(context)&&state.selected?.definition.id===w.definition.id,
+                        next=>{state.journal=next;context.host.requestRender();})}
                       <h3>Actual QC screenshot evidence</h3>
                       <p>Only explicit, already committed screenshots inside a sealed QC Run's
                         <code>screenshots/</code> directory may be captured. Images can contain
@@ -1539,6 +1544,9 @@ const styles = `
     border:1px solid var(--pi-border-muted);border-radius:6px;background:var(--pi-surface);}
   .mm-screenshot-preview{display:block;max-width:100%;max-height:380px;
     object-fit:contain;border:1px solid var(--pi-border-muted);border-radius:6px;margin-top:8px;}
+  .mm-local-journal label{display:grid;gap:4px;margin:8px 0;}
+  .mm-local-log{white-space:pre-wrap;overflow-wrap:anywhere;max-height:380px;overflow:auto;}
+  .mm-local-artifact{border:1px solid var(--pi-border-muted);padding:10px;margin:8px 0;}
   .mm-journal h3{font-size:13px;margin:16px 0 6px;}
   .mm-journal-task,.mm-journal-run{border:1px solid var(--pi-border-muted);
     border-radius:8px;padding:9px;margin:7px 0;font-size:12px;overflow-wrap:anywhere;}

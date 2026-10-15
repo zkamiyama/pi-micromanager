@@ -31,6 +31,7 @@ export class RunSafetyLedger {
       CREATE TABLE IF NOT EXISTS safety_runs(key TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,
         deadline INTEGER NOT NULL,requests INTEGER NOT NULL DEFAULT 0,tools INTEGER NOT NULL DEFAULT 0,
         outcome TEXT,limits_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS retired_runs(key TEXT PRIMARY KEY,evidenceRef TEXT NOT NULL,artifactId TEXT NOT NULL,state TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS safety_inputs(run_key TEXT NOT NULL,request_id TEXT NOT NULL,
         PRIMARY KEY(run_key,request_id));`);
   }
@@ -40,7 +41,21 @@ export class RunSafetyLedger {
     if(!row)return;
     const {limits_json,...rest}=row;return {...rest,limits:validateRunLimits(JSON.parse(limits_json))};
   }
+  retirement(key:string):{evidenceRef:string;artifactId:string;state:string}|undefined{
+    return this.db.prepare("SELECT evidenceRef,artifactId,state FROM retired_runs WHERE key=?").get(key) as {evidenceRef:string;artifactId:string;state:string}|undefined;
+  }
+  reserveRetirement(key:string,evidenceRef:string,artifactId:string):void{
+    if(this.get(key)?.outcome!=="completed"||!/^sha256:[a-f0-9]{64}$/.test(evidenceRef)||!/^[a-f0-9]{64}$/.test(artifactId))
+      throw new Error("Only proved successful owned Run data may retire");
+    if(this.retirement(key))throw new Error("Run retirement already reserved; no replay");
+    this.db.prepare("INSERT INTO retired_runs VALUES(?,?,?,'reserved')").run(key,evidenceRef,artifactId);
+  }
+  completeRetirement(key:string):void{
+    if(this.db.prepare("UPDATE retired_runs SET state='completed' WHERE key=? AND state='reserved'").run(key).changes!==1)
+      throw new Error("Run retirement receipt missing");
+  }
   reserve(key:string,fingerprint:string,limits:RunLimits,startedAt:number):RunSafetyRecord{
+    if(this.retirement(key))throw new Error("Run has a retirement tombstone; never recreate or replay");
     validateRunLimits(limits);
     if(!/^[a-f0-9]{64}$/.test(key)||!fingerprint||fingerprint.length>128||!Number.isSafeInteger(startedAt)||startedAt<0)
       throw new Error("Invalid run-safety identity");

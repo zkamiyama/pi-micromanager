@@ -1,38 +1,34 @@
-# Local-owner product draft: review status and remaining acceptance
+# Local-owner product review: fixes and remaining target qualification
 
-Date: 2026-10-15. Scope: #5, #89, #86 and parent trackers #36/#37, under [ADR-0020](adr/0020-local-owner-durable-product.md).
+Scope: #5, #89, #86 and parent trackers #36/#37 under [ADR-0020](adr/0020-local-owner-durable-product.md). Repository documentation, comments and acceptance records are in English.
 
-**Not accepted or merged.** This note documents a read-only review of the retained local development draft. It is not a report of vulnerabilities in the shipped main branch, a completed regression test, or an authorization to apply unverified lifecycle code.
+## Current software implementation
 
-## Reviewed source and environment
+PR #108 replaces the initial known-failing local-owner candidate with bounded image validation, verified stable archives, propagated pins, durable nonblocking maintenance receipts, original creation-identity checks and a real Journal UI. [CI acceptance](LOCAL_OWNER_CI_ACCEPTANCE.md) maps the executable tests; [operator guidance](LOCAL_OWNER_OPERATION.md) describes the implemented public behavior. The exact final-source job results belong in PR #108 rather than being inferred from this document.
 
-The retained checkout is `/tmp/mm-local-product-1T9MUw/repo` on the owner's 270-PC, branch `feat/local-durable-product`, based on `6dcb050aa3bdbb0e4fd28ed2173a8d64589596ec`. Its runtime changes and new artifact/lifecycle files are uncommitted. The final source state is not represented by that base SHA alone.
-
-After the owner restarted Desktop Commander, read-only commands succeeded. The host reported Node 22.23.3, kernel `6.18.33.1-microsoft-standard-WSL2`, and zero D-state Bubblewrap processes. This was not a new local-owner end-to-end qualification.
-
-## Concrete review observations
-
-| Area | Observation in the uncommitted draft | Required resolution and evidence |
+| Original finding | Implemented resolution | Executable evidence |
 | --- | --- | --- |
-| Image transport | Local image input allows 512 KiB raw bytes / up to 700,000 base64 characters, but the pinned PI WEB public protocol limits JSON request input to 256 KiB | Choose an image bound fitting base64 plus metadata, or design a separately reviewed chunk protocol. Test through the actual public browser/peer boundary, including just-below/above-limit inputs |
-| Image decoding | JPEG validation checks start/end signatures but does not establish bounded decoded dimensions | Validate supported bounded frame structure before browser decoding; test oversized dimensions, truncated segments and unsupported media. An upload remains operator-provided, not attested QC capture |
-| Compressed logs | Read bounds include maximum decompressed output, while the draft has not established a complete decoder resource/window bound | Verify the selected Zstandard API and cap decoder resource use; test high-ratio, malformed and oversized frames with disposable files |
-| Archive identity | `archiveRun` rebuilds public activity under a stable per-Run key; later activity pruning or changes can yield a different request hash on repeated maintenance | Reuse and verify the original finalized archive/retirement receipt. Prove repeated maintenance and reopen do not overwrite a prior archive or recreate expired detail |
-| Pins and owned-resource retention | Artifact pins are stored, but the draft's Workflow protection predicate does not inspect them | Define and test the relationship between artifact/Workflow pins, pending evidence and owned Run/Worktree reclamation. Never report a pin as protection beyond what is actually enforced |
-| Public request lifetime | The maintenance peer request awaits work that may include many Runs and a Git removal timeout longer than the pinned host's 10-second backend request deadline | Use a bounded, correlated admission/receipt and observable joined operation, or otherwise demonstrate bounded completion. Lost request replies must not restart an uncertain deletion |
-| Worktree and Durable retirement | New ownership checks, operation reservations and tombstones exist in the draft but lack the required complete failure/restart test suite | Exercise actual disposable Worktrees/SQLite/Harness shutdown, retained Git refs, competing leases, dirty/untracked/ignored files, changed authority, checkpoint failure, interruption, lost replies and no-replay across reopen |
-| Journal UI | The previous attempt to add the local artifact/ADR-link/maintenance controls did not execute | Connect the supported public UI and test actual image/log display, link authority, pending/blocked states and scope changes; do not count helper-only tests as product completion |
+| Image input exceeded public request capacity | Raw images limited to 180 KiB before bounded base64 encoding, below the unchanged 256 KiB JSON request budget | Public-peer limits and actual browser upload |
+| JPEG signatures did not bound decoded dimensions | Supported single-frame JPEG/PNG headers and dimensions checked before browser decoding; animated PNG/frame changes refused | Invalid/oversized frame tests and genuine browser-produced JPEG round trip |
+| Decoder had only an output-size cap | Zstandard window log capped at 17, plus independent 128 KiB output and stored-input bounds | Tiny-output excessive-window frame and oversized-output regressions |
+| Archive reuse rebuilt a different payload after late activity | Exact per-Run archive lookup verifies and reuses the first immutable snapshot; expired detail remains expired | Late activity, expiry and SQLite reopen tests |
+| Artifact pin did not fence resource retirement | Any live pin protects the owning Workflow, without display pagination; unresolved resource retirement protects archives | Actual server preview and pin arriving during asynchronous Git inspection |
+| Long maintenance blocked the public request | Persisted operation admission/ID, bounded background work, status lookup, same-ID deduplication and joined drain | Concurrent/stop/reopen contracts and delayed actual Git operation |
+| Original archive was not checked before DB reclamation | Verify archive content/evidence before first destruction; old completed tombstone permits expired detail but no new deletion | Corrupt and expired archive retention tests |
+| Physical ownership could be inferred from current path | Persist original creation directory identity; refuse legacy missing proof, aliases, wrong scope and changed inventory | Original-identity, ignored/untracked races, file alias and retained-ref tests |
+| Worktree/DB deletion lacked comprehensive negative coverage | Reserve before mutation, retain uncertain receipts/leases, no force, original refs and minimal tombstones preserved; inspect SQLite before writable open | Real Harness/Worktree deletion, WAL-reader refusal, lost reply, actual reactivation and no recreation |
+| Journal controls were absent | Scoped public UI for local images/pins, explicit log/image reads, quota/status and exact Git ADR links | Shipped PI WEB/Chromium with real faux Harness completion and UI/restart assertions |
 
-These are source-review observations and missing proofs. Except for the documented transport limits, they are not claims of reproduced exploits. The earlier 26 focused profile/server/fence tests did not validate the later artifact/reclamation code.
+The contract fixture that constructs sealed records is deliberately labeled synthetic. Separate lifecycle and complete browser scenarios obtain their outcomes by actually running the product engine/Harness and Bubblewrap. No real provider account or repository-write credential is passed to CI.
 
-## Refused operation in this follow-up
+## Historical development record
 
-A single `Remote_Desktop_Commander.start_process` call proposing source fixes for media bounds, archive reuse and pin-aware maintenance, followed by a build, was blocked by OpenAI's tool-safety check. No detailed reason was returned. That edit/build call did not execute, and the same runtime change was not rephrased or applied through another route.
+The original uncommitted draft was retained at `/tmp/mm-local-product-1T9MUw/repo`. Earlier editing calls were tool-safety refused without a detailed reason; independent documentation/compiler PRs did not certify it. The initial reviewable PR #108 candidate `18e9edc1d49f36b16a4ef25b9a8d390afa491da5` reproduced four contract failures and one missing-UI failure in GitHub Actions; both old lifecycle jobs passed six tests. Those failures were ordinary failing tests, not masked expected outcomes or merge evidence.
 
-Desktop Commander connectivity was therefore restored, but the separate tool-safety refusal remained. This is not an owner-authorization deficit and not a failed model response. No new paid model call, production daemon operation, native Session deletion or user-data reclamation occurred.
+In this follow-up, source edits and isolated tests executed through the connected development tool. Corrections are committed as ordinary source, not injected at CI runtime. Original assertions remain and additional fault cases are required. No old production services, Windows/WSL settings, native Session data or user Worktrees are changed.
 
-## Work allowed independently
+## Remaining qualification, not an unresolved CI code failure
 
-English documentation translation and the standalone TypeScript compiler upgrade use separate clean development branches, not the refused runtime draft. Their successful build/CI/merge results qualify those changes only. They do not close #5/#89/#86 or their parents.
+The owner explicitly selected **post-merge verification of the particular Windows/WSL installation** after software CI passes. #86 therefore retains the effective localhost/auth boundary, kernel/namespace behavior and approved real-account/test-target acceptance on that host. #36/#37 track the remaining target evidence. A previous strict-profile OAuth test, a GitHub-hosted Ubuntu run or this review document is not a new local-owner WSL qualification.
 
-The next legitimate completion evidence must cover the actual corrected source, the real public server/browser path, finite lifecycle/fault cases, Node 22/24, required successful isolation and hosted regression gates. Preserve owner-approved scope and existing security controls. Keep uncertain outcomes and original trial data until their own reconciliation is proved; a missing resource or green documentation CI is not a deletion receipt.
+No result guarantees all storage hardware failures, hostile same-UID activity, exact provider charges, multi-tenant isolation or every WSL version. Uncertain resource outcomes stay retained and non-replayable; absent files do not prove a successful operation. The product does not reset uncertain state, automatically remove quarantine, or modify OS security to make tests pass.

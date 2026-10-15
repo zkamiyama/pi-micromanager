@@ -4,6 +4,7 @@ import type {ProductionPolicy} from "./policy.js";
 export interface HostRequest {
   file:string;args?:readonly string[];cwd?:string;env?:Readonly<Record<string,string>>;
   unsetEnv?:readonly string[];timeoutMs?:number;signal:AbortSignal;
+  assertOperation?:()=>void;
 }
 export interface HostResult {exitCode:number|null;signal:string|null;stdout:string;stderr:string;stdoutTruncated:boolean;stderrTruncated:boolean}
 /** The final fence must run AFTER any asynchronous security inspection, directly
@@ -11,10 +12,11 @@ export interface HostResult {exitCode:number|null;signal:string|null;stdout:stri
  * the caller's Workflow/SHA/permission checks. */
 export function guardedHostExecution(exec:(request:HostRequest)=>Promise<HostResult>,policy?:ProductionPolicy,
   captureFence?:(request:HostRequest)=>()=>void){
-  return async(request:HostRequest):Promise<HostResult>=>{
+  return async(input:HostRequest):Promise<HostResult>=>{
+    const {assertOperation,...request}=input;
     request.signal.throwIfAborted();
     const fence=captureFence?.(request);
-    const admitted=()=>{request.signal.throwIfAborted();fence?.();};
+    const admitted=()=>{request.signal.throwIfAborted();fence?.();assertOperation?.();};
     if(policy&&request.file==="/usr/bin/bwrap"){
       const args=request.args??[],split=args.indexOf("--");
       if(!request.cwd||split<0)throw new Error("Invalid production test invocation");

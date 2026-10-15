@@ -1,0 +1,49 @@
+name: Local-owner acceptance
+
+on:
+  push:
+  pull_request:
+
+# No provider credentials, write tokens, self-hosted runner or deployment step.
+permissions:
+  contents: read
+
+concurrency:
+  group: local-owner-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-owner:
+    name: local-owner-${{ matrix.suite }} (Node ${{ matrix.node }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+        suite: [contracts, lifecycle, browser]
+    env:
+      MM_REQUIRE_SANDBOX: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Test the reported candidate, not an unspecified later branch state.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Install the required real namespace tool
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Install the actual sandboxed browser
+        if: matrix.suite == 'browser'
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/mm-playwright
+        run: npx --no-install playwright install --with-deps --only-shell chromium
+      - name: Require complete exact-source acceptance, with no skips
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/mm-playwright
+        run: node scripts/local-owner-ci.mjs '${{ matrix.suite }}'

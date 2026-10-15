@@ -249,6 +249,17 @@ export class AutopilotLedger {
       config:this.persisted(JSON.parse(row.config_json))}:undefined;
   }
   /** Scheduler inventory, unlike the bounded UI list: every enabled workflow. */
+  listMaintenanceCandidates():AutopilotRecord[]{
+    const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at,generation
+      FROM autopilots WHERE enabled=0 ORDER BY updated_at ASC`).all() as
+      {scope:string;workflow_id:string;config_json:string;enabled:number;status:string;updated_at:string;generation:number}[];
+    return rows.map(row=>{
+      const [projectId,orchestraWorkspaceId]=JSON.parse(row.scope) as [string,string];
+      return {projectId,orchestraWorkspaceId,workflowId:row.workflow_id,
+        config:this.persisted(JSON.parse(row.config_json)),
+        enabled:false,status:row.status,updatedAt:row.updated_at,generation:row.generation};
+    });
+  }
   listEnabled():AutopilotRecord[]{
     const rows=this.db.prepare(`SELECT scope,workflow_id,config_json,enabled,status,updated_at,generation
       FROM autopilots WHERE enabled=1 ORDER BY updated_at ASC`).all() as

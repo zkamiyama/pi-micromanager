@@ -1,3 +1,8 @@
+import {productionPolicy} from "../security/policy.js";
+import {LocalMaintenance} from "../automation/local-maintenance.js";
+import {LOCAL_IMAGE_MAX_BASE64} from "../automation/local-image.js";
+import {LocalJournal} from "../automation/local-journal.js";
+import {OwnedWorktreeRetention} from "../automation/owned-worktree-retention.js";
 /** PI WEB Server API v3: deterministic workflow plus per-attempt ephemeral Pi runs. */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -147,6 +152,63 @@ const plugin:PiWebServerPlugin={
     wake:binding=>scheduleAutopilot(binding.projectId,binding.orchestraWorkspaceId,
       binding.workflowId),
   });
+  const localPolicy=productionPolicy(host.dataDirectory)?.localRetention;
+  const localJournal:LocalJournal|undefined=localPolicy?new LocalJournal({dataDirectory:host.dataDirectory,workflows:store,agents,ledger,host,
+    policy:localPolicy,workspaces:()=>workspaces,
+    externallyPinned:(p,o,w)=>permissions.hasPending(p,o,w)||publisher.hasIncomplete(p,o,w),
+    retirementPending:(p,o,w)=>durable.hasUnconfirmedRetirement(p,o,w)||worktreeRetention?.hasUnconfirmed(p,o,w)===true}):undefined;
+  const maintenance=localJournal?new LocalMaintenance(join(host.dataDirectory,"local-maintenance.sqlite"),host.lifetimeSignal):undefined;
+  const maintenanceStatus=(p:string,o:string,w:string)=>maintenance?.latest(p,o,w)??{phase:"not-run",message:"No completion claim"};
+  const assertRetirable=(p:string,o:string,w:string,revision?:number,generation?:number)=>{
+    host.lifetimeSignal.throwIfAborted();
+    if(!localJournal||localJournal.protected(p,o,w))throw new Error("Local retention is blocked by active, unsealed, pending, pinned or uncertain work");
+    if(revision!==undefined&&store.get(p,o,w).revision!==revision||generation!==undefined&&ledger.get(p,o,w)?.generation!==generation)
+      throw new Error("Local retention authority changed");
+  };
+  async function archiveFinishedRuns(p:string,o:string,w:string,assertAdmitted:()=>void=()=>{}):Promise<void>{
+    assertAdmitted();assertRetirable(p,o,w);
+    const revision=store.get(p,o,w).revision,generation=ledger.get(p,o,w)?.generation;
+    const check=()=>{assertAdmitted();assertRetirable(p,o,w,revision,generation);};
+    const runs=agents.listWorkflow(p,o,w);
+    if(runs.length>512)throw new Error("Maintenance Run inventory exceeds its bounded batch");
+    for(const b of runs){
+      check();if(!isDurableSession(b.sessionId))throw new Error("Native Session lifecycle is human-owned");
+      await durable.stopRun(b);check();
+      const artifact=localJournal!.archiveRun(b);
+      const checkArchive=()=>{
+        check();
+        if(artifact.state!=="ready")throw new Error("Original Run archive expired before retirement was proved; retain database");
+        localJournal!.artifacts.read(p,o,artifact.id);
+      };
+      await durable.retireCompleted(b,artifact.id,check,checkArchive);
+    }
+  }
+  const worktreeRetention:OwnedWorktreeRetention|undefined=localJournal?new OwnedWorktreeRetention({dataDirectory:host.dataDirectory,host,workflows:store,agents,ledger,
+    provisioner,workspaces:()=>workspaces,protected:(p,o,w)=>localJournal.protected(p,o,w),prepareRuns:archiveFinishedRuns}):undefined;
+  function maintainLocal(p:string,o:string,w:string,requestId:string){
+    if(!localJournal||!worktreeRetention||!maintenance)throw new Error("Explicit local-owner profile required");
+    const wf=store.get(p,o,w),generation=ledger.get(p,o,w)?.generation;
+    return maintenance.admit(p,o,w,requestId,"collect",{workflowId:w},async check=>{
+      check();assertRetirable(p,o,w,wf.revision,generation);
+      await archiveFinishedRuns(p,o,w,check);
+      if(localPolicy!.autoReclaimWorktrees){
+        for(const t of Object.values(store.get(p,o,w).tasks)){
+          check();assertRetirable(p,o,w,wf.revision,generation);
+          if(t.spec.kind!=="implementation"||!provisioner.find(p,o,w,t.spec.id))continue;
+          const preview=await worktreeRetention.preview(p,o,w,t.spec.id);
+          if(preview.state!=="completed")await worktreeRetention.confirm(p,o,preview.id,check);
+        }
+      }
+      check();assertRetirable(p,o,w,wf.revision,generation);localJournal.artifacts.collect(p,o);
+    });
+  }
+  function scheduleLocalMaintenance(p:string,o:string,w:string):void{
+    if(!localJournal||host.lifetimeSignal.aborted||localJournal.protected(p,o,w))return;
+    if(maintenance?.latest(p,o,w))return;
+    const wf=store.get(p,o,w),generation=ledger.get(p,o,w)?.generation??0;
+    try{maintainLocal(p,o,w,"auto:"+wf.revision+":"+generation);}
+    catch{host.logger.warn("Local maintenance retained unresolved Run state",{workflowId:w});}
+  }
   function durableKind(binding:AgentBinding):DurableKind{
     if(binding.runId.startsWith("goal-"))return "workflow_plan";
     if(binding.runId.startsWith("plan-"))return "planning";
@@ -170,7 +232,7 @@ const plugin:PiWebServerPlugin={
     if(host.lifetimeSignal.aborted||!automationReady)return;
     const cfg=ledger.get(projectId,workspaceId,workflowId);
     if(cfg?.enabled&&autopilot)queueMicrotask(()=>{
-      if(!host.lifetimeSignal.aborted)void autopilot!.tick(cfg);
+      if(!host.lifetimeSignal.aborted)void autopilot!.tick(cfg).then(()=>scheduleLocalMaintenance(projectId,workspaceId,workflowId));
     });
   }
   const orchestraKey=(project:string,orchestraWorkspaceId:string)=>JSON.stringify([project,orchestraWorkspaceId]);
@@ -706,11 +768,13 @@ const plugin:PiWebServerPlugin={
         // Validate persisted configuration before enabling a background timer.
         const enabled=ledger.listEnabled();
         automationReady=true;
+        if(localJournal)for(const cfg of ledger.listMaintenanceCandidates())
+          scheduleLocalMaintenance(cfg.projectId,cfg.orchestraWorkspaceId,cfg.workflowId);
         automationTimer=setInterval(()=>{
           if(host.lifetimeSignal.aborted)return;
           try{
             for(const cfg of ledger.listEnabled())
-              void autopilot!.tick(cfg);
+              void autopilot!.tick(cfg).then(()=>scheduleLocalMaintenance(cfg.projectId,cfg.orchestraWorkspaceId,cfg.workflowId));
             for(const job of quick.pending())scheduleQuick(job);
           }catch(error){
             automationReady=false;
@@ -937,11 +1001,59 @@ const plugin:PiWebServerPlugin={
             const input=object(ctx.input),workflowId=id(input.workflowId);
             return j(screenshots.preview(p,o,workflowId,id(input.artifactId)));
           }
+          case "auto.journal.local.import":{
+            if(!localJournal)throw new Error("Local-owner Journal is not enabled");
+            const i=object(ctx.input);
+            return j(localJournal.importImage(p,o,{workflowId:id(i.workflowId),runId:id(i.runId),sourceSha:nonempty(i.sourceSha,64),
+              requestId:id(i.requestId),label:nonempty(i.label,180),base64:nonempty(i.base64,LOCAL_IMAGE_MAX_BASE64)}));
+          }
+          case "auto.journal.local.read":{
+            if(!localJournal)throw new Error("Local-owner Journal is not enabled");
+            return j(localJournal.artifacts.read(p,o,id(object(ctx.input).artifactId)));
+          }
+          case "auto.journal.local.pin":{
+            if(!localJournal)throw new Error("Local-owner Journal is not enabled");
+            const i=object(ctx.input);if(typeof i.pinned!=="boolean")throw new Error("Explicit pin decision required");
+            return j(localJournal.artifacts.pin(p,o,id(i.artifactId),i.pinned));
+          }
+          case "auto.journal.adr.link":{
+            if(!localJournal)throw new Error("Local-owner Journal is not enabled");
+            const i=object(ctx.input);return j(await localJournal.link(p,o,{workflowId:id(i.workflowId),workspaceId:id(i.workspaceId),path:nonempty(i.path,180)}));
+          }
+          case "auto.maintenance.preview":{
+            if(!localJournal||!worktreeRetention)throw new Error("Local-owner maintenance is not enabled");
+            const i=object(ctx.input),w=id(i.workflowId);store.get(p,o,w);
+            return j({artifacts:localJournal.artifacts.preview(p,o),worktrees:worktreeRetention.list(p,o,w),
+              status:maintenanceStatus(p,o,w)});
+          }
+          case "auto.maintenance.run":{
+            const i=object(ctx.input);ctx.signal.throwIfAborted();
+            return j(maintainLocal(p,o,id(i.workflowId),id(i.requestId)));
+          }
+          case "auto.maintenance.status":{
+            if(!maintenance)throw new Error("Local-owner maintenance is not enabled");
+            return j(maintenance.get(p,o,id(object(ctx.input).operationId)));
+          }
+          case "auto.worktree.retire.preview":{
+            if(!worktreeRetention)throw new Error("Local-owner maintenance is not enabled");
+            const i=object(ctx.input);return j(await worktreeRetention.preview(p,o,id(i.workflowId),id(i.taskId)));
+          }
+          case "auto.worktree.retire.confirm":{
+            if(!worktreeRetention||!maintenance)throw new Error("Local-owner maintenance is not enabled");
+            const previewId=id(object(ctx.input).previewId),preview=worktreeRetention.get(p,o,previewId);
+            ctx.signal.throwIfAborted();
+            return j(maintenance.admit(p,o,preview.workflowId,"retire:"+previewId,"retire",{previewId},async check=>{
+              await worktreeRetention.confirm(p,o,previewId,check);
+            }));
+          }
           case "auto.journal":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
             const current=store.get(p,o,workflowId);
-            return j(buildJournal(current,agents.listWorkflow(p,o,workflowId),ledger,
-              screenshots.list(p,o,workflowId)));
+            const journal=buildJournal(current,agents.listWorkflow(p,o,workflowId),ledger,screenshots.list(p,o,workflowId));
+            return j({...journal,...(localJournal?{local:{artifacts:localJournal.artifacts.list(p,o,workflowId),
+              adrLinks:localJournal.links(p,o,workflowId),usage:localJournal.artifacts.usage(),
+              retirements:worktreeRetention!.list(p,o,workflowId),
+              status:maintenanceStatus(p,o,workflowId)}}:{})});
           }
           case "auto.retention.preview":{
             const input=ctx.input===null?{}:object(ctx.input);
@@ -1245,7 +1357,9 @@ const plugin:PiWebServerPlugin={
       if(drained)await drained;
       await quickDrain;
       await Promise.allSettled([...startFlights.values(),...recoveryFlights.values()]);
+      await maintenance?.close();
       await durable.close();
+      worktreeRetention?.close();localJournal?.close();
       for(const bridge of live.values())bridge.stop();
       live.clear();viewers.clear();convergence.close();publisher.close();permissions.close();adr.close();screenshots.close();retention.close();provisioner.close();integration.close();quick.close();ledger.close();agents.close();store.close();
     },
