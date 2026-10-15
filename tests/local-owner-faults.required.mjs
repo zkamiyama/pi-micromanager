@@ -1,3 +1,4 @@
+import {retire} from './helpers/local-maintenance-receipt.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
@@ -21,12 +22,12 @@ test('local-owner public server: lost successful Git removal response stays unce
    }
    return result;
   });
-  await assert.rejects(x.peer('auto.worktree.retire.confirm',{previewId:proposal.id}),/lost/);
+  assert.equal((await retire(x,proposal)).phase,'blocked');
   assert.equal(lost,true);assert.equal(existsSync(x.plan.path),false);assert.equal(removals(x),1);
   const persisted=await x.peer('auto.maintenance.preview',{workflowId:'wf'});
   assert.equal(persisted.worktrees.find(r=>r.id===proposal.id).state,'uncertain');
   x.setFault(undefined);await x.plugin.dispose(new AbortController().signal);await x.activate();
-  await assert.rejects(x.peer('auto.worktree.retire.confirm',{previewId:proposal.id}),/unconfirmed|no replay/);
+  assert.equal((await retire(x,proposal)).phase,'blocked','Original failed receipt is returned without replay');
   assert.equal(removals(x),1);assert.equal(x.faux.state.callCount,4);
   const agents=new AgentRegistry(join(x.state,'agents.sqlite'));
   try{
@@ -54,7 +55,7 @@ test('local-owner public server: generation change after asynchronous Git guard 
    }
    return result;
   });
-  await assert.rejects(x.peer('auto.worktree.retire.confirm',{previewId:proposal.id}),/generation|authority/i);
+  assert.equal((await retire(x,proposal)).phase,'blocked');
   assert.equal(changed,true);assert.equal(removals(x),0);assert.equal(existsSync(x.plan.path),true);
  }finally{await x.close();}
 });
@@ -64,7 +65,7 @@ test('local-owner public server: an untracked file added after preview protects 
  const x=await completedLocalOwner();try{
   const proposal=await preview(x);const marker=join(x.plan.path,'untracked.fixture');
   writeFileSync(marker,'Keep this temporary test file');
-  await assert.rejects(x.peer('auto.worktree.retire.confirm',{previewId:proposal.id}),/uncommitted|untracked|changed/);
+  assert.equal((await retire(x,proposal)).phase,'blocked');
   assert.equal(readFileSync(marker,'utf8'),'Keep this temporary test file');assert.equal(removals(x),0);
  }finally{await x.close();}
 });

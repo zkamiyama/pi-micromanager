@@ -23,7 +23,7 @@ interface Options {
  provisioner:ManagedWorktreeProvisioner;workspaces():PiWebHostWorkspacesV1|undefined;
  protected(p:string,o:string,w:string):boolean;
  /** Joins only owned successful Runs and exports their public projections. */
- prepareRuns(p:string,o:string,w:string):Promise<void>;
+ prepareRuns(p:string,o:string,w:string,check?:()=>void):Promise<void>;
 }
 const hash=(x:unknown)=>createHash("sha256").update(JSON.stringify(x)).digest("hex");
 function registry(raw:string):Array<{path:string;head:string;branch:string;blocked:boolean}>{
@@ -35,17 +35,18 @@ function registry(raw:string):Array<{path:string;head:string;branch:string;block
   return {path,head,branch,blocked:fields.some(f=>/^(locked|prunable|bare|detached)( |$)/.test(f))};
  });
 }
-function treeBytes(root:string):number{
- let bytes=0,files=0;const dirs=[root];
+function treeInventory(root:string):{bytes:number;treeHash:string}{
+ let bytes=0,files=0;const dirs=[root],entries:unknown[]=[];
  while(dirs.length){const dir=dirs.pop()!;
   for(const ent of readdirSync(dir,{withFileTypes:true})){
    if(++files>30000)throw new Error("Worktree inventory exceeds bounded scan");
    const path=join(dir,ent.name),s=lstatSync(path);
    if(s.isSymbolicLink()||(!s.isDirectory()&&!s.isFile())||s.isFile()&&s.nlink!==1)throw new Error("Worktree contains unsafe filesystem aliases");
+   entries.push([path,s.dev,s.ino,s.size,s.mtimeMs,s.ctimeMs]);
    if(s.isDirectory())dirs.push(path);else bytes+=s.size;
   }
  }
- return bytes;
+ return {bytes,treeHash:hash(entries.sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))))};
 }
 export class OwnedWorktreeRetention {
  private readonly db:DatabaseSync;
@@ -64,12 +65,21 @@ export class OwnedWorktreeRetention {
   return (this.db.prepare("SELECT * FROM retirements WHERE scope=? AND workflowId=? ORDER BY rowid DESC LIMIT 128")
    .all(automationScope(p,o),w) as unknown as Row[]).map(r=>this.view(r));
  }
+ hasUnconfirmed(p:string,o:string,w:string):boolean{
+  return Boolean(this.db.prepare("SELECT 1 FROM retirements WHERE scope=? AND workflowId=? AND state IN ('reserved','uncertain') LIMIT 1")
+   .get(automationScope(p,o),w));
+ }
  private original(p:string,o:string,w:string,t:string):WorktreePlan{
   const plan=this.opt.provisioner.find(p,o,w,t);
   if(!plan||plan.stage!=="created")throw new Error("Only a confirmed controller-owned Worktree may be retired");
   const scopeHash=hashScope(p,o),expected=join(realpathSync(this.opt.dataDirectory),"managed-worktrees",scopeHash,w,t);
   if(plan.path!==expected||plan.branch!==managedBranch(scopeHash,w,t)||resolve(plan.repoRoot)!==plan.repoRoot||
     realpathSync(plan.repoRoot)!==plan.repoRoot)throw new Error("Managed Worktree ownership differs from creation receipt");
+  if(!plan.directoryIdentity)throw new Error("Worktree original directory ownership receipt missing");
+  if(existsSync(plan.path)){
+   const info=lstatSync(plan.path);
+   if(plan.directoryIdentity!==info.dev+":"+info.ino+":"+info.uid)throw new Error("Worktree directory identity changed since creation");
+  }
   return plan;
  }
  private guard(p:string,o:string,w:string,revision?:number,generation?:number):void{
@@ -98,7 +108,7 @@ export class OwnedWorktreeRetention {
    throw new Error("Retirement Workspace authority changed");
   this.opt.agents.registerWorkspacePath(p,workspaceId,plan.path);
   const stat=lstatSync(plan.path);
-  if(!stat.isDirectory()||stat.isSymbolicLink()||realpathSync(plan.path)!==plan.path)throw new Error("Unsafe Worktree directory");
+  if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid?.()||realpathSync(plan.path)!==plan.path)throw new Error("Unsafe Worktree directory");
   const common=await gitValue(this.opt.host,plan.path,["rev-parse","--path-format=absolute","--git-common-dir"]);
   const rootCommon=await gitValue(this.opt.host,plan.repoRoot,["rev-parse","--path-format=absolute","--git-common-dir"]);
   if(common!==rootCommon||realpathSync(common)!==common)throw new Error("Worktree Git ownership mismatch");
@@ -113,9 +123,9 @@ export class OwnedWorktreeRetention {
   if(await gitValue(this.opt.host,plan.path,["status","--porcelain","--ignored","--untracked-files=all","--ignore-submodules=none"])||
     /(^|\0)160000 /.test(await gitValue(this.opt.host,plan.path,["ls-files","--stage","-z"])))
    throw new Error("Worktree contains untracked, ignored or submodule data; retain for manual review");
-  const estimatedBytes=treeBytes(plan.path);
+  const {bytes:estimatedBytes,treeHash}=treeInventory(plan.path);
   this.guard(p,o,plan.workflowId,wf.revision,cfg.generation);
-  return {workspaceId,headSha:head,preservedRef:"refs/heads/"+plan.branch,estimatedBytes,
+  return {workspaceId,treeHash,headSha:head,preservedRef:"refs/heads/"+plan.branch,estimatedBytes,
    revision:wf.revision,generation:cfg.generation,inode:stat.dev+":"+stat.ino};
  }
  async preview(p:string,o:string,w:string,t:string):Promise<WorktreeRetirement>{
@@ -133,7 +143,12 @@ export class OwnedWorktreeRetention {
     row.expiresAt,row.state,row.path,row.repoRoot,row.inode,row.manifest);
   return this.view(row);
  }
- async confirm(p:string,o:string,id:string):Promise<WorktreeRetirement>{
+ get(p:string,o:string,id:string):WorktreeRetirement{
+  const row=this.db.prepare("SELECT * FROM retirements WHERE id=? AND scope=?").get(id,automationScope(p,o)) as unknown as Row|undefined;
+  if(!row)throw new Error("Worktree retirement belongs to another scope");return this.view(row);
+ }
+ async confirm(p:string,o:string,id:string,assertAdmitted:()=>void=()=>{}):Promise<WorktreeRetirement>{
+  assertAdmitted();
   const row=this.db.prepare("SELECT * FROM retirements WHERE id=? AND scope=?").get(id,automationScope(p,o)) as unknown as Row|undefined;
   if(!row)throw new Error("Worktree retirement belongs to another scope");
   if(row.state==="completed")return this.view(row);
@@ -145,9 +160,11 @@ export class OwnedWorktreeRetention {
   const owner="retire:"+row.id;let submitted=false;
   this.opt.agents.acquireWorkspaceOperation(p,row.workspaceId,owner);
   try{
-   await this.opt.prepareRuns(p,o,row.workflowId);
+   await this.opt.prepareRuns(p,o,row.workflowId,assertAdmitted);
    const fresh=await this.snapshot(p,o,plan);if(hash(fresh)!==row.manifest)throw new Error("Worktree retirement proof changed");
    const fence=()=>{
+    assertAdmitted();
+    if(treeInventory(row.path).treeHash!==fresh.treeHash)throw new Error("Worktree inventory changed immediately before removal");
     this.guard(p,o,row.workflowId,row.revision,row.generation);
     const s=lstatSync(row.path);
     if(!s.isDirectory()||s.isSymbolicLink()||s.dev+":"+s.ino!==row.inode||realpathSync(row.path)!==row.path)
@@ -158,7 +175,7 @@ export class OwnedWorktreeRetention {
    submitted=true;
    const result=await git(this.opt.host,row.repoRoot,["worktree","remove",row.path],60000,fence);
    if(result.exitCode!==0||result.signal)throw new Error("Git did not confirm Worktree removal");
-   this.guard(p,o,row.workflowId,row.revision,row.generation);
+   assertAdmitted();this.guard(p,o,row.workflowId,row.revision,row.generation);
    const remaining=registry(await gitValue(this.opt.host,row.repoRoot,["worktree","list","--porcelain","-z"]));
    if(existsSync(row.path)||remaining.some(r=>r.path===row.path)||
      await gitValue(this.opt.host,row.repoRoot,["rev-parse",row.preservedRef])!==row.headSha)

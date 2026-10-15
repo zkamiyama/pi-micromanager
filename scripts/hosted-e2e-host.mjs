@@ -29,8 +29,9 @@ export async function launchHost(trial,{root,project,authFile,ghConfig,securityP
  const tracking=setInterval(remember,200);tracking.unref();
  const testOperations=['list','get','create','auto.status','auto.configure','auto.start','auto.pause',
   'auto.permissions','auto.permission.decide','agents.list','agents.command','agents.history','security.readiness',
-  'auto.journal','auto.journal.local.import','auto.journal.local.read','auto.journal.local.pin','auto.journal.adr.link','auto.maintenance.preview'];
- for(const file of ['browser.js','fleet.js','canvas-layout.js','canvas-preferences.js'])
+  'auto.journal','auto.journal.local.import','auto.journal.local.read','auto.journal.local.pin','auto.journal.adr.link','auto.maintenance.preview','auto.maintenance.run','auto.maintenance.status',
+  'auto.worktree.preview','auto.worktree.create','auto.integration.preview','auto.integration.confirm'];
+ for(const file of ['browser.js','fleet.js','canvas-layout.js','canvas-preferences.js','local-journal-panel.js'])
   copyFileSync(join(REPO_ROOT,'dist/pi-web',file),join(browserRoot,file));
  writeFileSync(join(browserRoot,'entry.js'),`import base from './browser.js';\nexport default {...base,activate(api){\n const live=base.activate(api);\n const panels=live.contributions.workspacePanels.map(panel=>({...panel,render(ctx){\n  window.__mmAcceptance={projectId:ctx.workspace.projectId,workspaceId:ctx.workspace.id,\n   request:(op,input)=>{if(!${JSON.stringify(testOperations)}.includes(op))throw Error('Unsupported test operation');return ctx.peer.request(op,input);}};\n  return panel.render(ctx);\n }}));\n return {...live,contributions:{...live.contributions,workspacePanels:panels}};\n}};\n`,{mode:0o600});
  const trialPath=join(root,'trial.json');writeFileSync(trialPath,JSON.stringify(trial),{mode:0o600});

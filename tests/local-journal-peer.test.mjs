@@ -73,3 +73,17 @@ test('local Journal archive: authoritative ADR reference survives disposable det
   assert.equal(journal.artifacts.list('p','orchestra','wf')[0].id,archive.id);
  }finally{journal?.close();await x.close();}
 });
+
+test('local Journal: expired public detail remains expired after late events and reopen',async()=>{
+ const x=await localJournalFixture({integrated:true});let journal;
+ try{
+  const options={dataDirectory:x.state,workflows:x.store,agents:x.agents,ledger:x.ledger,host:x.host,
+   policy:{maxBytes:1024*1024,maxAgeDays:1},workspaces:()=>undefined,externallyPinned:()=>false};
+  journal=new LocalJournal(options);const a=journal.archiveRun(x.sealed);
+  journal.artifacts.collect('p','orchestra',0,Date.now()+2*86400000);
+  x.agents.record(x.sealed,{kind:'tool_finished',text:'Late event after expiry',at:Date.now(),sequence:3});
+  journal.close();journal=new LocalJournal(options);
+  const again=journal.archiveRun(x.sealed);assert.equal(again.id,a.id);assert.equal(again.state,'removed');
+  assert.equal(journal.artifacts.usage().storedBytes,0);
+ }finally{journal?.close();await x.close();}
+});

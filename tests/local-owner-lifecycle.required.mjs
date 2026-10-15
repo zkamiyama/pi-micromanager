@@ -1,3 +1,4 @@
+import {retire} from './helpers/local-maintenance-receipt.mjs';
 // Required real-namespace tests, separate from the portable glob. No skip,
 // credentials, remote publication, or pre-existing Session/Worktree is used.
 import test from 'node:test';
@@ -56,11 +57,11 @@ test('local-owner actual server: real Harness completion precedes owned DB/Workt
   const before=await x.peer('auto.journal',{workflowId:'wf'});
   const preview=await x.peer('auto.worktree.retire.preview',{workflowId:'wf',taskId:'task'});
   assert.ok(preview.estimatedBytes>0);assert.equal(existsSync(plan.path),true);
-  const result=await x.peer('auto.worktree.retire.confirm',{previewId:preview.id});
-  assert.equal(result.state,'completed');assert.equal(existsSync(plan.path),false);
+  const result=await retire(x,preview);
+  assert.equal(result.phase,'completed');assert.equal(existsSync(plan.path),false);
   const ref=execFileSync('/usr/bin/git',['-C',x.project,'rev-parse','refs/heads/'+plan.branch],{encoding:'utf8'}).trim();
   assert.equal(ref,plan.baseSha,'Retiring the working copy must not delete its result ref');
-  assert.equal((await x.peer('auto.worktree.retire.confirm',{previewId:preview.id})).state,'completed');
+  assert.equal((await retire(x,preview)).phase,'completed');
   assert.equal(x.calls.filter(c=>c.args[2]==='worktree'&&c.args[3]==='remove').length,1);
   const journal=await x.peer('auto.journal',{workflowId:'wf'});
   assert.equal(journal.local.artifacts.filter(a=>a.kind==='run-log'&&a.state==='ready').length,2);

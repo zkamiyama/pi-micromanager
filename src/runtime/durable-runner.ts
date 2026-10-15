@@ -481,6 +481,13 @@ export class DurableRunHost {
     }
     return {requestId,status:"ok",message:"Durable "+action+" admitted durably"};
   }
+  hasUnconfirmedRetirement(p:string,o:string,w:string):boolean{
+    return this.options.agents.listWorkflow(p,o,w).some(binding=>{
+      if(!isDurableSession(binding.sessionId))return false;
+      const receipt=this.safety.retirement(sessionHash(this.reservation(binding)));
+      return receipt!==undefined&&receipt.state!=="completed";
+    });
+  }
   async stopRun(binding:AgentBinding):Promise<void>{
     if(!binding.sessionId)return;
     const pending=this.stoppingRuns.get(binding.sessionId);if(pending)return pending;
@@ -498,11 +505,16 @@ export class DurableRunHost {
   }
   /** Retire only OUR closed one-shot database, not PI WEB native session files.
    * Minimal safety/input/evidence records survive; tombstones fence every reopen. */
-  async retireCompleted(binding:AgentBinding,artifactId:string,assertAuthority:()=>void):Promise<string>{
+  async retireCompleted(binding:AgentBinding,artifactId:string,assertAuthority:()=>void,assertArchive:()=>void):Promise<string>{
     this.assertLive();
     if(productionPolicy(this.options.dataDirectory)?.mode!=="local-owner")throw new Error("Run retirement requires explicit local-owner policy");
     const key=sessionHash(this.reservation(binding)),old=this.safety.retirement(key);
-    if(old){if(old.state!=="completed")throw new Error("Run file retirement unconfirmed; no replay");return old.state;}
+    if(old){
+      assertAuthority();
+      if(old.state!=="completed"||old.evidenceRef!==binding.evidenceRef||old.artifactId!==artifactId)
+        throw new Error("Run file retirement unconfirmed or mismatched; no replay");
+      return old.state;
+    }
     const check=()=>{
       this.assertLive();assertAuthority();const current=this.current(binding);
       if(!current||current.phase!=="sealed"||current.sessionId!==binding.sessionId||current.evidenceRef!==binding.evidenceRef||
@@ -510,10 +522,21 @@ export class DurableRunHost {
         throw new Error("Run retirement lost its sealed evidence authority");
       this.assertProvedCompleted(current);
     };
-    check();await this.stopRun(binding);check();
+    check();assertArchive();await this.stopRun(binding);check();assertArchive();
     if(this.opening.has(binding.sessionId!))throw new Error("Run Harness is opening; retain database");
     const path=this.path(this.reservation(binding));
     if(!existsSync(path))throw new Error("Original Run database missing without retirement receipt");
+    // Validate BEFORE SQLite opens a path (opening a writeable alias could
+    // otherwise checkpoint someone else's file). Same-UID hostile processes
+    // remain outside the single-owner profile's trust boundary.
+    const verifyFile=(file:string)=>{
+      const s=lstatSync(file);
+      if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.uid!==process.getuid?.()||
+        (s.mode&0o077)!==0||realpathSync(file)!==file)throw new Error("Unsafe owned Run storage alias");
+      return s;
+    };
+    const originalFile=verifyFile(path);
+    for(const suffix of ["-wal","-shm"])if(existsSync(path+suffix))verifyFile(path+suffix);
     const db=new DatabaseSync(path,{allowExtension:false});
     try{
       const checkpoint=db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as {busy:number};
@@ -525,7 +548,9 @@ export class DurableRunHost {
         throw new Error("Unsafe owned Run storage alias");
       return {file,dev:s.dev,ino:s.ino,size:s.size};
     });
-    check();this.safety.reserveRetirement(key,binding.evidenceRef!,artifactId);
+    const afterCheckpoint=verifyFile(path);
+    if(afterCheckpoint.dev!==originalFile.dev||afterCheckpoint.ino!==originalFile.ino)throw new Error("Run database identity changed");
+    check();assertArchive();this.safety.reserveRetirement(key,binding.evidenceRef!,artifactId);
     // If any unlink/flush fails, the reserved tombstone persists. Never retry
     // an uncertain deletion or open a new empty Harness at the old identity.
     for(const oldFile of files){

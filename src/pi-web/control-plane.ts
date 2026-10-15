@@ -1,4 +1,6 @@
 import {productionPolicy} from "../security/policy.js";
+import {LocalMaintenance} from "../automation/local-maintenance.js";
+import {LOCAL_IMAGE_MAX_BASE64} from "../automation/local-image.js";
 import {LocalJournal} from "../automation/local-journal.js";
 import {OwnedWorktreeRetention} from "../automation/owned-worktree-retention.js";
 /** PI WEB Server API v3: deterministic workflow plus per-attempt ephemeral Pi runs. */
@@ -151,59 +153,61 @@ const plugin:PiWebServerPlugin={
       binding.workflowId),
   });
   const localPolicy=productionPolicy(host.dataDirectory)?.localRetention;
-  const localJournal=localPolicy?new LocalJournal({dataDirectory:host.dataDirectory,workflows:store,agents,ledger,host,
+  const localJournal:LocalJournal|undefined=localPolicy?new LocalJournal({dataDirectory:host.dataDirectory,workflows:store,agents,ledger,host,
     policy:localPolicy,workspaces:()=>workspaces,
-    externallyPinned:(p,o,w)=>permissions.hasPending(p,o,w)||publisher.hasIncomplete(p,o,w)}):undefined;
-  const localFlights=new Map<string,Promise<void>>();
-  const localStatus=new Map<string,{phase:string;message:string}>();
-  const maintenanceKey=(p:string,o:string,w:string)=>JSON.stringify([p,o,w]);
+    externallyPinned:(p,o,w)=>permissions.hasPending(p,o,w)||publisher.hasIncomplete(p,o,w),
+    retirementPending:(p,o,w)=>durable.hasUnconfirmedRetirement(p,o,w)||worktreeRetention?.hasUnconfirmed(p,o,w)===true}):undefined;
+  const maintenance=localJournal?new LocalMaintenance(join(host.dataDirectory,"local-maintenance.sqlite"),host.lifetimeSignal):undefined;
+  const maintenanceStatus=(p:string,o:string,w:string)=>maintenance?.latest(p,o,w)??{phase:"not-run",message:"No completion claim"};
   const assertRetirable=(p:string,o:string,w:string,revision?:number,generation?:number)=>{
     host.lifetimeSignal.throwIfAborted();
-    if(!localJournal||localJournal.protected(p,o,w))throw new Error("Local retention is blocked by active, unsealed, pending or uncertain work");
+    if(!localJournal||localJournal.protected(p,o,w))throw new Error("Local retention is blocked by active, unsealed, pending, pinned or uncertain work");
     if(revision!==undefined&&store.get(p,o,w).revision!==revision||generation!==undefined&&ledger.get(p,o,w)?.generation!==generation)
       throw new Error("Local retention authority changed");
   };
-  async function archiveFinishedRuns(p:string,o:string,w:string):Promise<void>{
-    assertRetirable(p,o,w);
-    const revision=store.get(p,o,w).revision,generation=ledger.get(p,o,w)!.generation;
-    const check=()=>assertRetirable(p,o,w,revision,generation);
-    for(const b of agents.listWorkflow(p,o,w)){
+  async function archiveFinishedRuns(p:string,o:string,w:string,assertAdmitted:()=>void=()=>{}):Promise<void>{
+    assertAdmitted();assertRetirable(p,o,w);
+    const revision=store.get(p,o,w).revision,generation=ledger.get(p,o,w)?.generation;
+    const check=()=>{assertAdmitted();assertRetirable(p,o,w,revision,generation);};
+    const runs=agents.listWorkflow(p,o,w);
+    if(runs.length>512)throw new Error("Maintenance Run inventory exceeds its bounded batch");
+    for(const b of runs){
       check();if(!isDurableSession(b.sessionId))throw new Error("Native Session lifecycle is human-owned");
       await durable.stopRun(b);check();
       const artifact=localJournal!.archiveRun(b);
-      await durable.retireCompleted(b,artifact.id,check);
+      const checkArchive=()=>{
+        check();
+        if(artifact.state!=="ready")throw new Error("Original Run archive expired before retirement was proved; retain database");
+        localJournal!.artifacts.read(p,o,artifact.id);
+      };
+      await durable.retireCompleted(b,artifact.id,check,checkArchive);
     }
   }
-  const worktreeRetention=localJournal?new OwnedWorktreeRetention({dataDirectory:host.dataDirectory,host,workflows:store,agents,ledger,
+  const worktreeRetention:OwnedWorktreeRetention|undefined=localJournal?new OwnedWorktreeRetention({dataDirectory:host.dataDirectory,host,workflows:store,agents,ledger,
     provisioner,workspaces:()=>workspaces,protected:(p,o,w)=>localJournal.protected(p,o,w),prepareRuns:archiveFinishedRuns}):undefined;
-  function maintainLocal(p:string,o:string,w:string):Promise<void>{
-    if(!localJournal||!worktreeRetention)throw new Error("Explicit local-owner profile required");
-    const key=maintenanceKey(p,o,w),old=localFlights.get(key);if(old)return old;
-    assertRetirable(p,o,w);
-    const flight=(async()=>{
-      localStatus.set(key,{phase:"running",message:"Archiving completed public logs and reclaiming owned working copies"});
-      await archiveFinishedRuns(p,o,w);
+  function maintainLocal(p:string,o:string,w:string,requestId:string){
+    if(!localJournal||!worktreeRetention||!maintenance)throw new Error("Explicit local-owner profile required");
+    const wf=store.get(p,o,w),generation=ledger.get(p,o,w)?.generation;
+    return maintenance.admit(p,o,w,requestId,"collect",{workflowId:w},async check=>{
+      check();assertRetirable(p,o,w,wf.revision,generation);
+      await archiveFinishedRuns(p,o,w,check);
       if(localPolicy!.autoReclaimWorktrees){
         for(const t of Object.values(store.get(p,o,w).tasks)){
+          check();assertRetirable(p,o,w,wf.revision,generation);
           if(t.spec.kind!=="implementation"||!provisioner.find(p,o,w,t.spec.id))continue;
           const preview=await worktreeRetention.preview(p,o,w,t.spec.id);
-          if(preview.state!=="completed")await worktreeRetention.confirm(p,o,preview.id);
+          if(preview.state!=="completed")await worktreeRetention.confirm(p,o,preview.id,check);
         }
       }
-      localJournal.artifacts.collect(p,o);
-      localStatus.set(key,{phase:"completed",message:"Completed Run details bounded; Git refs and minimal no-replay receipts retained"});
-    })().catch(error=>{
-      localStatus.set(key,{phase:"blocked",message:"Retention unconfirmed; original resources/receipts retained for inspection"});
-      throw error;
+      check();assertRetirable(p,o,w,wf.revision,generation);localJournal.artifacts.collect(p,o);
     });
-    localFlights.set(key,flight);
-    void flight.finally(()=>{if(localFlights.get(key)===flight)localFlights.delete(key);}).catch(()=>{});
-    return flight;
   }
   function scheduleLocalMaintenance(p:string,o:string,w:string):void{
     if(!localJournal||host.lifetimeSignal.aborted||localJournal.protected(p,o,w))return;
-    const key=maintenanceKey(p,o,w);if(localStatus.get(key)?.phase==="blocked"||localStatus.get(key)?.phase==="completed")return;
-    void maintainLocal(p,o,w).catch(()=>host.logger.warn("Local maintenance retained unresolved test/Run state",{workflowId:w}));
+    if(maintenance?.latest(p,o,w))return;
+    const wf=store.get(p,o,w),generation=ledger.get(p,o,w)?.generation??0;
+    try{maintainLocal(p,o,w,"auto:"+wf.revision+":"+generation);}
+    catch{host.logger.warn("Local maintenance retained unresolved Run state",{workflowId:w});}
   }
   function durableKind(binding:AgentBinding):DurableKind{
     if(binding.runId.startsWith("goal-"))return "workflow_plan";
@@ -1001,7 +1005,7 @@ const plugin:PiWebServerPlugin={
             if(!localJournal)throw new Error("Local-owner Journal is not enabled");
             const i=object(ctx.input);
             return j(localJournal.importImage(p,o,{workflowId:id(i.workflowId),runId:id(i.runId),sourceSha:nonempty(i.sourceSha,64),
-              requestId:id(i.requestId),label:nonempty(i.label,180),base64:nonempty(i.base64,700000)}));
+              requestId:id(i.requestId),label:nonempty(i.label,180),base64:nonempty(i.base64,LOCAL_IMAGE_MAX_BASE64)}));
           }
           case "auto.journal.local.read":{
             if(!localJournal)throw new Error("Local-owner Journal is not enabled");
@@ -1020,19 +1024,27 @@ const plugin:PiWebServerPlugin={
             if(!localJournal||!worktreeRetention)throw new Error("Local-owner maintenance is not enabled");
             const i=object(ctx.input),w=id(i.workflowId);store.get(p,o,w);
             return j({artifacts:localJournal.artifacts.preview(p,o),worktrees:worktreeRetention.list(p,o,w),
-              status:localStatus.get(maintenanceKey(p,o,w))??{phase:"not-run",message:"No completion claim"}});
+              status:maintenanceStatus(p,o,w)});
           }
           case "auto.maintenance.run":{
-            const w=id(object(ctx.input).workflowId);await maintainLocal(p,o,w);
-            return j(localStatus.get(maintenanceKey(p,o,w)));
+            const i=object(ctx.input);ctx.signal.throwIfAborted();
+            return j(maintainLocal(p,o,id(i.workflowId),id(i.requestId)));
+          }
+          case "auto.maintenance.status":{
+            if(!maintenance)throw new Error("Local-owner maintenance is not enabled");
+            return j(maintenance.get(p,o,id(object(ctx.input).operationId)));
           }
           case "auto.worktree.retire.preview":{
             if(!worktreeRetention)throw new Error("Local-owner maintenance is not enabled");
             const i=object(ctx.input);return j(await worktreeRetention.preview(p,o,id(i.workflowId),id(i.taskId)));
           }
           case "auto.worktree.retire.confirm":{
-            if(!worktreeRetention)throw new Error("Local-owner maintenance is not enabled");
-            return j(await worktreeRetention.confirm(p,o,id(object(ctx.input).previewId)));
+            if(!worktreeRetention||!maintenance)throw new Error("Local-owner maintenance is not enabled");
+            const previewId=id(object(ctx.input).previewId),preview=worktreeRetention.get(p,o,previewId);
+            ctx.signal.throwIfAborted();
+            return j(maintenance.admit(p,o,preview.workflowId,"retire:"+previewId,"retire",{previewId},async check=>{
+              await worktreeRetention.confirm(p,o,previewId,check);
+            }));
           }
           case "auto.journal":{
             const input=object(ctx.input),workflowId=id(input.workflowId);
@@ -1041,7 +1053,7 @@ const plugin:PiWebServerPlugin={
             return j({...journal,...(localJournal?{local:{artifacts:localJournal.artifacts.list(p,o,workflowId),
               adrLinks:localJournal.links(p,o,workflowId),usage:localJournal.artifacts.usage(),
               retirements:worktreeRetention!.list(p,o,workflowId),
-              status:localStatus.get(maintenanceKey(p,o,workflowId))??{phase:"not-run",message:"No completion claim"}}}:{})});
+              status:maintenanceStatus(p,o,workflowId)}}:{})});
           }
           case "auto.retention.preview":{
             const input=ctx.input===null?{}:object(ctx.input);
@@ -1345,7 +1357,7 @@ const plugin:PiWebServerPlugin={
       if(drained)await drained;
       await quickDrain;
       await Promise.allSettled([...startFlights.values(),...recoveryFlights.values()]);
-      await Promise.allSettled([...localFlights.values()]);
+      await maintenance?.close();
       await durable.close();
       worktreeRetention?.close();localJournal?.close();
       for(const bridge of live.values())bridge.stop();

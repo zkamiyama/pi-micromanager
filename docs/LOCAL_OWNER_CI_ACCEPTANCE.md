@@ -1,92 +1,58 @@
 # CI-first local-owner acceptance
 
-Status: **acceptance candidate, not merge-ready**. This branch makes the retained
-local-owner development draft reviewable and adds executable acceptance gates.
-It does not label the unfinished Journal UI or failing safety assertions as done.
-Related: #5, #89, #86, #36/#37 and [ADR-0020](adr/0020-local-owner-durable-product.md).
+Scope: #5, #89, #86 and parent trackers #36/#37 under [ADR-0020](adr/0020-local-owner-durable-product.md).
 
-## Source and boundaries
+The source implements a local Journal, bounded public-activity archives, exact Git ADR links, and conservative retirement of controller-owned completed resources. The original failing candidate was `18e9edc1d49f36b16a4ef25b9a8d390afa491da5`. Its JPEG, pin, archive-reuse and missing-UI failures remain historical evidence in PR #108; they are not accepted behavior. Fixes and additional adversarial tests must pass on the final reviewed commit before merge.
 
-The candidate starts at main `3398511c847c89ab243c145dac6f662b95f40d78`. The existing,
-previously written local-owner draft was copied from its retained development
-checkout; that original checkout remains untouched. No source patch is generated
-or applied dynamically by CI. A newly reproduced SQLite error in the ADR-link
-query was corrected by quoting the `commit` column alias.
+The owner explicitly selected **GitHub-hosted CI for software acceptance and post-merge verification for their particular Windows/WSL host**. A merge is not a successful WSL qualification. #86 retains that separate obligation. No production daemon, native Session or existing user Worktree is operated by these tests.
 
-Earlier tool-refused media/archive/pin/UI changes were not silently applied via
-Actions. The unchanged unfinished behavior is exposed by failing regressions.
-The CI pipeline itself, test fixtures, and quoted SQL alias are new work; successful
-older documentation CI is not being reused as acceptance for this draft.
+## Reproduce the gates
 
-Tests create their own private directories, Git repositories, Worktrees, SQLite
-files, and processes. Model responses use the official faux provider with the
-actual Pi Durable Harness. There is no real model account, GitHub write token,
-external publication, native Session deletion, or existing daemon operation.
-
-## Reproducible gates
-
-From a clean, reviewed checkout with lockfile-matched dependencies:
+Use a clean reviewed checkout, Node 22 or 24, Linux namespaces and Bubblewrap:
 
 ```sh
 npm ci --no-audit --no-fund
 npm run build
 node scripts/local-owner-ci.mjs contracts
 node scripts/local-owner-ci.mjs lifecycle
-# Install the pinned browser into an explicit development/CI cache first.
 export PLAYWRIGHT_BROWSERS_PATH="$(mktemp -d /tmp/mm-browser-cache-XXXXXX)"
 npx --no-install playwright install --only-shell chromium
 node scripts/local-owner-ci.mjs browser
 ```
 
-`PLAYWRIGHT_BROWSERS_PATH` can select the explicit browser cache; the gate uses a
-fresh HOME and does not load the operator's Pi or GitHub profile. The workflow
-sets this path to a runner-temporary directory. Its matrix runs each of the three
-gates on Node 22 and Node 24, using the **exact PR head SHA** on fresh GitHub-hosted
-Ubuntu runners. The existing five CI jobs remain unchanged and required by the
-project's release procedure. No branch-protection setting is changed here.
+The browser cache is outside the repository. The gate creates a fresh HOME, supplies only allowlisted environment variables, and never loads the operator's Pi or GitHub credentials. Missing Linux namespace support is a failure, not a sandbox fallback. Use an appropriate test host; do not weaken OS policy to pass a test.
 
-The runner rejects nonzero exit, missing or duplicate summaries, zero/fewer than
-expected tests, skip, todo, cancellation, and timeout. Each job writes a bounded
-JSON receipt to its log and a count/failure summary to the Actions job summary.
-The receipt records source SHA, lock hash, actual component versions and Node
-version. A failed acceptance gate remains a failed job: no `continue-on-error`,
-expected-failure annotation, or disabled assertion masks the result.
+The six-job matrix is Node 22/24 multiplied by `contracts`, `lifecycle` and `browser`. It checks out the **exact PR head SHA**, with read-only GitHub permissions and `persist-credentials: false`. Existing five-job CI remains required. Neither workflow dispatches a real provider request, writes an external repository, or deploys anything.
 
-## What the suites actually exercise
+| Gate | Minimum tests per Node | What is real |
+| --- | ---: | --- |
+| contracts | 27 | SQLite, immutable local artifact bytes, quota/pin/decoder bounds, actual server peer requests, Git ADR inspection, durable maintenance admission |
+| lifecycle | 17 | Actual product server/engine, Pi Durable Harness, Bubblewrap, temporary Git Worktrees and Run DBs, disposal/reactivation, concrete deletion and fault injection |
+| browser | 3 | Shipped PI WEB, sandbox-enabled Chromium, scoped public peer, actual model-backed faux implementation/QC, UI image upload/decode/pin, archived text, Git ADR links and daemon restart |
 
-| Suite | Evidence |
-| --- | --- |
-| `contracts` | Explicit local-owner/strict-state policy; image integrity, scope, quotas, pins, age/retirement receipts, bounded Zstandard expansion; actual public server Journal/image/ADR-link requests; immutable archive reuse |
-| `lifecycle` | Actual server-launched implementer and QC through the real Harness and real Bubblewrap; normal Git Worktree removal, retained result refs and minimal receipts; lost successful deletion reply, actual server reactivation, stale generation after asynchronous Git preflight, untracked-file and foreign-scope refusal; delayed provider stop/join |
-| `browser` | Actual shipped PI WEB and sandboxed Chromium via the public plugin/peer API; real JSON request limit and unsealed-image refusal; actual Journal controls rather than a test-injected replacement UI |
+The small Journal peer fixture constructs synthetic sealed records using public repository classes for inexpensive contract tests. It is not claimed as actual model execution. The lifecycle and final browser tests obtain their sealed records from the real Harness with the official deterministic faux provider. The test adapter does not inject a replacement Journal UI.
 
-The peer contract fixture deliberately constructs synthetic persisted QC records
-for inexpensive data-boundary tests; those tests are not counted as real runtime
-acceptance. The separate lifecycle suite obtains its completed records by running
-the real server/engine/Harness, not by writing invented successful runtime rows.
-Only the disposable host adapter is extended for local-owner browser rehearsal;
-its existing production/live defaults are unchanged and its new local-owner path
-refuses real credentials.
+Every gate rejects failed exit, missing/duplicate summary, zero or too few tests, skip, todo, cancellation and timeout. A bounded `LOCAL_OWNER_CI_RECEIPT` records source SHA, clean-tree status, lockfile digest, component versions, exact Node version, test counts and failure names. Success is an observation about that source/environment, not a general security certificate.
 
-## Current failing requirements and acceptance limits
+## Implemented protections
 
-The initial regressions reproduced two JPEG-validation gaps, a Workflow pin that
-does not fence Worktree-retirement preview, and repeated archive creation that
-conflicts after late activity. The actual UI test requires the local image/log/
-ADR/maintenance controls; the old tracked-image UI is not a substitute.
-These failures must be fixed and the **new exact source** retested before merge.
+- New `local-owner` requires an empty private state root and explicit allowlisted projects/models/publication targets. It preserves the old strict-production `ask`/`deny` contract and never falls back to native/unconfined execution.
+- Images are operator-uploaded annotations, not automatically attested QC screenshots. They are limited to 180 KiB encoded bytes before base64 expansion, legal bounded PNG/JPEG frame dimensions, and a current sealed QC source. The bound fits the existing PI WEB 256 KiB request limit; the host limit is unchanged.
+- Public Run JSONL is limited to 128 KiB and compressed with Zstandard level 3/checksum. Both compressor and decoder have a 128 KiB window budget; the decoder also has a separate output limit. Original archive identity and bytes are verified and reused despite late activity. Removed detail is never reconstructed by a repeated old request.
+- A pin protects the owning Workflow's local artifacts and resources. Unconfirmed Worktree/Run retirements also protect associated archives from expiry. Pins are queried without display-pagination limits.
+- Original Worktree creation records include directory identity. Legacy rows without that evidence are not automatically promoted to deletion authority. Current scope, root, Git common directory, registration, branch/HEAD, retained ref, clean/ignored/untracked/submodule state, leases, current generation and final filesystem inventory are checked. No `--force` or recursive-delete substitute is used.
+- Actual Harness shutdown and successful persisted input/evidence precede Run DB reclamation. SQLite aliases are refused before opening/checkpointing. A busy WAL reader, failed integrity check, expired/unverified archive or changed authority retains original data. Separate no-replay tombstones remain after removal.
+- Maintenance is admitted through a small persistent operation receipt, not a long blocking peer request. The same request ID returns the original outcome, never a second invocation. An interrupted operation is marked uncertain after reopen. New side effects are bounded by a 120-second deadline, four concurrent maintenance operations and per-command limits. Shutdown drains admitted operations before state ownership is released.
+- The Journal UI uses the public scoped peer. Images/log text are loaded only on explicit selection; image bytes are not automatically passed to models or Git. Git ADR links retain immutable commit provenance and survive daemon restart/detail expiry.
 
-The lifecycle tests cover concrete stop/restart and Git reply-loss cases, not all
-power-loss/storage corruption cases. Additional review remains necessary for
-archive resource/window bounds, verified archive reuse before data retirement,
-request-deadline/operation receipt semantics, and manual reconciliation of
-ambiguous filesystem changes. A green subset does not close #5 or #89.
+## Fault evidence and limitations
 
-## WSL remains a separate, small target check
+The lifecycle gate covers real successful removal, lost successful Git reply, restart, duplicate confirmation, late generation changes, untracked/ignored files, pins arriving during async Git preflight, corrupt/expired archive, a DB alias, active SQLite WAL readers, missing legacy ownership evidence, unresolved-retirement archive protection, no-replay tombstones, a delayed operation whose status remains observable, and exactly-once startup reclamation of an eligible completed Workflow.
 
-GitHub's Ubuntu runner is not the operator's Windows/WSL machine. #86 retains only
-the selected local-owner WSL prerequisites and actual profile smoke, including
-localhost/auth assumptions, actual namespace behavior and approved external
-integration. It does not require a SaaS/tenant platform. CI does not modify
-`.wslconfig`, firewall, OS security, production services or restore quarantine.
-All receipts keep `productionSafetyGuaranteed: false`.
+Tests simulate specific interruption boundaries. They do not certify every power-loss/storage-device failure, a hostile same-UID process, all Windows/WSL kernels, a multi-tenant service, an exact provider billing cap or hard aggregate OS quotas. Unknown deletion results stay retained/uncertain; no automatic reset/unquarantine/retry tool is supplied.
+
+## Target WSL verification after merge
+
+The operator may run the same credential-free gates on the merged commit in their development WSL environment. Record the exact commit, kernel/Node versions, namespace outcome and public-host browser results. Run only on disposable state; do not point tests at an existing daemon's state root. The fresh local-owner launch configuration is documented in [Local-owner operation](LOCAL_OWNER_OPERATION.md).
+
+Those observations are still separate from the explicitly approved real OAuth/provider/GitHub test-target acceptance for that profile. Prior strict-profile live receipts are historical evidence, not a new local-owner live result. Keep #86 and its parent qualification trackers open until the selected target evidence is supplied. All receipts keep `productionSafetyGuaranteed: false`.

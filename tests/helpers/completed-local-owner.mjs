@@ -6,7 +6,7 @@ import {createModels} from '@earendil-works/pi-ai/models';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai/providers/faux';
 import {fixture,workflow,configuration,runGit} from './production-server-fixture.mjs';
 
-export async function completedLocalOwner(){
+export async function completedLocalOwner({autoReclaimWorktrees=false}={}){
  const previous=ModelRuntime.create,models=createModels(),faux=fauxProvider({tokensPerSecond:100000});
  models.setProvider(faux.provider);ModelRuntime.create=async()=>models;
  const x=fixture();let fault;
@@ -16,7 +16,7 @@ export async function completedLocalOwner(){
   writeFileSync(join(x.project,'fixture.test.mjs'),"import test from 'node:test';test('disposable source',()=>{});\n");
   runGit(x.project,'add','fixture.test.mjs');runGit(x.project,'commit','-m','Add synthetic source test');
   x.host.settings.productionSecurity.mode='local-owner';
-  x.host.settings.productionSecurity.localRetention={autoReclaimWorktrees:false};
+  x.host.settings.productionSecurity.localRetention={autoReclaimWorktrees};
   await x.activate();await x.peer('create',{...workflow,permissions:{default:'ask',actions:{'git.commit':'allow'}}});
   await x.peer('auto.configure',{workflowId:'wf',config:configuration});
   const proposed=await x.peer('auto.worktree.preview',{workflowId:'wf',taskId:'task'});

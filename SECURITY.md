@@ -1,5 +1,8 @@
 # Production security and assurance scope
 
+> **Profile scope update (ADR-0020):** Strict `production` keeps its existing human-approval rules. The explicit `local-owner` profile is for one trusted owner on local-only Windows/WSL, with the same worker isolation, identity, generation and no-replay boundaries but preauthorized exact-destination YOLO. It requires a fresh private state root; this is not an implicit production downgrade. Multi-tenant/public-service certification is outside this profile. Software CI acceptance and target WSL qualification are separate; the owner selected the latter as a post-merge check. See [local operation](docs/LOCAL_OWNER_OPERATION.md) and [CI acceptance](docs/LOCAL_OWNER_CI_ACCEPTANCE.md).
+
+
 Micromanager is not unconditionally safe merely because CI passes. Production operation requires the host-owned profile below, a trusted patched Linux execution host, authenticated PI WEB ingress, and deployment-level quotas and recovery procedures. Compatibility mode retains native Pi support and is **not** an OS isolation boundary.
 
 ## Threat model and implemented controls
@@ -112,3 +115,13 @@ The [actual local Pi/PI WEB/Luna and GitHub test-branch receipt](docs/HOSTED_E2E
 ## Opt-in automatic diagnostic authority
 
 The [bounded diagnostic policy](docs/ADR19_DIAGNOSTICS_AND_COCKPIT.md) is Durable-only and off by default. Only an explicit committed QC fail and known complete host test outcome can atomically create one diagnostic episode per Task. Its two readonly investigators and synthesis have disjoint immutable request/tool shares and a common absolute deadline; current host limits remain the ceiling. Authentication, sandbox, timeout, unproved input and verification truncation never trigger automatic privilege or budget expansion. Model text cannot resume held implementation; only an explicit idempotent human decision can. New UI scope/run checks supplement, not replace, the existing server authorization and no-replay controls.
+
+## Local artifacts and completed-resource retirement
+
+The local-only Journal accepts bounded operator PNG/JPEG uploads tied to the current sealed QC source; it does not treat an upload as automatic QC capture. Detailed public JSONL archives have bounded input, output and Zstandard window memory. Every read verifies original stored and decoded hashes; old archive identities are reused, never overwritten after late activity. Pins and unresolved retirement records retain evidence independent of display pagination. Git ADR documents remain authoritative; Journal links do not publish data.
+
+Owned-resource retirement requires an original Worktree creation identity, stable Git registration/HEAD/ref, no dirty/untracked/ignored/submodule data, sealed successful Runs and no conflicting leases, holds, pins or unresolved external effects. The final operation generation and filesystem inventory are checked after asynchronous Git inspection. Git receives normal `worktree remove`, never a force/delete substitute. Original refs and minimum receipts remain.
+
+Durable DB reclamation additionally requires verified archive bytes, actual Harness shutdown, successful committed inputs, pre-open file identity and SQLite checkpoint/integrity. Busy WAL readers and aliased/damaged files fail closed. A persisted tombstone prevents reopening the removed Run as new work. Human native Session files and user-created Worktrees are not managed by this feature.
+
+Maintenance returns a persisted bounded admission receipt immediately. Repeated request IDs observe that result; interrupted attempts become uncertain, and shutdown joins admitted work before ownership release. An absent resource alone is not a successful deletion receipt. There is no automatic unquarantine or reset of uncertain operations. CI uses only fresh synthetic data and no real provider credentials. The particular WSL host remains unverified until its own post-merge evidence is recorded.

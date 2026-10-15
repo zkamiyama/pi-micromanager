@@ -6,6 +6,8 @@ import {constants,openSync,closeSync,fstatSync,lstatSync,readSync,writeFileSync,
   mkdirSync,realpathSync,fsyncSync,unlinkSync,existsSync,chmodSync} from "node:fs";
 import {join,resolve} from "node:path";
 import {zstdCompressSync,zstdDecompressSync,constants as zconst} from "node:zlib";
+import {localImageMime,LOCAL_IMAGE_MAX_BYTES} from "./local-image.js";
+export {localImageMime} from "./local-image.js";
 import {automationScope} from "./ledger.js";
 
 export type ArtifactKind="run-log"|"image";
@@ -23,7 +25,7 @@ interface Options {
   /** Includes all unsealed/uncertain Runs, enabled work and unresolved external effects. */
   protected(p:string,o:string,workflowId:string):boolean;
 }
-const MAX_RAW=512*1024,MAX_LOG=128*1024,MAX_ROWS=25000;
+const MAX_RAW=LOCAL_IMAGE_MAX_BYTES,MAX_LOG=128*1024,MAX_ROWS=25000;
 const hash=(data:string|Buffer)=>createHash("sha256").update(data).digest("hex");
 const text=(s:unknown,max:number):s is string=>typeof s==="string"&&s.length>0&&s.length<=max&&!s.includes("\0");
 function syncDirectory(dir:string):void{const fd=openSync(dir,constants.O_RDONLY|constants.O_DIRECTORY);try{fsyncSync(fd);}finally{closeSync(fd);}}
@@ -31,17 +33,6 @@ function privateDirectory(dir:string):void{
   mkdirSync(dir,{recursive:true,mode:0o700});const s=lstatSync(dir);
   if(!s.isDirectory()||s.isSymbolicLink()||realpathSync(dir)!==resolve(dir)||(s.mode&0o077)||s.uid!==process.getuid?.())
     throw new Error("Local artifact directory must be private, owned and canonical");
-}
-export function localImageMime(bytes:Buffer):"image/png"|"image/jpeg"{
-  if(bytes.length<16||bytes.length>MAX_RAW)throw new Error("Local image must be 16 bytes to 512 KiB");
-  if(bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))){
-    if(bytes.length<33||bytes.toString("ascii",12,16)!=="IHDR"||bytes.readUInt32BE(16)<1||
-      bytes.readUInt32BE(20)<1||bytes.readUInt32BE(16)>4096||bytes.readUInt32BE(20)>4096)
-      throw new Error("Invalid bounded PNG dimensions");
-    return "image/png";
-  }
-  if(bytes[0]===255&&bytes[1]===216&&bytes.at(-2)===255&&bytes.at(-1)===217)return "image/jpeg";
-  throw new Error("Only bounded PNG/JPEG images are accepted");
 }
 export class LocalArtifacts {
   private readonly db:DatabaseSync;private readonly objects:string;
@@ -72,6 +63,17 @@ export class LocalArtifacts {
     return (this.db.prepare("SELECT * FROM artifacts WHERE scope=? AND workflowId=? ORDER BY createdAt DESC LIMIT 100")
       .all(automationScope(p,o),workflowId) as unknown as Row[]).map(r=>this.view(r));
   }
+  /** Exact identity lookup, independent of display pagination. */
+  find(p:string,o:string,workflowId:string,key:string):LocalArtifact|undefined{
+    const scope=automationScope(p,o),id=hash(JSON.stringify([scope,workflowId,key]));
+    const row=this.db.prepare("SELECT * FROM artifacts WHERE id=? AND scope=? AND workflowId=?")
+      .get(id,scope,workflowId) as unknown as Row|undefined;
+    return row?this.view(row):undefined;
+  }
+  hasPins(p:string,o:string,w:string):boolean{
+    return Boolean(this.db.prepare("SELECT 1 FROM artifacts WHERE scope=? AND workflowId=? AND pinned=1 AND state!='removed' LIMIT 1")
+      .get(automationScope(p,o),w));
+  }
   usage():{storedBytes:number;maxBytes:number;maxAgeDays:number;unresolved:number}{
     const r=this.db.prepare("SELECT coalesce(sum(storedBytes),0) AS bytes,sum(CASE WHEN state IN ('writing','retiring','uncertain') THEN 1 ELSE 0 END) AS unresolved FROM artifacts WHERE state!='removed'").get() as {bytes:number;unresolved:number};
     return {storedBytes:r.bytes,maxBytes:this.opt.policy.maxBytes,maxAgeDays:this.opt.policy.maxAgeDays,unresolved:r.unresolved??0};
@@ -91,7 +93,9 @@ export class LocalArtifacts {
   }
   read(p:string,o:string,id:string):{artifact:LocalArtifact;text?:string;dataUrl?:string}{
     const r=this.row(p,o,id);if(r.state!=="ready")throw new Error("Artifact unavailable or awaiting reconciliation");
-    const packed=this.stored(r),bytes=r.kind==="run-log"?zstdDecompressSync(packed,{maxOutputLength:MAX_LOG}):packed;
+    const packed=this.stored(r);let bytes:Buffer;
+    try{bytes=r.kind==="run-log"?zstdDecompressSync(packed,{maxOutputLength:MAX_LOG,params:{[zconst.ZSTD_d_windowLogMax]:17}}):packed;}
+    catch{throw new Error("Compressed archive is invalid or exceeds its decoding resource limit");}
     if(bytes.length!==r.bytes||hash(bytes)!==r.sha256)throw new Error("Artifact decompressed content changed");
     if(r.kind==="image"&&localImageMime(bytes)!==r.mime)throw new Error("Artifact image type changed");
     return {artifact:this.view(r),...(r.kind==="run-log"?{text:bytes.toString("utf8")}:{dataUrl:"data:"+r.mime+";base64,"+bytes.toString("base64")})};
@@ -143,10 +147,11 @@ export class LocalArtifacts {
     const old=this.db.prepare("SELECT * FROM artifacts WHERE id=?").get(id) as unknown as Row|undefined;
     if(old){if(old.requestHash!==requestHash)throw new Error("Artifact request identity reused with different bytes");
       if(old.state!=="ready"&&old.state!=="removed")throw new Error("Previous artifact write/removal uncertain; inspect, never overwrite");
+      if(old.state==="ready")this.read(p,o,id);
       return this.view(old);}
     const count=this.db.prepare("SELECT count(*) AS n FROM artifacts").get() as {n:number};
     if(count.n>=MAX_ROWS)throw new Error("Artifact metadata quota reached; audit receipts retained");
-    const packed=input.kind==="run-log"?zstdCompressSync(raw,{params:{[zconst.ZSTD_c_compressionLevel]:3,[zconst.ZSTD_c_checksumFlag]:1},maxOutputLength:MAX_RAW+65536}):raw;
+    const packed=input.kind==="run-log"?zstdCompressSync(raw,{params:{[zconst.ZSTD_c_compressionLevel]:3,[zconst.ZSTD_c_checksumFlag]:1,[zconst.ZSTD_c_windowLog]:17},maxOutputLength:MAX_RAW+65536}):raw;
     this.collect(p,o,packed.length);
     if(this.usage().storedBytes+packed.length>this.opt.policy.maxBytes)throw new Error("Local artifact quota full; active/pinned evidence is retained");
     const r:Row={id,scope,workflowId:input.workflowId,runId:input.runId,kind:input.kind,sourceSha:input.sourceSha,

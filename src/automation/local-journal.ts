@@ -8,6 +8,7 @@ import type {AgentBinding,AgentRegistry} from "../runtime/registry.js";
 import {isDurableSession} from "../runtime/durable-runner.js";
 import type {AutopilotLedger} from "./ledger.js";
 import {automationScope} from "./ledger.js";
+import {LOCAL_IMAGE_MAX_BASE64} from "./local-image.js";
 import {LocalArtifacts,localImageMime,type ArtifactPolicy,type LocalArtifact} from "./local-artifacts.js";
 import {gitValue,requireCleanGit,type GitHost} from "./git.js";
 
@@ -15,6 +16,7 @@ interface Options {
   dataDirectory:string;workflows:WorkflowStore;agents:AgentRegistry;ledger:AutopilotLedger;
   host:GitHost;policy:ArtifactPolicy;workspaces():PiWebHostWorkspacesV1|undefined;
   externallyPinned(p:string,o:string,w:string):boolean;
+  retirementPending?(p:string,o:string,w:string):boolean;
 }
 export interface AdrLink {id:string;workflowId:string;workspaceId:string;path:string;commit:string;title:string;repository:string|null;url:string|null}
 const sha=(s:string)=>createHash("sha256").update(s).digest("hex");
@@ -22,7 +24,7 @@ export class LocalJournal {
   readonly artifacts:LocalArtifacts;private readonly db:DatabaseSync;
   constructor(private readonly opt:Options){
     this.artifacts=new LocalArtifacts({directory:join(opt.dataDirectory,"local-journal"),policy:opt.policy,
-      signal:opt.host.lifetimeSignal,protected:(p,o,w)=>this.protected(p,o,w)});
+      signal:opt.host.lifetimeSignal,protected:(p,o,w)=>this.protected(p,o,w)||opt.retirementPending?.(p,o,w)===true});
     this.db=new DatabaseSync(join(opt.dataDirectory,"local-doc-links.sqlite"));
     this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS adr_links(id TEXT PRIMARY KEY,scope TEXT NOT NULL,workflowId TEXT NOT NULL,
@@ -31,7 +33,7 @@ export class LocalJournal {
   close():void{this.artifacts.close();this.db.close();}
   protected(p:string,o:string,w:string):boolean{
     try{
-      if(this.opt.externallyPinned(p,o,w)||this.opt.agents.hasUnsealedWorkflow(p,o,w)||this.opt.ledger.get(p,o,w)?.enabled)return true;
+      if(this.artifacts.hasPins(p,o,w)||this.opt.externallyPinned(p,o,w)||this.opt.agents.hasUnsealedWorkflow(p,o,w)||this.opt.ledger.get(p,o,w)?.enabled)return true;
       const wf=this.opt.workflows.get(p,o,w);
       return Object.values(wf.tasks).some(t=>!["integrated","done"].includes(t.status))||wf.amendments.some(a=>!["completed","cancelled"].includes(a.status));
     }catch{return true;}
@@ -51,6 +53,20 @@ export class LocalJournal {
   archiveRun(binding:AgentBinding):LocalArtifact{
     const {projectId:p,orchestraWorkspaceId:o,workflowId:w,runId}=binding;
     const source=this.source(p,o,w,runId);
+    const prior=this.artifacts.find(p,o,w,"run:"+runId);
+    if(prior){
+      if(prior.kind!=="run-log"||prior.runId!==runId||prior.sourceSha!==source.sourceSha||
+        prior.provenance!=="public-run-projection")throw new Error("Original Run archive authority changed");
+      if(prior.state==="ready"){
+        const content=this.artifacts.read(p,o,prior.id).text;
+        const first=JSON.parse(content!.split("\n",1)[0]!);
+        if(first.runId!==runId||first.sourceSha!==source.sourceSha||first.evidenceRef!==source.receipt.ref)
+          throw new Error("Original archive does not prove this sealed Run");
+      }else if(prior.state!=="removed")throw new Error("Original archive is uncertain; no rewrite");
+      // Expired detail remains expired. The separate retirement receipt, not
+      // an absent archive, determines whether original Run data can be removed.
+      return prior;
+    }
     const metadata={schemaVersion:1,provenance:"public-run-projection",runId,taskId:source.b.taskId,seat:source.b.seat,
       sourceSha:source.sourceSha,evidenceRef:source.receipt.ref,summary:source.receipt.text.slice(0,4000)};
     const events=this.opt.agents.activities(p,o,source.b.sessionId!).map(e=>({kind:e.kind,at:e.at,text:e.text.slice(0,512)})).reverse();
@@ -62,7 +78,7 @@ export class LocalJournal {
     const source=this.source(p,o,input.workflowId,input.runId);
     if(source.b.seat!=="qc"||source.wf.tasks[source.b.taskId]?.lastQc?.runId!==input.runId||input.sourceSha!==source.sourceSha)
       throw new Error("Local image must reference the current exact QC source");
-    if(typeof input.base64!=="string"||input.base64.length>700000||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.base64))
+    if(typeof input.base64!=="string"||input.base64.length>LOCAL_IMAGE_MAX_BASE64||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.base64))
       throw new Error("Invalid bounded base64 image");
     const bytes=Buffer.from(input.base64,"base64"),mime=localImageMime(bytes);
     return this.artifacts.put(p,o,{key:"image:"+input.requestId,workflowId:input.workflowId,runId:input.runId,

@@ -113,3 +113,31 @@ test('local artifact: a stopped lifetime denies new writes and pin changes',()=>
   assert.throws(()=>x.store.pin('p','o',a.id,true),/stopped/);
  }finally{x.close();}
 });
+
+test('local artifact: Zstandard window budget rejects a tiny-output frame declaring a large window',()=>{
+ const x=fixture();try{
+  const input={...x.input,kind:'run-log',mime:'application/x-ndjson'},raw=Buffer.from('A');
+  const a=x.store.put('p','o',input,raw);
+  // A one-byte raw block with a 1 MiB declared window, not a large allocation.
+  const packed=Buffer.from('28b52ffd005009000041','hex');
+  writeFileSync(join(x.root,'objects',a.id+'.blob'),packed,{mode:0o600});
+  const db=new DatabaseSync(join(x.root,'index.sqlite'));
+  db.prepare('UPDATE artifacts SET storedBytes=?,storedHash=? WHERE id=?').run(packed.length,digest(packed),a.id);db.close();
+  assert.throws(()=>x.store.read('p','o',a.id),/decoding resource limit/);
+ }finally{x.close();}
+});
+test('local artifact: image size leaves JSON transport headroom and rejects animated or malformed headers',()=>{
+ assert.throws(()=>localImageMime(Buffer.concat([PNG,Buffer.alloc(180*1024)])),/180 KiB|limit/);
+ for(const change of [b=>b.writeUInt32BE(4097,16),b=>b[25]=7,b=>b[28]=2,b=>b.writeUInt32BE(12,8)]){
+  const b=Buffer.from(PNG);change(b);assert.throws(()=>localImageMime(b),/dimension|PNG/);
+ }
+ const chunk=Buffer.alloc(12);chunk.write('acTL',4,'ascii');
+ assert.throws(()=>localImageMime(Buffer.concat([PNG.subarray(0,33),chunk,PNG.subarray(33)])),/animated/);
+});
+test('local artifact: pin lookup is not truncated by the Journal display limit',()=>{
+ const x=fixture();try{
+  const first=x.store.put('p','o',x.input,PNG);x.store.pin('p','o',first.id,true);
+  for(let i=0;i<105;i++)x.store.put('p','o',{...x.input,key:'page-'+i},PNG);
+  assert.equal(x.store.hasPins('p','o','wf'),true);assert.equal(x.store.hasPins('other','o','wf'),false);
+ }finally{x.close();}
+});

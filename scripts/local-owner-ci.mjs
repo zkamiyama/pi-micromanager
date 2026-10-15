@@ -9,9 +9,9 @@ import {fileURLToPath} from 'node:url';
 import {sourceEvidence,REPO_ROOT} from './e2e-contract.mjs';
 
 export const SUITES=Object.freeze({
- contracts:{minimum:19,files:['tests/local-owner-profile.test.mjs','tests/local-artifact-acceptance.test.mjs','tests/local-journal-peer.test.mjs']},
- lifecycle:{minimum:6,files:['tests/local-owner-lifecycle.required.mjs','tests/local-owner-faults.required.mjs']},
- browser:{minimum:2,files:['tests/local-owner-browser.required.mjs']},
+ contracts:{minimum:27,files:['tests/local-maintenance.test.mjs','tests/local-owner-profile.test.mjs','tests/local-artifact-acceptance.test.mjs','tests/local-journal-peer.test.mjs']},
+ lifecycle:{minimum:17,files:['tests/local-owner-retirement-safety.required.mjs','tests/local-owner-lifecycle.required.mjs','tests/local-owner-faults.required.mjs']},
+ browser:{minimum:3,files:['tests/local-owner-browser.required.mjs']},
 });
 export function evaluateTap(tap,exitCode,minimum){
  const value=name=>{
