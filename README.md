@@ -67,6 +67,8 @@ The older preview-before-approval Sol workflow remains available. See
 
 Product/runtime/deployment ownership and the #36–#38 work split: [ADR-0018](docs/adr/0018-runtime-deployment-and-evidence-ownership.md).
 
+Issue-by-issue product-layer decisions, alternatives, ownership and acceptance gates for #2/#3/#4/#5/#36/#37/#86/#89: [ADR-0019](docs/adr/0019-bounded-product-capabilities-and-issue-disposition.md). Design adoption is not implementation or deployment completion.
+
 - [ADR-0001 — Control plane and product boundaries](docs/adr/0001-control-plane-and-product-boundaries.md)
 - [ADR-0002 — Deterministic DAG, QC barriers, and Workflow Amendments](docs/adr/0002-deterministic-dag-and-live-interventions.md)
 - [ADR-0003 — Evidence, Live Journal, retention, knowledge promotion](docs/adr/0003-evidence-journal-retention-and-knowledge.md)
@@ -95,6 +97,11 @@ also exercises disposable real Git Worktrees and GitHub publication
 mocks. They do **not** replace authenticated PI WEB host soak tests.
 
 ## Development
+
+**Local real-host E2E accepted (2026-10-15):** [actual Pi OAuth/Luna Low + QC Max, hosted PI WEB and GitHub test-branch lost-response recovery](docs/HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md) passed. Deployment quotas, TLS, native owner GC and broader product epics remain separate.
+
+
+Hosted PI WEB/browser, parallel Run/QC and exact-branch publication/recovery acceptance: [owner-operated hosted test](docs/HOSTED_E2E_ACCEPTANCE.md). Credential-free rehearsal and actual local OAuth/GitHub execution are separately labeled.
 
 Actual hosted browser/Workflow lifecycle: [HOSTED_ACCEPTANCE.md](docs/HOSTED_ACCEPTANCE.md). Production source discovery, capacity admission, disclosure policy and proof-pinned retention: [residual acceptance map](docs/RESIDUAL_ACCEPTANCE.md).
 
@@ -476,3 +483,9 @@ MIT, see [LICENSE](LICENSE).
 Each Luna attempt and every QC Run creates a fresh Pi Session. The same model may be reused, but the old session context is **never** the next run. The dynamic **Live Runs** PI WEB panel shows running/pending sessions; settled runs move to History (no steer). The Workflow Task, not the Agent role, remains the durable object. Evidence must be sealed before a modifying worktree can even become eligible for separate, manual lifecycle cleanup. See [ADR-0006](docs/adr/0006-ephemeral-execution-runs.md).
 
 The manual one-shot Pi creation form is experimental: it requires an admitted Task run, an existing linked worktree for a modifying Luna, a target PI WEB Workspace ID, and a configured provider/model. An opt-in, background, DAG-driven Autopilot scheduler and explicit managed Worktree creation are available, but authenticated real-provider E2E is not yet proven. The earlier DAG demo and its transition buttons remain simulation-only.
+
+## Bounded automatic diagnosis and scoped direct QC controls
+
+[ADR-0019 implementation](docs/ADR19_DIAGNOSTICS_AND_COCKPIT.md) adds an explicit Durable-only automatic diagnostic policy: exact failing QC can atomically hold a Task, allocate two readonly investigations and one synthesis with immutable finite shares, and require human resume. It is off by default and does not reset QC budgets. The public PI WEB panel now provides a compact card and focused inspector, exact Run/scope command revalidation, and direct QC UI acceptance. The authenticated four-Run result remains a separate recorded acceptance, not inferred from faux CI.
+
+The [actual ADR-0019 authenticated quartet acceptance](docs/ADR19_DIAGNOSTICS_AND_COCKPIT_ACCEPTANCE.md) now verifies four live model-backed sessions, direct QC UI steering, a QC-time human barrier, two frozen-source diagnoses and explicit one-time resume. Broader native runtime, screenshot/knowledge lifecycle and deployment qualification remain separate.

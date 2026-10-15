@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {parseHostedArguments} from '../scripts/hosted-acceptance.mjs';
+import {parseHostedArguments,shouldRemoveHostedFixture,verifyHostedDiagnosis} from '../scripts/hosted-acceptance.mjs';
 import {publicationServerWrapper,manualPublicationConfig,TRIAL_REPOSITORY} from '../scripts/hosted-publication-trial.mjs';
 
 test('#92 hosted runner requires explicit real-account and exact-source publication authority',()=>{
@@ -47,4 +47,31 @@ test('#92 manual Worktree configuration is valid public JSON, not an undefined-v
  assert.equal(Object.hasOwn(result,'managedWorktrees'),false);
  assert.deepEqual(JSON.parse(JSON.stringify(result)),result);
  assert.equal(input.managedWorktrees,true);
+});
+
+test('ADR19 an incomplete hosted trial always retains its own evidence, including non-publication mode',()=>{
+ for(const joined of [false,undefined,true])for(const status of ['blocked','failed','unknown',undefined])
+  assert.equal(shouldRemoveHostedFixture(joined,status),false);
+ assert.equal(shouldRemoveHostedFixture(false,'passed'),false);
+ assert.equal(shouldRemoveHostedFixture(true,'passed'),true);
+});
+
+test('ADR19 hosted evidence requires two sealed distinct diagnoses with identical frozen QC source and configured model',()=>{
+ const model={provider:'faux',model:'faux-1'},sha='a'.repeat(40);
+ const workflow={definition:{id:'pair'},amendments:[{id:'review',status:'activated',agents:[{},{}],synthesisTaskId:'s'}],
+  tasks:{alpha:{status:'held',lastQc:{verdict:'pass',headSha:sha}},s:{status:'done'},
+   a:{spec:{id:'a',kind:'diagnosis'},parentTaskId:'alpha',status:'done'},
+   b:{spec:{id:'b',kind:'diagnosis'},parentTaskId:'alpha',status:'done'}}};
+ const runs=['a','b'].map(id=>({workflowId:'pair',taskId:id,runId:'run-'+id,sessionId:'session-'+id,
+  projectId:'p',orchestraWorkspaceId:'o',phase:'sealed',...model}));
+ const jobs=runs.map(r=>({...r,kind:'diagnosis',headSha:sha,model}));
+ assert.equal(verifyHostedDiagnosis(workflow,runs,jobs,model).investigators,2);
+ const max={...model,effort:'max'},maxJobs=jobs.map(j=>({...j,model:max})),maxRuns=runs.map(r=>({...r,effort:'max'}));
+ assert.equal(verifyHostedDiagnosis(workflow,maxRuns,maxJobs,max).investigators,2);
+ assert.throws(()=>verifyHostedDiagnosis(workflow,[maxRuns[0],{...maxRuns[1],effort:'low'}],maxJobs,max),/mismatch/);
+ for(const wrong of [runs.slice(0,1),[runs[0],{...runs[1],phase:'uncertain'}],
+  [runs[0],{...runs[1],sessionId:runs[0].sessionId}]])assert.throws(()=>verifyHostedDiagnosis(workflow,wrong,jobs,model));
+ assert.throws(()=>verifyHostedDiagnosis(workflow,runs,[jobs[0],{...jobs[1],headSha:'b'.repeat(40)}],model),/mismatch/);
+ assert.throws(()=>verifyHostedDiagnosis({...workflow,amendments:[{...workflow.amendments[0],agents:[{}]}]},runs,jobs,model),/unproved/);
+ assert.throws(()=>verifyHostedDiagnosis({...workflow,tasks:{...workflow.tasks,alpha:{...workflow.tasks.alpha,status:'ready'}}},runs,jobs,model),/unproved/);
 });

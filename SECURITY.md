@@ -61,6 +61,30 @@ quotas, credential provisioning and real-environment acceptance. Existing
 production controls remain mandatory. Splitting an Issue does not certify a
 deployment, authorize production operations, or permit unsupported fallback.
 
+## Explicit host model credential source
+
+An optional host-only `productionSecurity.modelAuthFile` selects the existing
+private canonical credential file for the public Pi ModelRuntime. It never copies
+credentials into a Workspace or returns their path in readiness. Files under a
+project, control state or executable package, aliases, hardlinks, shared file
+permissions and unsafe parents are refused. Workflow/model arguments cannot set
+this field. Unspecified profiles retain existing behavior; an explicitly selected
+source disables ambient custom models.json. The trusted SDK still owns refresh.
+This is not credential isolation from a malicious same-UID host process.
+
+Final integration receives a separate persisted `allowedMergeShas` broker
+capability, checked against current exact QC evidence. It is not the set of
+ancestors that must already exist before an ordinary dependent Run starts.
+Legacy final Runs missing that proof fail closed; do not rewrite their ledgers
+or reconstruct unproved authority to force a resume.
+
+The [hosted acceptance runner](docs/HOSTED_E2E_ACCEPTANCE.md) preserves sandboxing
+and scoped public APIs. Its GitHub transport fault injection acts only after
+real successful test-branch operations. Rehearsal uses faux/local-bare transport
+and is not real-provider or real-remote certification. A stopped parent or a
+kernel-blocked child is not a joined process tree. The runner retains test state
+on uncertain shutdown instead of silently claiming cleanup.
+
 ## Additional bounded production controls
 
 The [residual acceptance map](docs/RESIDUAL_ACCEPTANCE.md) documents the supported
@@ -80,3 +104,11 @@ The hosted-browser CI uses only scripted faux responses and no account credentia
 or remote publication. Real OAuth and same-repository publication are separate,
 explicitly authorized local acceptance modes. Success never certifies deployment
 TLS, tenant separation, provider budgets, hard quotas, or independent security review.
+
+## Owner-approved local live acceptance (not production qualification)
+
+The [actual local Pi/PI WEB/Luna and GitHub test-branch receipt](docs/HOSTED_E2E_LIVE_ACCEPTANCE_2026-10-15.md) passed on 2026-10-15 (PR #100 to synthetic test base). This verifies one approved single-tenant product path, not deployed TLS, publisher/process identity separation, hard CPU/RAM/PID/disk limits, tenant isolation, exact spend or physical native-session/worktree GC. Production qualification remains open in #86/#89/#5.
+
+## Opt-in automatic diagnostic authority
+
+The [bounded diagnostic policy](docs/ADR19_DIAGNOSTICS_AND_COCKPIT.md) is Durable-only and off by default. Only an explicit committed QC fail and known complete host test outcome can atomically create one diagnostic episode per Task. Its two readonly investigators and synthesis have disjoint immutable request/tool shares and a common absolute deadline; current host limits remain the ceiling. Authentication, sandbox, timeout, unproved input and verification truncation never trigger automatic privilege or budget expansion. Model text cannot resume held implementation; only an explicit idempotent human decision can. New UI scope/run checks supplement, not replace, the existing server authorization and no-replay controls.

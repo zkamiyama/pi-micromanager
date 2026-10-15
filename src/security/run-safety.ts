@@ -56,6 +56,11 @@ export class RunSafetyLedger {
       this.db.exec("COMMIT");return this.get(key)!;
     }catch(error){this.db.exec("ROLLBACK");throw error;}
   }
+  hasCapacity(limits:RunLimits):boolean{
+    validateRunLimits(limits);
+    const row=this.db.prepare("SELECT COUNT(*) AS n FROM safety_runs WHERE outcome IS NULL OR outcome='uncertain'").get() as {n:number};
+    return row.n<limits.maxConcurrentRuns;
+  }
   assertActive(key:string,now=Date.now()):RunSafetyRecord{
     const r=this.get(key);if(!r)throw new Error("Missing frozen runtime contract");
     if(r.outcome)throw new Error("Run has a terminal runtime outcome: "+r.outcome);

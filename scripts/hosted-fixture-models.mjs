@@ -26,6 +26,7 @@ export function hostedFixtureModels(runtime){
    if(!called('write'))return use('write',{path:'acceptance.txt',content:'synthetic acceptance confirmed\n'});
    if(!called('mm_git_commit'))return use('mm_git_commit',{message:'test: commit synthetic acceptance fixture'});
   }else if(names.has('mm_qc_report')){
+   if(!called('mm_qc_report'))await delay(5000,undefined,{signal:options?.signal});
    if(names.has('mm_final_qc_contract')&&!called('mm_final_qc_contract'))return use('mm_final_qc_contract',{index:0});
    if(!called('read'))return use('read',{path:'acceptance.txt'});
    if(!called('mm_qc_report'))return use('mm_qc_report',{verdict:'pass',summary:'Read the committed synthetic fixture; host independently verifies SHA and test execution.'});

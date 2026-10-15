@@ -99,3 +99,9 @@ security, branch protection and code review policy.
   unverified/deferred.
 - This is a meaningful ADR **staging** path, not automated GitHub PR creation
   or knowledge promotion without a human review.
+
+## Captured-byte proof follow-up (2026-10-15)
+
+Screenshot capture now holds an exact physical Workspace operation lease and hashes the **buffer actually read** as a Git blob (SHA-1 or SHA-256, matching the repository object format). Two matching path observations before/after a read are insufficient: an ABA swap can restore the original path while different bytes were captured. The final source HEAD/clean state, Workflow revision and QC Run/session/evidence identity are revalidated before immutable metadata is stored. A changed snapshot rejects the capture; a finished read failure releases its read-operation lease without granting a new worker or silently storing a stale image. Disposable real-Git regressions reproduce both former acceptance errors and test SHA-256 object format and concurrent admission exclusion. This strengthens the existing capture path; it is not automatic browser screenshot production, general image GC or ADR PR publishing.
+
+The repository-file read itself is bounded to the already-approved size plus one overflow-detection byte. A file growing after open is rejected without an unbounded buffer allocation; the output record is still bound to the actual captured Git blob.

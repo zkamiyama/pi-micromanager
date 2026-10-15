@@ -19,10 +19,12 @@ import type {AutopilotLedger,ModelProfile} from "../automation/ledger.js";
 import type {RunReport} from "../automation/report.js";
 import {readonlyDiscoveryTools} from "./repository-discovery.js";
 import {productionPolicy,assertProductionModel} from "../security/policy.js";
+import {validateModelAuthFile} from "../security/auth-source.js";
 import {productionTools} from "./production-tools.js";
 import {sandboxExec,inspectSandboxWorkspace} from "../security/sandbox.js";
 import {reportTools} from "./durable-reports.js";
 import {withModelBudget} from "../security/model-boundary.js";
+import {validateDiagnosticBudget} from "../core/automatic-diagnosis.js";
 import {RunSafetyLedger,DEFAULT_LIMITS,classifyInputOutcomes,type RunLimits} from "../security/run-safety.js";
 
 export type DurableKind="implementation"|"qc"|"diagnosis"|"synthesis"|"planning"|"workflow_plan";
@@ -79,7 +81,7 @@ export function durableActivity(event:AgentEvent,text:string,sequence:number):{e
   return;
 }
 export async function createDurableModels(authPath?:string):Promise<Models>{
-  return ModelRuntime.create({allowModelNetwork:false,refreshOnCreate:false,...(authPath?{authPath}:{})});
+  return ModelRuntime.create({allowModelNetwork:false,refreshOnCreate:false,...(authPath?{authPath,modelsPath:null}:{})});
 }
 import {assertStorageAdmission} from "../security/storage-admission.js";
 export class DurableRunHost {
@@ -122,6 +124,10 @@ export class DurableRunHost {
     if(this.closing)throw new Error("Durable host shutting down");
   }
   connected(id:string):boolean{return this.active.get(id)?.closed===false;}
+  hasAdmissionCapacity():boolean{
+    this.assertLive();
+    return this.safety.hasCapacity(productionPolicy(this.options.dataDirectory)?.limits??this.options.limits??DEFAULT_LIMITS);
+  }
   /** No persisted provisional report, missing outcome, or interrupted turn may
    * authorize QC, planning, implementation, or human proposal acceptance.
    * Call at the workflow transition boundary, not from a model-provided tool. */
@@ -134,7 +140,10 @@ export class DurableRunHost {
   }
   private configuredModels():Promise<Models>{
     if(this.options.models)return Promise.resolve(this.options.models);
-    if(!this.modelsPromise)this.modelsPromise=createDurableModels().catch(error=>{this.modelsPromise=undefined;throw error;});
+    const policy=productionPolicy(this.options.dataDirectory);
+    const authFile=policy?.modelAuthFile;
+    if(authFile)validateModelAuthFile(authFile,[...policy.projectRoots,this.options.dataDirectory]);
+    if(!this.modelsPromise)this.modelsPromise=createDurableModels(authFile).catch(error=>{this.modelsPromise=undefined;throw error;});
     return this.modelsPromise;
   }
   private async validatedModels(model:ModelProfile):Promise<Models>{
@@ -167,6 +176,20 @@ export class DurableRunHost {
   private current(b:AgentBinding):AgentBinding|undefined{
     return this.options.agents.getRun(b.projectId,b.orchestraWorkspaceId,b.workflowId,b.runId);
   }
+  private safetyContract(r:Reservation,cwd:string,kind:DurableKind,model:ModelProfile,startedAt:number){
+    const base=productionPolicy(this.options.dataDirectory)?.limits??this.options.limits??DEFAULT_LIMITS;
+    const raw=this.options.ledger.findLaunch(r)?.diagnosticBudget;
+    const budget=raw===undefined?undefined:validateDiagnosticBudget(raw);
+    if(budget&&(!["diagnosis","synthesis"].includes(kind)||budget.deadline-startedAt<1000))
+      throw new Error("Diagnostic episode deadline exhausted or wrong Run kind");
+    const limits=budget?{...base,maxModelRequests:Math.min(base.maxModelRequests,budget.maxModelRequests),
+      maxToolCalls:Math.min(base.maxToolCalls,budget.maxToolCalls),
+      maxRunMs:Math.min(base.maxRunMs,budget.deadline-startedAt)}:base;
+    // Keep legacy normal-Run fingerprints stable, but bind episode authority
+    // into the immutable runtime contract so missing/replaced launch data rejects.
+    const fingerprint=hash(JSON.stringify(budget?[kind,cwd,model,budget]:[kind,cwd,model]));
+    return {limits,fingerprint,maxOutputTokens:budget?.maxOutputTokens};
+  }
   private async open(binding:AgentBinding,cwd:string,kind:DurableKind,model:ModelProfile):Promise<Active>{
     this.assertLive();
     const r=this.reservation(binding),sid=identity(r),key=sessionHash(r);
@@ -179,8 +202,8 @@ export class DurableRunHost {
     const future=(async()=>{
       const models=await this.validatedModels(model);
       if(this.closing)throw new Error("Durable host shutting down during open");
-      const record=this.safety.reserve(key,hash(JSON.stringify([kind,canonical,model])),
-        productionPolicy(this.options.dataDirectory)?.limits??this.options.limits??DEFAULT_LIMITS,Date.parse(binding.createdAt));
+      const contract=this.safetyContract(r,canonical,kind,model,Date.parse(binding.createdAt));
+      const record=this.safety.reserve(key,contract.fingerprint,contract.limits,Date.parse(binding.createdAt));
       const registry=createRegistry();
       const finalQc=kind==="qc"&&binding.taskId==="mm-final-integration";
       const contracts=finalQc?this.options.finalContracts?.(binding):undefined;
@@ -206,7 +229,10 @@ export class DurableRunHost {
       },Date.parse(binding.createdAt),contracts?()=>seen.size===contracts.length:undefined);
       const provided=kind==="qc"?reports.qc:kind==="planning"?reports.plan:kind==="workflow_plan"?reports.proposal:reports.task;
       const allowedMerges=production&&kind==="implementation"&&binding.taskId==="mm-final-integration"?
-        this.options.ledger.launchFor(binding).requiredAncestors??[]:[];
+        this.options.ledger.launchFor(binding).allowedMergeShas??[]:[];
+      if(production&&kind==="implementation"&&binding.taskId==="mm-final-integration"&&
+        (!allowedMerges.length||allowedMerges.length>64||allowedMerges.some(sha=>!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha))))
+        throw new Error("Final integration lacks a frozen broker merge allowlist; legacy Run needs reconciliation");
       const coding=(production?productionTools(canonical,kind==="implementation",allowedMerges,
         production,()=>this.safety.assertActive(key)):CodingTools.tools??[]).map(tool=>{
         if(tool.name==="read")return {...tool,replay:"safe" as const};
@@ -235,7 +261,7 @@ export class DurableRunHost {
       registry.install(defineExtension({name:"micromanager-durable-reports",
         tools:budgetedTools([provided,...(contractTool?[contractTool]:[]),...discovery])}));
       const harness=await Harness.open(await openNodeSqliteStorage(this.path(r)),{
-        models:withModelBudget(models,()=>{this.assertLive();this.safety.consume(key,"model");}),registry,settings:{toolExecution:"sequential",compaction:{enabled:false},
+        models:withModelBudget(models,()=>{this.assertLive();this.safety.consume(key,"model");},contract.maxOutputTokens),registry,settings:{toolExecution:"sequential",compaction:{enabled:false},
           stream:{maxRetries:0,timeoutMs:120_000},retry:{maxRetries:2},
           progress:{partialIntervalMs:100,outputIntervalMs:100}},
         env:({cwd})=>{
@@ -354,8 +380,8 @@ export class DurableRunHost {
     this.assertLive();spec.assertAdmitted?.();
     if(production)assertStorageAdmission(this.options.dataDirectory,production.storage);
     const startedAt=Date.now();
-    this.safety.reserve(key,hash(JSON.stringify([spec.kind,realpathSync(spec.cwd),spec.model])),
-      production?.limits??this.options.limits??DEFAULT_LIMITS,startedAt);
+    const contract=this.safetyContract(r,realpathSync(spec.cwd),spec.kind,spec.model,startedAt);
+    this.safety.reserve(key,contract.fingerprint,contract.limits,startedAt);
     this.safety.assertActive(key);
     const reserved=this.options.agents.reserve(r,new Date(startedAt).toISOString());this.options.changed(reserved);
     const active=await this.open(reserved,spec.cwd,spec.kind,spec.model);

@@ -25,6 +25,7 @@ interface GridState {
   history:LiveBinding[];
   workflows:WorkflowInstance[];
   selectedSessionId:string;
+  inspectorOpen:boolean;
   workflowId:string;
   taskId:string;
   targetWorkspaceId:string;
@@ -69,7 +70,7 @@ function stateFor(ctx:WorkspacePanelContext):GridState{
     let stored:string|null=null;
     try{if(typeof localStorage!=="undefined")stored=localStorage.getItem(canvasStorageKey(k));}catch{}
     const preferences=parseCanvasPreferences(stored);
-    s={active:[],history:[],workflows:[],selectedSessionId:"",workflowId:"",taskId:"",
+    s={active:[],history:[],workflows:[],selectedSessionId:"",inspectorOpen:false,workflowId:"",taskId:"",
       targetWorkspaceId:ctx.workspace.id,provider:"openai-codex",model:"",effort:"",
       evidenceRef:"",
       density:{planner:"expanded",implementer:"compact",qc:"expanded",architect:"expanded"},
@@ -92,6 +93,7 @@ function persistCanvas(ctx:WorkspacePanelContext,s:GridState):void {
 export function selectOrchestraTask(ctx:WorkspacePanelContext,workflowId:string,taskId:string,seat:Seat):void{
   const s=stateFor(ctx);
   s.pendingTaskFocus={workflowId,taskId,seat};
+  s.inspectorOpen=true;
   s.filterRole="all";s.filterQuery="";
   s.canvasPage=0;s.canvasDimmed=false;
   s.loaded=false; // Next panel render will refresh the registry.
@@ -114,6 +116,16 @@ function validatedActivity(value:unknown):Activity|undefined{
   if(typeof e.text!=="string"||e.text.length>512||
     !Number.isSafeInteger(e.at)||!Number.isSafeInteger(e.sequence))return;
   return {kind:e.kind as string,text:e.text,at:e.at as number,sequence:e.sequence as number};
+}
+/** Resolve the same concrete Run at click time. Never substitute another seat
+ * or reuse a stale scope after navigation while an async render was pending. */
+export function resolveLiveCommandTarget(bindings:readonly LiveBinding[],captured:LiveBinding,sameScope:boolean):LiveBinding|undefined{
+  if(!sameScope||!captured.sessionId)return;
+  const keys=["projectId","orchestraWorkspaceId","workflowId","taskId","workspaceId","runId","sessionId","seat"] as const;
+  const matches=bindings.filter(b=>keys.every(k=>b[k]===captured[k]));
+  if(matches.length!==1)return;
+  const current=matches[0]!;
+  return current.connected===true&&["configured","running"].includes(current.phase)?current:undefined;
 }
 export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePanelContribution {
   let activeScope="";
@@ -332,16 +344,22 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
   function focus(ctx:WorkspacePanelContext,b:LiveBinding){
     const s=stateFor(ctx);
     if(b.sessionId)replayHistory(ctx,b.sessionId);
-    if(s.selectedSessionId===b.sessionId&&!s.canvasDimmed)return;
+    if(s.selectedSessionId===b.sessionId&&!s.canvasDimmed&&s.inspectorOpen)return;
+    s.inspectorOpen=true;
     s.selectedSessionId=b.sessionId??"";
     s.canvasDimmed=false;
     persistCanvas(ctx,s);
     refresh(ctx);
   }
-  async function sendNode(ctx:WorkspacePanelContext,b:LiveBinding){
-    const s=stateFor(ctx),key=runKey(b.workflowId,b.runId);
+  async function sendNode(ctx:WorkspacePanelContext,captured:LiveBinding){
+    const s=stateFor(ctx),key=runKey(captured.workflowId,captured.runId);
+    const b=resolveLiveCommandTarget(s.active,captured,activeScope===scope(ctx));
     const message=s.nodeDrafts.get(key)?.trim();
-    if(!message||!isCommandReady(b)||s.busy||lifetime.aborted)return;
+    if(!message||s.busy||lifetime.aborted)return;
+    if(!b){
+      s.loadStatus="Exact Run ended, disconnected, or scope changed; no command was sent.";
+      s.deliveryStatus.set(key,s.loadStatus);refresh(ctx);return;
+    }
     const action=modeFor(s,b);
     s.busy=true;refresh(ctx);
     try {
@@ -481,11 +499,11 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       });
     };
     const send=(action:"abort"|"reconnect"|"seal")=>{
-      if(!selected?.sessionId)return;
+      if(!selected?.sessionId||lifetime.aborted||activeScope!==scope(ctx))return;
       if(action==="reconnect"){void call(ctx,"agents.reconnect",{sessionId:selected.sessionId});return}
       if(action==="seal"){void call(ctx,"agents.seal",{
         sessionId:selected.sessionId,evidenceRef:s.evidenceRef});return}
-      if(!isCommandReady(selected))return;
+      if(!resolveLiveCommandTarget(s.active,selected,activeScope===scope(ctx)))return;
       void call(ctx,"agents.command",{
         sessionId:selected.sessionId,action:"abort",requestId:crypto.randomUUID(),
       });
@@ -522,7 +540,8 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
       if(!b)return null;
       const key=node.key,latest=(s.activity.get(b.sessionId??"")??[]).slice(-3);
       const ready=isCommandReady(b),expanded=(s.nodeDensity.get(key)??s.density[b.seat])==="expanded";
-      return html`<article class="mm-f-node ${s.selectedSessionId&&b.sessionId===s.selectedSessionId&&!s.canvasDimmed?"mm-f-selected":""}"
+      return html`<article class="mm-f-node ${expanded?"":"mm-f-compact"} ${s.selectedSessionId&&b.sessionId===s.selectedSessionId&&!s.canvasDimmed?"mm-f-selected":""}"
+          data-density=${expanded?"expanded":"compact"}
           style=${`left:${node.x}px;top:${node.y}px;`}
           aria-label=${"Pi Run "+b.runId} @click=${()=>focus(ctx,b)}>
         <div class="mm-f-node-head" role="group" tabindex="0"
@@ -553,6 +572,10 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
               persistCanvas(ctx,s);
               refresh(ctx);
             }}>${expanded?"−":"+"}</button>
+          <button type="button" aria-label=${"Inspect "+b.runId} title="Focus this exact Run in the scoped inspector"
+            @pointerdown=${(e:PointerEvent)=>e.stopPropagation()}
+            @keydown=${(e:KeyboardEvent)=>e.stopPropagation()}
+            @click=${(e:Event)=>{e.stopPropagation();focus(ctx,b);}}>Inspect</button>
           <span class="mm-f-drag-handle" aria-hidden="true">⠿</span>
         </div>
         <div class="mm-f-node-meta">
@@ -676,8 +699,11 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         ${s.history.map(b=>html`<button @click=${()=>focus(ctx,b)}>
           ${b.taskId} / ${b.runId} · ${b.phase}</button>`)}
       </details>
-      ${selected?html`<section class="mm-f-inspector">
+      ${selected&&s.inspectorOpen?html`<section class="mm-f-inspector" role="region" aria-label=${"Focused Run "+selected.runId} tabindex="0"
+        @keydown=${(e:KeyboardEvent)=>{if(e.key==="Escape"){s.inspectorOpen=false;s.selectedSessionId="";s.canvasDimmed=true;refresh(ctx);}}}>
+        <button type="button" aria-label="Close Run inspector" @click=${()=>{s.inspectorOpen=false;s.selectedSessionId="";s.canvasDimmed=true;refresh(ctx);}}>Close inspector</button>
         <h3>${selected.taskId} · ${selected.runId}</h3>
+        <p class="mm-f-scope" aria-label="Current Orchestra scope">Machine ${ctx.machine.id} · project ${ctx.workspace.projectId} · workspace ${ctx.workspace.id}</p>
         <small>${selected.phase} ·
           ${selected.sessionId?.startsWith("durable:")?"Pi Durable Conversation":"PI WEB native Pi Session"}
           · ${selected.sessionId??"not yet created"} · ${selected.workspaceId}</small>
@@ -755,6 +781,10 @@ const css=`
   .mm-f-card p{margin:3px 0;overflow-wrap:anywhere;white-space:pre-wrap;}
   .mm-f-inspector{border:1px solid var(--pi-accent-border);border-radius:8px;padding:10px;margin:14px 0;}
   .mm-f-inspector h3{margin:0 0 4px;} .mm-f-inspector textarea{display:block;margin:8px 0;}
+  .mm-f-inspector{box-sizing:border-box;max-width:100%;overflow-wrap:anywhere;}
+  .mm-f-scope{font-size:11px;color:var(--pi-muted);}
+  .mm-f-compact .mm-f-node-log,.mm-f-compact .mm-f-node-compose{display:none;}
+  .mm-f-inspector:focus-visible{outline:2px solid var(--pi-accent);outline-offset:2px;}
   .mm-f-activity{max-height:240px;overflow:auto;} .mm-f-activity p{margin:3px 0;overflow-wrap:anywhere;}
   .mm-f-history{margin:12px 0;} .mm-f-history button{display:block;margin:5px 0;}
   .mm-fleet details{border-top:1px solid var(--pi-border-muted);padding:9px 0;}
