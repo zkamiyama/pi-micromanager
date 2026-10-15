@@ -30,6 +30,7 @@ export function parseHostedArguments(args){
  if(values.get('--approve-test-publication')&&!sha)throw Error('reviewed-source-required');
  return {mode,sha,receipt:values.get('--receipt'),authFile:values.get('--pi-auth-file'),publish:values.get('--approve-test-publication')===true};
 }
+export const shouldRemoveHostedFixture=(joined,status)=>joined===true&&status==='passed';
 const HERE=fileURLToPath(new URL('../',import.meta.url));
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 export async function runHosted(args){
@@ -69,7 +70,10 @@ export async function runHosted(args){
   assert.equal(receipt.playwright,JSON.parse(readFileSync(join(HERE,'package-lock.json'),'utf8')).packages['node_modules/playwright'].version);
   process.umask(0o077);root=mkdtempSync(join(tmpdir(),'mm-hosted-acceptance-'));
   const dir=name=>{const p=join(root,name);mkdirSync(p,{recursive:true,mode:0o700});return p;};
-  home=dir('home');const state=dir('state'),agent=dir('agent'),sessions=dir('sessions');project=join(root,'project');
+  home=dir('home');const state=dir('state'),agent=dir('agent'),sessions=dir('sessions'),otherProject=dir('other-project');project=join(root,'project');
+  writeFileSync(join(otherProject,'README.md'),'Separate synthetic authorized project.\n');
+  const otherInit=spawnSync('/usr/bin/git',['-C',otherProject,'init','-b','main'],{env:{PATH:'/usr/bin:/bin',HOME:home,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'},encoding:'utf8',timeout:10000});
+  if(otherInit.status!==0)throw Error('other-project-fixture-failed');
   if(options.publish){stage='publication-setup';publication=createPublicationSetup({checkout:HERE,project,home,root,sourceSha:source.commit});}
   else mkdirSync(project,{mode:0o700});
   const listener=createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));
@@ -111,7 +115,7 @@ export async function runHosted(args){
   receipt.selection={implementer:model,qc:qcModel};receipt.maxOutputTokensPerRequest=4096;
   const config=join(root,'config.json');
   writeFileSync(config,JSON.stringify({host:'127.0.0.1',port,spawnSessions:false,subsessions:false,
-   plugins:{micromanager:{enabled:true,settings:{productionSecurity:{mode:'production',projectRoots:[project],
+   plugins:{micromanager:{enabled:true,settings:{productionSecurity:{mode:'production',projectRoots:[project,otherProject],
     models:[{provider:model.provider,model:model.model}],
     ...(publication?{publication:[{repository:publication.repository,baseBranch:publication.base}]}:{}),limits:{maxConcurrentRuns:4,maxModelRequests:24,maxToolCalls:64,maxRunMs:300000}}}}}}));
   mkdirSync(join(state,'plugins'));symlinkSync(fixturePackage,join(state,'plugins/micromanager'));
@@ -154,12 +158,10 @@ export async function runHosted(args){
      'Write only acceptance.txt with exactly synthetic acceptance confirmed followed by a newline. Commit it using mm_git_commit. Do not modify any other file or publish.',
     acceptanceCriteria:['acceptance.txt is exactly synthetic acceptance confirmed followed by one newline.','Existing acceptance.test.mjs passes without edits.']}))});
   stage='workflow-create';await call('create',definition('pair',['alpha','beta','gamma','delta']));await call('auto.configure',{workflowId:'pair',config:profile});
-  let wf=await call('get','pair');await call('act',{workflowId:'pair',expectedRevision:wf.revision,commandId:'acceptance-intervention',
-   action:{type:'request_intervention',interventionId:'review',targetTaskId:'alpha',afterQcRunId:'next',
-    instruction:'Use two independent read-only reviewers on the committed acceptance.txt. Compare safety and compatibility, synthesize findings, then hold for human resume. Use only '+model.provider+'/'+model.model+'.'}});
+  let wf;
   await call('auto.start',{workflowId:'pair'});
   await page.getByRole('button',{name:'Orchestra',exact:true}).first().click();
-  stage='parallel-and-steer';let peak=0,steered=false;
+  stage='parallel-and-steer';let peak=0,steered=false,qcSteered=false,humanRequested=false;
   await wait(async()=>{
    const runs=(await call('agents.list',{view:'all'})).filter(r=>r.workflowId==='pair');
    peak=Math.max(peak,runs.filter(r=>r.phase==='running').length);receipt.peakRunning=peak;
@@ -170,16 +172,49 @@ export async function runHosted(args){
     const node=page.locator('article[aria-label="Pi Run '+active.runId+'"]');
     stage='cockpit-expand';await node.getByRole('button',{name:'Expand '+active.runId,exact:true}).click();
     stage='cockpit-collapse';await node.getByRole('button',{name:'Collapse '+active.runId,exact:true}).click();
+    assert.equal(await node.getAttribute('data-density'),'compact');
+    assert.equal(await node.locator('.mm-f-node-compose').isVisible(),false);
+    await node.getByRole('button',{name:'Expand '+active.runId,exact:true}).click();
     stage='cockpit-message';await node.getByLabel('Delivery mode for '+active.runId,{exact:true}).selectOption('steer');
     await node.getByLabel('Message '+active.runId,{exact:true}).fill('Keep the exact synthetic task contract and avoid any external operation.');
     await node.getByRole('button',{name:'Send to '+active.runId,exact:true}).click();
     await node.locator('.mm-f-receipt').filter({hasText:/Command acknowledged/}).waitFor();
     checks.cockpitExpandCollapse='passed';checks.browserSteerButton='passed';steered=true;
    }
+   const qc=runs.find(r=>r.taskId==='alpha'&&r.seat==='qc'&&r.phase==='running');
+   if(qc&&!humanRequested){
+    stage='intervention-during-qc';const live=await call('get','pair');
+    assert.equal(live.tasks.alpha.status,'awaiting_qc');
+    await call('act',{workflowId:'pair',expectedRevision:live.revision,commandId:'acceptance-intervention',
+     action:{type:'request_intervention',interventionId:'review',targetTaskId:'alpha',afterQcRunId:qc.runId,
+      instruction:'Use exactly two independent read-only reviewers on committed acceptance.txt. Compare safety and compatibility, synthesize findings, then hold for human resume. Use only '+model.provider+'/'+model.model+'.'}});
+    checks.humanBarrierDuringQc='passed';humanRequested=true;
+    await page.getByRole('button',{name:'Refresh runs',exact:true}).click();
+    const node=page.locator('article[aria-label="Pi Run '+qc.runId+'"]');
+    await node.waitFor();
+    if(await node.getAttribute('data-density')!=='expanded')await node.getByRole('button',{name:'Expand '+qc.runId,exact:true}).click();
+    stage='qc-inspector';await node.getByRole('button',{name:'Inspect '+qc.runId,exact:true}).focus();
+    await page.keyboard.press('Enter');
+    const inspector=page.getByRole('region',{name:'Focused Run '+qc.runId,exact:true});
+    await inspector.waitFor();assert.equal(await inspector.getByLabel('Current Orchestra scope').isVisible(),true);
+    stage='qc-direct-steer';await node.getByLabel('Delivery mode for '+qc.runId,{exact:true}).selectOption('steer');
+    await node.getByLabel('Message '+qc.runId,{exact:true}).fill('Continue independent QC of the same frozen source. Do not edit, publish, or waive a failed check; the human hold remains authoritative.');
+    await node.getByRole('button',{name:'Send to '+qc.runId,exact:true}).click();
+    await node.locator('.mm-f-receipt').filter({hasText:'Command acknowledged by '+qc.runId+'.'}).waitFor();
+    qcSteered=true;checks.directQcSteer='passed';checks.focusedQcInspector='passed';
+    // Presentational changes must not change execution authority or spawn Runs.
+    const width=page.viewportSize();await page.setViewportSize({width:720,height:960});
+    assert.equal(await inspector.isVisible(),true);await page.setViewportSize(width);
+    checks.narrowViewportInspector='passed';
+    await inspector.focus();await page.keyboard.press('Escape');
+    await inspector.waitFor({state:'detached'});
+    checks.inspectorKeyboardDismiss='passed';
+   }
    const state=await call('get','pair'),amendment=state.amendments.find(a=>a.id==='review');
    return amendment?.synthesisTaskId&&state.tasks[amendment.synthesisTaskId]?.status==='done'&&state;
   },options.mode==='faux'?120000:480000);
-  assert.ok(peak>=4);assert.ok(steered);checks.parallelRuns='passed';checks.steerReceipt='passed';receipt.peakRunning=peak;
+  assert.ok(peak>=4);assert.ok(steered);assert.ok(qcSteered);assert.ok(humanRequested);
+  checks.parallelRuns='passed';checks.steerReceipt='passed';receipt.peakRunning=peak;
   wf=await call('get','pair');assert.equal(wf.tasks.alpha.status,'held');
   const resume={workflowId:'pair',expectedRevision:wf.revision,commandId:'acceptance-resume',action:{type:'resume_after_diagnosis',amendmentId:'review',decision:'accept_pass'}};
   const resumed=await call('act',resume),repeated=await call('act',resume);assert.equal(resumed.revision,repeated.revision);
@@ -193,6 +228,29 @@ export async function runHosted(args){
   const metrics=()=>{const db=new DatabaseSync(join(state,'plugin-data/micromanager/run-safety.sqlite'),{readOnly:true});
    try{return db.prepare('SELECT COALESCE(SUM(requests),0) AS requests,COALESCE(SUM(tools),0) AS tools FROM safety_runs').get();}finally{db.close();}};
   const before=metrics();
+  stage='scope-isolation';
+  const originalScope=await page.evaluate(()=>({projectId:globalThis.__mmAcceptanceContext.workspace.projectId,
+    workspaceId:globalThis.__mmAcceptanceContext.workspace.id,machineId:globalThis.__mmAcceptanceContext.machine.id}));
+  await page.getByRole('button',{name:'Show Actions',exact:true}).click();
+  await page.locator('button[title="Add Project"]').click();
+  await page.getByPlaceholder('/path/to/project or ~/code/project').fill(otherProject);
+  await page.getByRole('button',{name:'Add project',exact:true}).click();
+  await page.getByRole('button',{name:'Micromanager',exact:true}).first().click();
+  await page.waitForFunction(project=>globalThis.__mmAcceptanceContext?.workspace.projectId!==project,originalScope.projectId);
+  assert.deepEqual(await call('list',null),[]);
+  assert.deepEqual(await call('agents.list',{view:'all'}),[]);
+  let foreignDenied=false;try{await call('get','pair');}catch{foreignDenied=true;}
+  assert.ok(foreignDenied,'Another authorized project cannot read the original Workflow');
+  await page.getByRole('button',{name:'Orchestra',exact:true}).first().click();
+  assert.equal(await page.locator('article.mm-f-node').count(),0);
+  assert.equal(await page.locator('.mm-f-inspector').count(),0);
+  await page.evaluate(scope=>globalThis.__mmAcceptanceContext.navigate({...scope,view:'workspace'}),originalScope);
+  await page.getByRole('button',{name:'Micromanager',exact:true}).first().click();
+  await page.waitForFunction(scope=>globalThis.__mmAcceptanceContext?.workspace.projectId===scope.projectId&&
+    globalThis.__mmAcceptanceContext?.workspace.id===scope.workspaceId,originalScope);
+  assert.equal((await call('get','pair')).definition.id,'pair');
+  assert.deepEqual(metrics(),before);
+  checks.crossProjectReadIsolation='passed';checks.publicScopeNavigation='passed';
   const restart=async()=>{
    await stop(daemon);daemon=launch(join(bin,'sessiond.js'));
    // The gateway may cache an unavailable plugin while sessiond is booting.
@@ -227,7 +285,7 @@ export async function runHosted(args){
    stage='product-publication';receipt.remotePublication=await runPublicationTrial({setup:publication,call,wait,restart,profile,definition,onStage:s=>{stage='publication-'+s;}});
   }
   receipt.status='passed';receipt.code='ok';exit=0;
- }catch{receipt.status=root?'failed':'blocked';receipt.code=stage;exit=root?1:2;}
+ }catch(error){if(options?.mode==='faux')process.stderr.write('[credential-free fixture] '+String(error).slice(0,1200)+'\n');receipt.status=root?'failed':'blocked';receipt.code=stage;exit=root?1:2;}
  finally{
   clearTimeout(hardTimer);await cleanup();process.removeListener('SIGINT',onSignal);process.removeListener('SIGTERM',onSignal);
   if(!joined){receipt.status='failed';receipt.code='shutdown-unproved';exit=1;}
@@ -235,7 +293,7 @@ export async function runHosted(args){
    const trial=JSON.parse(readFileSync(join(root,'remote-trial.json'),'utf8'));
    receipt.trialReferences={repository:trial.repository,base:trial.base,source:trial.source,mainBefore:trial.mainBefore};
   }
-  const remove=joined&&root&&(!options?.publish||receipt.status==='passed');
+  const remove=root&&shouldRemoveHostedFixture(joined,receipt.status);
   receipt.cleanup=remove?'removed':root?'retained':'not-created';
   if(remove)rmSync(root,{recursive:true,force:true});
   else if(root)receipt.retainedFixture=root.split('/').at(-1);

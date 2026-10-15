@@ -7,6 +7,7 @@ import type { Seat, AgentBinding } from "../runtime/registry.js";
 import { parseRunReport, type RunReport } from "./report.js";
 import type {LaunchJob} from "./engine.js";
 import type {WorkflowAction} from "../core/workflow.js";
+import {parseAutomaticDiagnosisPolicy,type AutomaticDiagnosisPolicy} from "../core/automatic-diagnosis.js";
 
 export interface ModelProfile { provider:string; model:string; effort?:string }
 export interface PublicationConfig {
@@ -27,6 +28,8 @@ export interface AutopilotConfig {
   /** Newly admitted Workflows use Pi Durable unless native Pi is selected.
    * Legacy persisted records are migrated as pi-web, not silently switched. */
   runtime:AgentRuntime;
+  /** Explicit finite diagnostic opt-in; native execution cannot enforce it. */
+  automaticDiagnosis?:AutomaticDiagnosisPolicy;
   /** Explicitly serialize implementation DAGs to avoid divergent pre-QC fan-in merges. */
   convergenceMode?:"linearized";
   /** No final Git integration for legacy configurations unless set explicitly. */
@@ -156,7 +159,9 @@ export function parseAutopilotConfig(value:unknown):AutopilotConfig{
   }
   if(finalization&&!publication)
     throw new Error("Final integration requires a configured GitHub publication destination");
-  return {runtime,workspaces,
+  const automaticDiagnosis=parseAutomaticDiagnosisPolicy(raw.automaticDiagnosis);
+  if(automaticDiagnosis&&runtime!=="durable")throw new Error("Automatic diagnosis requires the budgeted Durable runtime");
+  return {runtime,workspaces,...(automaticDiagnosis?{automaticDiagnosis}:{}),
     ...(raw.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:raw.maxConcurrentRuns as number}),
     ...(raw.maxManagedWorktrees===undefined?{}:{maxManagedWorktrees:raw.maxManagedWorktrees as number}),
     ...(raw.convergenceMode==="linearized"?{convergenceMode:"linearized" as const}:{}),
@@ -313,11 +318,15 @@ export class AutopilotLedger {
       .get(scope,job.workflowId,job.runId) as {job_json:string};
     if(stored.job_json!==json)throw new Error("Initial Run contract changed after reservation");
   }
-  launchFor(binding:AgentBinding):LaunchJob {
+  findLaunch(binding:Pick<AgentBinding,"projectId"|"orchestraWorkspaceId"|"workflowId"|"runId">):LaunchJob|undefined {
     const row=this.db.prepare("SELECT job_json FROM autopilot_launches WHERE scope=? AND workflow_id=? AND run_id=?")
       .get(automationScope(binding.projectId,binding.orchestraWorkspaceId),binding.workflowId,binding.runId) as {job_json:string}|undefined;
-    if(!row)throw new Error("No frozen initial input exists for this legacy Run; never reconstruct or replay it blindly");
-    return JSON.parse(row.job_json) as LaunchJob;
+    return row?JSON.parse(row.job_json) as LaunchJob:undefined;
+  }
+  launchFor(binding:AgentBinding):LaunchJob {
+    const result=this.findLaunch(binding);
+    if(!result)throw new Error("No frozen initial input exists for this legacy Run; never reconstruct or replay it blindly");
+    return result;
   }
   recordReport(binding:AgentBinding,value:unknown):RunReport {
     if(!binding.sessionId)throw new Error("A report requires an attached Pi Session");

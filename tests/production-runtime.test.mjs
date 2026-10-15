@@ -108,3 +108,47 @@ test('S01 planning: provisional typed Plan followed by provider failure stays no
   assert.equal(x.faux.state.callCount,count,'Failed Plan must not restart its model');
  }finally{await x.close();}
 });
+
+function recordDiagnosticBudget(x,changes={}){
+ const budget={episodeId:'auto-diag-'+'e'.repeat(32),maxModelRequests:1,maxToolCalls:10,
+  deadline:Date.now()+60000,maxOutputTokens:512,...changes};
+ const l=x.launch;
+ x.ledger.recordLaunch({...l.reservation,kind:l.kind,model:l.model,prompt:l.prompt,diagnosticBudget:budget});
+ return budget;
+}
+test('ADR19 actual Harness enforces a persisted diagnostic share before second model call, including reopen',async()=>{
+ const x=fixture(undefined,undefined,100000,'diagnosis');
+ try{
+  recordDiagnosticBudget(x);
+  x.faux.setResponses([fauxAssistantMessage([fauxToolCall('mm_task_report',{summary:'Provisional diagnostic report'},{id:'diagnostic-report'})],{stopReason:'toolUse'}),
+   fauxAssistantMessage('Must never be requested')]);
+  await x.host.launch(x.launch);await x.wait(()=>x.current()?.phase==='uncertain');
+  assert.equal(x.faux.state.callCount,1);
+  assert.throws(()=>x.host.assertProvedCompleted(x.current()),/persisted successful/);
+  await x.reopen();await assert.rejects(x.host.reconnect(x.current(),x.launch.cwd,'diagnosis'),/not successful/);
+  assert.equal(x.faux.state.callCount,1);
+ }finally{await x.close();}
+});
+test('ADR19 actual Harness has no successful report after diagnostic tool-share exhaustion',async()=>{
+ const x=fixture(undefined,undefined,100000,'diagnosis');
+ try{
+  recordDiagnosticBudget(x,{maxModelRequests:4,maxToolCalls:1});
+  x.faux.setResponses([fauxAssistantMessage([
+   fauxToolCall('read',{path:join(x.launch.cwd,'source.txt')},{id:'first'}),
+   fauxToolCall('mm_task_report',{summary:'Not authoritative after tool exhaustion'},{id:'too-many'}),
+  ],{stopReason:'toolUse'}),fauxAssistantMessage('No report rescue')]);
+  await x.host.launch(x.launch);await x.wait(()=>x.current()?.phase==='uncertain');
+  assert.equal(x.faux.state.callCount,1);assert.equal(x.ledger.report(x.current()),undefined);
+  assert.throws(()=>x.host.assertProvedCompleted(x.current()),/persisted successful/);
+ }finally{await x.close();}
+});
+test('ADR19 expired diagnostic deadline and an implementation using diagnostic-only authority are refused before input',async()=>{
+ for(const kind of ['diagnosis','implementation']){
+  const x=fixture(undefined,undefined,100000,kind);
+  try{
+   recordDiagnosticBudget(x,{deadline:kind==='diagnosis'?Date.now()-1:Date.now()+60000});
+   await assert.rejects(x.host.launch(x.launch),/deadline exhausted|wrong Run kind/);
+   assert.equal(x.faux.state.callCount,0);assert.equal(x.current(),undefined);
+  }finally{await x.close();}
+ }
+});

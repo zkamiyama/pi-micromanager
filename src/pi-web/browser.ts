@@ -1220,7 +1220,11 @@ const plugin: PiWebPlugin = {
                   !state.finalWorktreeWorkspaceId.trim()}
                   @click=${()=>insertFinalWorkspace(context)}>
                   Enable full-DAG integration + YOLO PR auto-merge</button>
-                <textarea id="mm-auto-config" rows="12" spellcheck="false"
+                <p>Optional <code>automaticDiagnosis</code> is off unless explicitly configured. It requires Durable,
+                  allocates exactly two read-only diagnoses plus one synthesis once per Task, and never resumes implementation without a human decision.
+                  Configure finite <code>afterFailures</code>, <code>maxModelRequests</code>, <code>maxToolCalls</code>,
+                  <code>maxDurationMs</code>, and <code>maxOutputTokens</code> in the JSON below. Host limits still apply.</p>
+                <textarea id="mm-auto-config" aria-label="Autopilot configuration JSON" rows="12" spellcheck="false"
                   .value=${state.autopilotDraft} ?disabled=${state.busy||state.autopilotEnabled}
                   @input=${(e:Event)=>{state.autopilotDraft=(e.target as HTMLTextAreaElement).value;}}></textarea>
                 <div class="mm-actions">

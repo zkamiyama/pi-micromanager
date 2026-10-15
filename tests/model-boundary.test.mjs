@@ -27,3 +27,16 @@ test('Model wrapper preserves private-field SDK receivers without charging local
  assert.equal(bounded.getModel(),7);assert.equal(requests,0);
  assert.equal(bounded.streamSimple(),7);assert.equal(requests,1);
 });
+
+test('ADR19 diagnostic output cap preserves smaller requests and cancellation without mutating caller options',()=>{
+ let received,admitted=0;
+ const runtime={streamSimple(...a){received=a;return 'stream';},cancelDeferred(){return 'cancelled';},generateImages(){throw Error('must not delegate');}};
+ const models=withModelBudget(runtime,()=>admitted++,512);
+ const signal=new AbortController().signal,opts={maxTokens:99999,signal};
+ assert.equal(models.streamSimple({}, {},opts),'stream');assert.equal(received[2].maxTokens,512);
+ assert.equal(received[2].signal,signal);assert.equal(opts.maxTokens,99999);
+ models.streamSimple({}, {},{maxTokens:128});assert.equal(received[2].maxTokens,128);
+ assert.equal(models.cancelDeferred(),'cancelled');assert.equal(admitted,2);
+ assert.throws(()=>models.generateImages(),/not bounded/);
+ assert.throws(()=>withModelBudget(runtime,()=>{},Infinity),/output bound/);
+});

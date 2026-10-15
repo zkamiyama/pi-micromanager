@@ -1,6 +1,7 @@
 /** Durable DAG-to-Pi dispatcher. No unverified model prose advances a Task. */
-import { WorkflowError, type WorkflowInstance, type WorkflowAction, type TaskState } from "../core/workflow.js";
+import { WorkflowError, automaticTaskContract, type WorkflowInstance, type WorkflowAction, type TaskState } from "../core/workflow.js";
 import {internalRunId,internalCommandId} from "../core/identifiers.js";
+import {automaticDiagnosisDirective,type DiagnosticRunBudget} from "../core/automatic-diagnosis.js";
 import { WorkflowStore } from "../core/store.js";
 import { AgentRegistry, type AgentBinding, type Seat } from "../runtime/registry.js";
 import { StaleControlError, AutopilotLedger, type AutopilotConfig, type ModelProfile, type AutopilotRecord } from "./ledger.js";
@@ -17,12 +18,18 @@ export interface LaunchJob {
   requiredAncestors?:string[];
   /** Final-only broker capability, distinct from ancestors required before launch. */
   allowedMergeShas?:string[];
+  /** Fixed share of one automatic diagnostic episode, never a host-limit increase. */
+  diagnosticBudget?:DiagnosticRunBudget;
 }
 export interface Verification {
   headSha:string;clean:boolean;testsPassed:boolean;details:string;
+  /** Known terminal test-process outcome, distinct from a passing assertion. */
+  testsCompleted?:boolean;
 }
 export interface ExecutorPort {
   launch(job:LaunchJob):Promise<AgentBinding>;
+  /** Read-only admission hint; the runtime still atomically reserves capacity. */
+  canLaunch?(job:LaunchJob):boolean;
   verify(binding:AgentBinding,config:AutopilotConfig,expectedSha?:string):Promise<Verification>;
   checkSnapshot?(binding:AgentBinding,expectedSha:string):Promise<void>;
   /** Re-read an already settled Pi Session's durable report without replaying a turn. */
@@ -260,7 +267,13 @@ export class AutopilotEngine {
     return this.workflow.act(record.projectId,record.orchestraWorkspaceId,record.workflowId,
       current.revision,commandId,action);
   }
-  private async launch(job:LaunchJob):Promise<AgentBinding>{
+  private async launch(job:LaunchJob):Promise<AgentBinding|undefined>{
+    if(this.port.canLaunch&&!this.port.canLaunch(job)){
+      const current=this.ledger.get(job.projectId,job.orchestraWorkspaceId,job.workflowId);
+      if(current?.enabled&&current.generation===job.controlGeneration)
+        this.ledger.setProgress(current,true,"Waiting for host-wide Run capacity; no Session created");
+      return;
+    }
     this.ledger.recordLaunch(job);
     return this.port.launch(job);
   }
@@ -320,6 +333,10 @@ export class AutopilotEngine {
       if(!target)throw new Error("Orphan planning amendment");
       if(plannerSlots(current,known)>=current.definition.maxParallelByRole.planner)
         continue;
+      // A human planner is a real Run too. Defer its admission while occupied,
+      // then finalize completed workers below instead of pausing at the runtime.
+      const occupied=known.filter(b=>["reserved","created","connected","configured","running","uncertain","blocked"].includes(b.phase)).length;
+      if(record.config.maxConcurrentRuns!==undefined&&occupied>=record.config.maxConcurrentRuns)continue;
       const roles=record.config.models;
       const prompt=boundedPrompt(
         "You are Sol, planning a human-requested Task-scoped QC investigation. READ ONLY. "+
@@ -408,6 +425,8 @@ export class AutopilotEngine {
     }
     const next=planNext(current,known,record.config);
     if(next?.action==="start"){
+      const automatic=automaticTaskContract(current,current.tasks[next.taskId]!);
+      if(automatic&&automatic.budget.deadline<=Date.now())throw new Error("Automatic diagnosis deadline exhausted; human review required");
       const nextAttempt=current.tasks[next.taskId]!.attempts+1;
       if(current.tasks[next.taskId]?.spec.kind==="implementation"&&
         this.port.authorizeImplementation){
@@ -432,6 +451,8 @@ export class AutopilotEngine {
     }
     if(next?.action==="launch"){
       const task=current.tasks[next.taskId]!;
+      const automatic=automaticTaskContract(current,task);
+      if(automatic&&automatic.budget.deadline<=Date.now())throw new Error("Automatic diagnosis deadline exhausted; human review required");
       const workspaceId=workspaceFor(task,next.kind,record.config,o);
       if(!workspaceId)throw new Error("No registered linked worktree for Task "+task.spec.id);
       const sources=task.spec.dependsOn.map(d=>known.find(b=>b.taskId===d.taskId&&b.phase==="sealed"))
@@ -468,7 +489,8 @@ export class AutopilotEngine {
         ...(requiredAncestors.length?{requiredAncestors}:{}),
         ...(allowedMergeShas.length?{allowedMergeShas}:{}),
         // A Task's implementer override must never replace its independent QC profile.
-        model:task.spec.model&&next.kind!=="qc"?(()=>{
+        ...(automatic?{diagnosticBudget:automatic.budget}:{}),
+        model:automatic?automatic.model:task.spec.model&&next.kind!=="qc"?(()=>{
           const raw=task.spec.model!;
           const cut=raw.indexOf("/");
           return cut>0?{...record.config.models[next.seat],provider:raw.slice(0,cut),
@@ -588,7 +610,10 @@ export class AutopilotEngine {
       const verdict=!verify.testsPassed?"fail":modelVerdict;
       action={type:"qc_finalized",taskId:task.spec.id,runId:binding.runId,
         headSha:pending.headSha,criteriaRevision:pending.criteriaRevision,
-        attempt:pending.attempt,verdict};
+        attempt:pending.attempt,verdict,
+        ...(modelVerdict==="fail"&&(verify.testsPassed||verify.testsCompleted===true)&&record.config.automaticDiagnosis?
+          {automaticDiagnosis:automaticDiagnosisDirective(record.config.automaticDiagnosis,{
+            architect:record.config.models.architect,reviewer:record.config.models.qc,synthesis:record.config.models.planner})}:{})};
       details="QC "+verdict+" "+pending.headSha+" | model: "+report!.summary+
         " | host: "+verify.details;
     }else{
