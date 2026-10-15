@@ -487,3 +487,5 @@ The manual one-shot Pi creation form is experimental: it requires an admitted Ta
 ## Bounded automatic diagnosis and scoped direct QC controls
 
 [ADR-0019 implementation](docs/ADR19_DIAGNOSTICS_AND_COCKPIT.md) adds an explicit Durable-only automatic diagnostic policy: exact failing QC can atomically hold a Task, allocate two readonly investigations and one synthesis with immutable finite shares, and require human resume. It is off by default and does not reset QC budgets. The public PI WEB panel now provides a compact card and focused inspector, exact Run/scope command revalidation, and direct QC UI acceptance. The authenticated four-Run result remains a separate recorded acceptance, not inferred from faux CI.
+
+The [actual ADR-0019 authenticated quartet acceptance](docs/ADR19_DIAGNOSTICS_AND_COCKPIT_ACCEPTANCE.md) now verifies four live model-backed sessions, direct QC UI steering, a QC-time human barrier, two frozen-source diagnoses and explicit one-time resume. Broader native runtime, screenshot/knowledge lifecycle and deployment qualification remain separate.

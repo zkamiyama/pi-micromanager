@@ -1,3 +1,5 @@
+> **Acceptance update 2026-10-15:** The [actual authenticated four-Run/QC/diagnosis trial](ADR19_DIAGNOSTICS_AND_COCKPIT_ACCEPTANCE.md) passed on clean reviewed main; #3/#4 are completed for the ADR-0019 product scope. This does not qualify production hosting or native resource deletion.
+
 # ADR-0019 implementation: bounded diagnosis and exact Run controls
 
 Related: [ADR-0019](adr/0019-bounded-product-capabilities-and-issue-disposition.md), Issues #3 and #4. This page describes implemented product behavior. An authenticated acceptance result must still be recorded against the exact reviewed commit; a faux-provider test does not certify real provider behavior or a production deployment.

@@ -4,7 +4,7 @@
 import {createHash,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {mkdirSync,existsSync,lstatSync,realpathSync,openSync,closeSync,
-  fstatSync,readFileSync,writeFileSync,constants} from "node:fs";
+  fstatSync,readFileSync,readSync,writeFileSync,constants} from "node:fs";
 import {dirname,join,resolve,sep} from "node:path";
 import type {PiWebHostWorkspacesV1} from "@jmfederico/pi-web/server-plugin-api";
 import type {WorkflowStore} from "../core/store.js";
@@ -72,9 +72,16 @@ function safeScreenshotBytes(workspacePath:string,relativePath:string):Buffer {
     if(!opened.isFile()||opened.size<16||opened.size>MAX_IMAGE||
       opened.ino!==info.ino||opened.dev!==info.dev)
       throw new Error("Screenshot changed during open");
-    const blob=readFileSync(fd);
-    if(blob.length!==opened.size)throw new Error("Screenshot changed while reading");
-    return blob;
+    // A concurrently growing repository file must not turn a size preflight
+    // into an unbounded host allocation/read. One extra byte detects overflow.
+    const buffer=Buffer.alloc(opened.size+1);let used=0;
+    while(used<buffer.length){
+      const read=readSync(fd,buffer,used,buffer.length-used,null);
+      if(read===0)break;used+=read;
+    }
+    if(used!==opened.size||fstatSync(fd).size!==opened.size)
+      throw new Error("Screenshot changed while reading");
+    return buffer.subarray(0,used);
   }finally{closeSync(fd);}
 }
 export class ScreenshotEvidence {
@@ -131,6 +138,12 @@ export class ScreenshotEvidence {
     if(resolved.project.id!==projectId||ws.id!==binding.workspaceId||
       ws.projectId!==projectId||ws.isMain||ws.provider?.metadata?.isGitWorktree!==true)
       throw new Error("QC Run's Git Worktree authority is missing");
+    // Protect this exact checkout from cooperating new model/Git writers
+    // for the whole async read/proof/record interval.
+    this.options.agents.registerWorkspacePath(projectId,ws.id,ws.path);
+    const operation="screenshot:"+randomUUID();
+    this.options.agents.acquireWorkspaceOperation(projectId,ws.id,operation);
+    try{
     const head=await requireCleanGit(this.options.host,ws.path);
     if(head!==task.lastQc.headSha)
       throw new Error("Screenshot Git HEAD differs from the QC-evaluated SHA");
@@ -147,10 +160,25 @@ export class ScreenshotEvidence {
     if(!gitSha(commitBlob)||commitBlob!==diskBlob)
       throw new Error("Screenshot bytes do not match the QC-reviewed Git blob");
     const blob=safeScreenshotBytes(ws.path,relativePath);
+    // Checking the path before/after a read is vulnerable to ABA replacement:
+    // the captured buffer itself must be the exact reviewed Git blob object.
+    const algorithm=commitBlob.length===40?"sha1":commitBlob.length===64?"sha256":undefined;
+    if(!algorithm||createHash(algorithm).update("blob "+blob.length+"\0").update(blob).digest("hex")!==commitBlob)
+      throw new Error("Captured screenshot bytes do not match the QC-reviewed Git blob");
     const afterReadBlob=await gitValue(this.options.host,ws.path,
       ["hash-object","--",relativePath]);
     if(afterReadBlob!==commitBlob)
       throw new Error("Screenshot changed during the Git blob validation");
+    if(await requireCleanGit(this.options.host,ws.path)!==head)
+      throw new Error("QC Git snapshot changed during screenshot validation");
+    const current=this.options.workflows.get(projectId,orchestraWorkspaceId,workflowId);
+    const currentRun=this.options.agents.getRun(projectId,orchestraWorkspaceId,workflowId,runId);
+    const currentTask=current.tasks[binding.taskId];
+    if(current.revision!==wf.revision||currentTask?.lastQc?.runId!==runId||currentTask.lastQc.headSha!==head||
+      !currentRun||currentRun.phase!=="sealed"||currentRun.sessionId!==binding.sessionId||
+      currentRun.workspaceId!==binding.workspaceId||currentRun.evidenceRef!==binding.evidenceRef||
+      currentRun.updatedAt!==binding.updatedAt||currentRun.abortRequested!==binding.abortRequested)
+      throw new Error("Workflow or QC Run changed during screenshot validation");
     if(this.options.agents.hasUnsealedWorkspace(projectId,binding.workspaceId))
       throw new Error("QC Worktree became busy during screenshot validation");
     const mime=mimeOf(blob,relativePath);
@@ -197,6 +225,7 @@ export class ScreenshotEvidence {
       .run(record.id,scope,workflowId,runId,binding.sessionId,relativePath,
         mime,sha256,blob.length,head,path,record.createdAt);
     return record;
+    }finally{this.options.agents.releaseWorkspaceOperation(projectId,ws.id,operation);}
   }
   preview(projectId:string,orchestraWorkspaceId:string,
     workflowId:string,id:string):ScreenshotPreview{
