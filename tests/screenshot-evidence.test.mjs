@@ -21,11 +21,11 @@ function commit(cwd,...args){
   git(cwd,"-c","user.name=Test","-c","user.email=test@example.invalid",
     "commit","-m","Test screenshot");
 }
-function fixture(){
+function fixture(objectFormat="sha1"){
   const base=mkdtempSync(join(tmpdir(),"mm-real-screenshot-"));
   const main=join(base,"project"),linked=join(base,"qc-worktree"),data=join(base,"private");
   mkdirSync(main,{recursive:true});mkdirSync(data,{recursive:true});
-  execFileSync("git",["init","-b","main",main],{encoding:"utf8"});
+  execFileSync("git",["init","--object-format="+objectFormat,"-b","main",main],{encoding:"utf8"});
   writeFileSync(join(main,"README.md"),"Private example");
   commit(main,"README.md");
   git(main,"worktree","add","-b","review",linked);
@@ -173,4 +173,58 @@ test("Invalid or missing Run evidence can never be used to capture arbitrary fil
       "qc-ui-1","screenshots/qc.png"),/Workflow/);
     assert.equal(x.screenshots.list("project","orchestra","feature").length,0);
   }finally{x.close();}
+});
+test('ADR19 capture hashes the bytes actually read, not two surrounding Git path observations',async()=>{
+ const x=fixture(),file=join(x.linked,'screenshots','qc.png'),exec=x.opts.host.execFile;
+ const swapped=Buffer.from(PNG);swapped[swapped.length-16]^=1;let hashes=0;
+ x.opts.host.execFile=async request=>{
+  if(request.args?.includes('hash-object')){
+   hashes++;
+   if(hashes===1){const result=await exec(request);writeFileSync(file,swapped);return result;}
+   writeFileSync(file,PNG);
+  }
+  return exec(request);
+ };
+ try{
+  await assert.rejects(x.capture(),/captured.*Git blob|Captured.*Git blob|bytes.*QC-reviewed/i);
+  assert.equal(x.screenshots.list('project','orchestra','feature').length,0);
+ }finally{x.close();}
+});
+test('ADR19 Workflow revision change during image inspection cannot commit stale QC capture authority',async()=>{
+ const x=fixture(),exec=x.opts.host.execFile;let hashes=0;
+ x.opts.host.execFile=async request=>{
+  const result=await exec(request);
+  if(request.args?.includes('hash-object')&&++hashes===2){
+   const wf=x.workflows.get('project','orchestra','feature');
+   x.workflows.act('project','orchestra','feature',wf.revision,'independent-transition',{type:'integrate',taskId:'ui'});
+  }
+  return result;
+ };
+ try{
+  await assert.rejects(x.capture(),/Workflow.*changed|QC.*changed/i);
+  assert.equal(x.screenshots.list('project','orchestra','feature').length,0);
+ }finally{x.close();}
+});
+
+test('ADR19 exact screenshot proof supports an actual SHA-256 Git repository',async()=>{
+ const x=fixture('sha256');try{const captured=await x.capture();assert.equal(x.sha.length,64);
+  assert.equal(captured.sourceSha,x.sha);assert.equal(captured.sha256,createHash('sha256').update(PNG).digest('hex'));
+ }finally{x.close();}
+});
+test('ADR19 an async screenshot read holds the physical Workspace operation lease and releases it after failure',async()=>{
+ const x=fixture(),exec=x.opts.host.execFile;let inspected=false;
+ const candidate={projectId:'project',orchestraWorkspaceId:'orchestra',workspaceId:'qc-linked',workflowId:'other',
+  taskId:'other',runId:'worker',seat:'implementer',requestId:'auto:writer'};
+ x.opts.host.execFile=async request=>{
+  if(request.args?.includes('hash-object')&&!inspected){
+   inspected=true;assert.throws(()=>x.agents.reserve(candidate),/leased by a host/);
+   throw Error('Synthetic inspection interruption');
+  }
+  return exec(request);
+ };
+ try{
+  await assert.rejects(x.capture(),/Synthetic inspection interruption/);
+  assert.ok(inspected);assert.equal(x.screenshots.list('project','orchestra','feature').length,0);
+  assert.doesNotThrow(()=>x.agents.reserve(candidate),'A finished read failure leaves no stuck lease');
+ }finally{x.close();}
 });
