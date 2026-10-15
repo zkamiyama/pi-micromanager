@@ -4,7 +4,7 @@
 import {createHash,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {mkdirSync,existsSync,lstatSync,realpathSync,openSync,closeSync,
-  fstatSync,readFileSync,writeFileSync,constants} from "node:fs";
+  fstatSync,readFileSync,readSync,writeFileSync,constants} from "node:fs";
 import {dirname,join,resolve,sep} from "node:path";
 import type {PiWebHostWorkspacesV1} from "@jmfederico/pi-web/server-plugin-api";
 import type {WorkflowStore} from "../core/store.js";
@@ -72,9 +72,16 @@ function safeScreenshotBytes(workspacePath:string,relativePath:string):Buffer {
     if(!opened.isFile()||opened.size<16||opened.size>MAX_IMAGE||
       opened.ino!==info.ino||opened.dev!==info.dev)
       throw new Error("Screenshot changed during open");
-    const blob=readFileSync(fd);
-    if(blob.length!==opened.size)throw new Error("Screenshot changed while reading");
-    return blob;
+    // A concurrently growing repository file must not turn a size preflight
+    // into an unbounded host allocation/read. One extra byte detects overflow.
+    const buffer=Buffer.alloc(opened.size+1);let used=0;
+    while(used<buffer.length){
+      const read=readSync(fd,buffer,used,buffer.length-used,null);
+      if(read===0)break;used+=read;
+    }
+    if(used!==opened.size||fstatSync(fd).size!==opened.size)
+      throw new Error("Screenshot changed while reading");
+    return buffer.subarray(0,used);
   }finally{closeSync(fd);}
 }
 export class ScreenshotEvidence {

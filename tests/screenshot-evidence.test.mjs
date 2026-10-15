@@ -1,4 +1,6 @@
 import test from "node:test";
+import fs from "node:fs";
+import {syncBuiltinESMExports} from "node:module";
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {createHash} from "node:crypto";
@@ -227,4 +229,20 @@ test('ADR19 an async screenshot read holds the physical Workspace operation leas
   assert.ok(inspected);assert.equal(x.screenshots.list('project','orchestra','feature').length,0);
   assert.doesNotThrow(()=>x.agents.reserve(candidate),'A finished read failure leaves no stuck lease');
  }finally{x.close();}
+});
+
+test('ADR19 a repository image growing after open is read only through a bounded buffer and rejected',async()=>{
+ const x=fixture(),file=join(x.linked,'screenshots','qc.png'),ino=fs.statSync(file).ino;
+ const original=fs.readSync;let intercepted=false;
+ fs.readSync=function(fd,buffer,...rest){
+  if(!intercepted&&fs.fstatSync(fd).ino===ino){
+   intercepted=true;assert.ok(buffer.length<=1024*1024+1);
+   fs.appendFileSync(file,Buffer.alloc(2*1024*1024));
+  }
+  return original.call(fs,fd,buffer,...rest);
+ };
+ syncBuiltinESMExports();
+ try{await assert.rejects(x.capture(),/changed while reading/);assert.ok(intercepted);
+  assert.equal(x.screenshots.list('project','orchestra','feature').length,0);
+ }finally{fs.readSync=original;syncBuiltinESMExports();x.close();}
 });
