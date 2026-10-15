@@ -41,7 +41,8 @@ export async function completedLocalOwner({autoReclaimWorktrees=false}={}){
   const integration=await x.peer('auto.integration.preview',{workflowId:'wf',taskId:'task',targetWorkspaceId:'orchestra'});
   await x.peer('auto.integration.confirm',{previewId:integration.id});
   assert.equal(faux.state.callCount,4);
-  return {...x,plan,faux,setFault(f){fault=f;},
+  // Preserve the live accessor: spreading x alone freezes the original instance.
+  return {...x,plan,faux,get plugin(){return x.plugin;},setFault(f){fault=f;},
    async close(){try{await x.close();}finally{ModelRuntime.create=previous;}}};
  }catch(error){try{await x.close();}finally{ModelRuntime.create=previous;}throw error;}
 }
