@@ -908,7 +908,7 @@ const plugin: PiWebPlugin = {
             const tasks = w ? Object.values(w.tasks) : [];
             return html`<style>${styles}</style><section class="mm">
               <header><h2>pi-micromanager</h2><p>See everything. Hear everything. Steer anything. Welcome to Cognitive Overload!</p></header>
-              <aside role="note">DAG/Cockpit demo buttons are simulation-only. Autopilot below is a separate opt-in, real Pi Session executor. No automatic merging or Worktree deletion.</aside>
+              <aside role="note">Demo DAG transition buttons simulate only. Real Autopilot is opt-in and can publish/merge approved work or reclaim controller-owned completed Worktrees when authorized. Do not start Autopilot to inspect the Journal.</aside>
               <div class="toolbar">
                 <button ?disabled=${state.busy} @click=${() => { void refresh(context); }}>Reload</button>
                 <button ?disabled=${state.busy} @click=${() => { void createDemo(context); }}>Create/load demo DAG</button>
@@ -1282,9 +1282,20 @@ const plugin: PiWebPlugin = {
                 </section>
               </details>
               <nav aria-label="Views">${(["cockpit", "dag", "kanban", "journal"] as const).map(view => html`
-                <button class=${state.view === view ? "selected" : ""} @click=${() => { state.view = view; context.host.requestRender(); }}>${view.toUpperCase()}</button>
+                <button class=${state.view === view ? "selected" : ""}
+                  aria-pressed=${String(state.view === view)}
+                  @click=${(event:Event) => {
+                    state.view = view;
+                    context.host.requestRender();
+                    (event.currentTarget as HTMLElement).closest("nav")?.scrollIntoView({block:"start",behavior:"auto"});
+                  }}>${view.toUpperCase()}</button>
               `)}</nav>
-              ${!w ? html`<p>Create a demo DAG or load a saved workflow.</p>` : html`
+              ${!w ? state.view === "journal" ? html`
+                <section class="mm-journal mm-journal-empty" aria-label="Journal setup" role="status">
+                  <h3>Journal needs a selected Workflow</h3>
+                  <p>Choose <strong>Create/load demo DAG</strong> above for a simulation, or import a reviewed real Workflow.
+                    Use the Workflow selector or Reload to load an existing one. You can inspect the Journal without starting Autopilot.</p>
+                </section>` : html`<p>Create a demo DAG or load a saved workflow.</p>` : html`
                 <p>Workflow ${w.definition.id} · revision ${w.revision} · QC max ${w.definition.maxQcRounds}</p>
                 ${taskLens(context, w)}
                 ${state.view === "cockpit" ? html`

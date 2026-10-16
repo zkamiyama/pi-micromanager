@@ -55,6 +55,10 @@ This does not skip QC, target validation, operation generations, GitHub checks o
 
 ## Journal operations
 
+PI WEB renders an application-level tab bar (including **Chat**) and a separate Workspace tool bar. Tools such as **Micromanager** may appear in both rows because the rows have different navigation scopes; these are not two running plugin instances. **JOURNAL** is an internal Micromanager view, not either PI WEB tool tab.
+
+Choose an existing Workflow in the **Workflow** selector (use **Reload** to refresh), or click **Create/load demo DAG** for a simulation-only preview. Without a selected Workflow, clicking **JOURNAL** displays guidance instead of an empty view. No model Run or Autopilot start is necessary to browse a Journal.
+
 Open **JOURNAL**, then **Load evidence-linked journal**. The **Local storage usage** section is available only under local-owner settings.
 
 Select the current sealed QC Run, then a PNG/JPEG file and **Import local image**. The raw file limit is 180 KiB; dimensions are bounded to 4096 pixels per side. The image is an operator-supplied local annotation linked to that exact QC/source SHA, not evidence that a model captured it. No image is implicitly committed, published or sent to another model. The older tracked-Git screenshot capture remains a distinct operation.
