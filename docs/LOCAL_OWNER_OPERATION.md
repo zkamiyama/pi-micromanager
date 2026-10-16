@@ -53,6 +53,14 @@ Workflow/quick-launch configuration must select `runtime: "durable"` and `test.e
 
 This does not skip QC, target validation, operation generations, GitHub checks or exact-SHA merge. Omit publication configuration and deny external actions for a no-publication workflow. Strict `mode: "production"` continues to require `ask`/`deny` for external changes. Neither profile installs unconfined worker tools or falls back to native sessions.
 
+## Display language and short navigation label
+
+Micromanager publishes the short **[μMng]** label to PI WEB's application and Workspace tab bars. The stable plugin/panel IDs are unchanged; **Orchestra**, Git, and other PI WEB-owned tabs are not renamed. Two bars can still appear because PI WEB supplies separate application and Workspace navigation scopes.
+
+The Micromanager header offers **Auto (browser)**, **JPN**, and **ENG**. Initially **Auto** reads the browser's primary `navigator.languages` preference (or `navigator.language` as fallback): `ja` / `ja-*` selects Japanese; other languages select English. An explicit JPN/ENG choice is kept in the browser's local storage and takes precedence after reload; selecting Auto returns to browser detection. If storage is denied, the current tab retains a volatile choice and the next load returns to automatic selection. The preference belongs to the browser, not to Workflow state or the server.
+
+Operator-facing Micromanager, Journal and Orchestra controls and status headings are localized without translating model output, filenames, task IDs, SHA values, JSON configuration keys, provider/model identifiers or permission values. PI WEB's own Files/Git/Terminal/navigation copy follows PI WEB's separate localization policy. Technical backend error details can remain in English for diagnosis. Language switching does not start a Run, change permissions or publish anything.
+
 ## Journal operations
 
 PI WEB renders an application-level tab bar (including **Chat**) and a separate Workspace tool bar. Tools such as **Micromanager** may appear in both rows because the rows have different navigation scopes; these are not two running plugin instances. **JOURNAL** is an internal Micromanager view, not either PI WEB tool tab.

@@ -1,3 +1,4 @@
+import {uiText} from "./ui-locale.js";
 /** Local-only evidence UI. No external publisher, native-session GC, or model call. */
 import type {WorkspacePanelContext} from "@jmfederico/pi-web/plugin-api";
 import type {WorkflowJournal} from "../automation/journal.js";
@@ -86,7 +87,7 @@ export function createLocalJournalPanel(html:Html,signal:AbortSignal){
       </div>
       ${["completed","blocked"].includes(local.status.phase)&&state.maintenanceId?html`
         <button ?disabled=${state.busy} @click=${()=>{delete state.maintenanceId;state.message="New maintenance pass selected. Existing resource receipts still prevent duplicate deletion.";context.host.requestRender();}}>Select new maintenance pass</button>`:null}
-      <p role="status">Maintenance: ${local.status.phase} · ${local.status.message}</p>
+      <p role="status">Maintenance: ${uiText(local.status.phase)} · ${local.status.message}</p>
       <h3>Local operator images</h3>
       <p>PNG or JPEG, at most 180 KiB and 4096 pixels per dimension. Select the current sealed QC source. Upload is a local annotation, not QC capture proof. Inspect for secrets first.</p>
       <label>Local image QC Run<select aria-label="Local image QC Run" .value=${state.runId} ?disabled=${state.busy}
@@ -101,10 +102,10 @@ export function createLocalJournalPanel(html:Html,signal:AbortSignal){
       <button ?disabled=${state.busy||!state.file||!selected} @click=${()=>void importImage()}>Import local image</button>
       <h3>Local images and compressed activity (up to 100)</h3>
       ${local.artifacts.map(a=>html`<article class="mm-local-artifact">
-        <strong>${a.label}</strong><p>${a.kind} · ${a.provenance} · ${a.state} · ${a.storedBytes} bytes</p>
+        <strong>${a.label}</strong><p>${uiText(a.kind)} · ${a.provenance} · ${uiText(a.state)} · ${a.storedBytes} bytes</p>
         <p>Run ${a.runId} · source <code>${a.sourceSha}</code> · sha256:<code>${a.sha256}</code></p>
-        <button ?disabled=${state.busy||a.state!=="ready"} @click=${()=>void read(a)}>${a.kind==="image"?"View local image":"Read compressed activity"}</button>
-        <button ?disabled=${state.busy||a.state!=="ready"} @click=${()=>void pin(a)}>${a.pinned?"Unpin local artifact":"Pin local artifact"}</button>
+        <button ?disabled=${state.busy||a.state!=="ready"} @click=${()=>void read(a)}>${uiText(a.kind==="image"?"View local image":"Read compressed activity")}</button>
+        <button ?disabled=${state.busy||a.state!=="ready"} @click=${()=>void pin(a)}>${uiText(a.pinned?"Unpin local artifact":"Pin local artifact")}</button>
         ${state.preview?.artifact.id===a.id&&a.state==="ready"?(state.preview.dataUrl&&/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(state.preview.dataUrl)?html`
           <img class="mm-screenshot-preview" loading="lazy" src=${state.preview.dataUrl} alt=${"Local operator image: "+a.label}/>`:
           html`<pre class="mm-local-log">${state.preview.text??""}</pre>`):null}
@@ -120,7 +121,7 @@ export function createLocalJournalPanel(html:Html,signal:AbortSignal){
         · <code>${a.path}</code> at <code>${a.commit}</code></p>`)}
       <h3>Owned Worktree retirement receipts</h3>
       ${local.retirements.map(r=>html`<p>${r.taskId} · ${r.state} · <code>${r.headSha}</code> · retained Git ref <code>${r.preservedRef}</code></p>`)}
-      <p role="status">${state.message}</p>
+      <p role="status">${uiText(state.message)}</p>
     </section>`;
   };
 }

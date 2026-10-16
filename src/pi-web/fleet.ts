@@ -1,3 +1,4 @@
+import {uiText, displayLanguage} from "./ui-locale.js";
 /** Live Pi Run grid, not a permanent agent roster. Bounded and workspace-scoped. */
 import type {
   PluginActivationContext, WorkspacePanelContext,
@@ -556,8 +557,8 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
             else nudge(ctx,key,{x:node.x,y:node.y},graph.root.y,e);
           }}>
           <span class="mm-f-node-dot ${b.phase==="running"?"mm-f-running":b.phase==="uncertain"||b.phase==="blocked"?"mm-f-needs-attention":""}"></span>
-          <strong>${b.seat.toUpperCase()}</strong>
-          <span class="mm-f-node-phase">${b.phase}</span>
+          <strong>${displayLanguage()==="ja"?uiText(b.seat):b.seat.toUpperCase()}</strong>
+          <span class="mm-f-node-phase">${uiText(b.phase)}</span>
           ${b.sessionId?.startsWith("durable:")?html`
             <span class="mm-f-durable-label" title="Pi Durable: SQLite-backed native Harness, not a PI WEB chat">Durable</span>`:null}
           <button class="mm-f-density-toggle" type="button" aria-label=${(expanded?"Collapse ":"Expand ")+b.runId}
@@ -583,7 +584,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
           <small title=${b.runId}>${b.runId} · ${b.model?b.provider+"/"+b.model:"Not configured"}</small>
         </div>
         <div class="mm-f-node-log" aria-label=${"Public activity for "+b.runId}>
-          ${s.deliveryStatus.get(key)?html`<p class="mm-f-receipt" role="status">${s.deliveryStatus.get(key)}</p>`:null}
+          ${s.deliveryStatus.get(key)?html`<p class="mm-f-receipt" role="status">${uiText(s.deliveryStatus.get(key)??"")}</p>`:null}
           ${expanded&&latest.length?latest.map(item=>html`<p><small>${item.kind}</small> ${item.text||"(no text)"}</p>`):
             html`<p>${b.latestText??(b.sessionId?"Waiting for Pi activity…":"Pi Session not created.")}</p>`}
         </div>
@@ -610,10 +611,10 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         <button @click=${()=>void load(ctx)} ?disabled=${s.busy}>Refresh runs</button>
         <button @click=${()=>{stopObserving(s);s.retryCount=0;void listen(ctx);}}
           ?disabled=${s.connecting}>Reconnect stream</button>
-        <small>${s.listening?"● Events connected":"○ Events disconnected"}</small>
+        <small>${uiText(s.listening?"● Events connected":"○ Events disconnected")}</small>
       </div>
-      <p role="status" aria-live="polite">${s.loadStatus}</p>
-      <div class="mm-f-densities">${roles.map(role=>html`<label>${role}
+      <p role="status" aria-live="polite">${uiText(s.loadStatus)}</p>
+      <div class="mm-f-densities">${roles.map(role=>html`<label>${uiText(role)}
         <select .value=${s.density[role]}
           @change=${(ev:Event)=>{s.density[role]=(ev.target as HTMLSelectElement).value as "compact"|"expanded";refresh(ctx)}}>
           <option value="compact">Compact</option><option value="expanded">Expanded</option>
@@ -625,7 +626,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
             @change=${(e:Event)=>{s.filterRole=(e.target as HTMLSelectElement).value as Seat|"all";
               s.canvasPage=0;refresh(ctx);}}>
             <option value="all">All roles</option>
-            ${roles.map(role=>html`<option value=${role}>${role}</option>`)}
+            ${roles.map(role=>html`<option value=${role}>${uiText(role)}</option>`)}
           </select>
         </label>
         <label class="mm-f-filter-label">Find
@@ -634,7 +635,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
             @input=${(e:Event)=>{s.filterQuery=(e.target as HTMLInputElement).value;
               s.canvasPage=0;refresh(ctx);}}/>
         </label>
-        <span>${newest.length} of ${allLive.length} live/pending Runs · ${pageCount>1?"Page "+(s.canvasPage+1)+"/"+pageCount:"All Runs visible"}</span>
+        <span>${newest.length} of ${allLive.length} live/pending Runs · ${uiText(pageCount>1?"Page "+(s.canvasPage+1)+"/"+pageCount:"All Runs visible")}</span>
         <span class="mm-f-canvas-legend"><i></i> Orchestra membership <b></b> Task dependency</span>
         <button @click=${()=>{s.nodePositions.clear();s.canvasDimmed=false;persistCanvas(ctx,s);refresh(ctx);}}>Reset layout</button>
         <button ?disabled=${s.canvasPage===0} @click=${()=>{s.canvasPage--;refresh(ctx);}}>← Previous</button>
@@ -704,7 +705,7 @@ export function createLiveRunPanel(html:Html,lifetime:AbortSignal):WorkspacePane
         <button type="button" aria-label="Close Run inspector" @click=${()=>{s.inspectorOpen=false;s.selectedSessionId="";s.canvasDimmed=true;refresh(ctx);}}>Close inspector</button>
         <h3>${selected.taskId} · ${selected.runId}</h3>
         <p class="mm-f-scope" aria-label="Current Orchestra scope">Machine ${ctx.machine.id} · project ${ctx.workspace.projectId} · workspace ${ctx.workspace.id}</p>
-        <small>${selected.phase} ·
+        <small>${uiText(selected.phase)} ·
           ${selected.sessionId?.startsWith("durable:")?"Pi Durable Conversation":"PI WEB native Pi Session"}
           · ${selected.sessionId??"not yet created"} · ${selected.workspaceId}</small>
         <div class="mm-f-activity">${(s.activity.get(selected.sessionId??"")??[]).map(event=>

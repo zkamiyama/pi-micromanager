@@ -169,7 +169,7 @@ export async function runHosted(args){
   await page.locator('button[title="Add Project"]').click();
   await page.getByPlaceholder('/path/to/project or ~/code/project').fill(project);
   await page.getByRole('button',{name:'Add project',exact:true}).click();
-  await page.getByRole('button',{name:'Micromanager',exact:true}).first().click();
+  await page.getByRole('button',{name:'[μMng]',exact:true}).first().click();
   await page.waitForFunction(()=>Boolean(globalThis.__mmAcceptanceContext?.peer?.request));
   const call=(operation,input)=>page.evaluate(async({operation,input})=>globalThis.__mmAcceptanceContext.peer.request(operation,input),{operation,input});
   const wait=async(check,milliseconds=90000)=>{
@@ -272,7 +272,7 @@ export async function runHosted(args){
   await page.locator('button[title="Add Project"]').click();
   await page.getByPlaceholder('/path/to/project or ~/code/project').fill(otherProject);
   await page.getByRole('button',{name:'Add project',exact:true}).click();
-  await page.getByRole('button',{name:'Micromanager',exact:true}).first().click();
+  await page.getByRole('button',{name:'[μMng]',exact:true}).first().click();
   await page.waitForFunction(project=>globalThis.__mmAcceptanceContext?.workspace.projectId!==project,originalScope.projectId);
   assert.deepEqual(await call('list',null),[]);
   assert.deepEqual(await call('agents.list',{view:'all'}),[]);
@@ -282,7 +282,7 @@ export async function runHosted(args){
   assert.equal(await page.locator('article.mm-f-node').count(),0);
   assert.equal(await page.locator('.mm-f-inspector').count(),0);
   await page.evaluate(scope=>globalThis.__mmAcceptanceContext.navigate({...scope,view:'workspace'}),originalScope);
-  await page.getByRole('button',{name:'Micromanager',exact:true}).first().click();
+  await page.getByRole('button',{name:'[μMng]',exact:true}).first().click();
   await page.waitForFunction(scope=>globalThis.__mmAcceptanceContext?.workspace.projectId===scope.projectId&&
     globalThis.__mmAcceptanceContext?.workspace.id===scope.workspaceId,originalScope);
   assert.equal((await call('get','pair')).definition.id,'pair');
@@ -296,7 +296,7 @@ export async function runHosted(args){
    while(Date.now()<until){
     if(daemon.spawnFailed||daemon.exitCode!==null)throw Error('test-daemon-restart-failed');
     await pause(1500);await page.reload();
-    const tab=page.getByRole('button',{name:'Micromanager',exact:true}).first();
+    const tab=page.getByRole('button',{name:'[μMng]',exact:true}).first();
     try{await tab.waitFor({timeout:1500});await tab.click();
      await page.waitForFunction(()=>Boolean(globalThis.__mmAcceptanceContext?.peer?.request),{},{timeout:1500});return;
     }catch{/* Bounded read-only browser rediscovery until the new daemon is ready. */}
