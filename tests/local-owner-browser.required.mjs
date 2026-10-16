@@ -9,7 +9,7 @@ import {execFileSync} from 'node:child_process';
 import {randomBytes,createHash} from 'node:crypto';
 import {launchHost} from '../scripts/hosted-e2e-host.mjs';
 
-async function browserFixture({complete=false}={}){
+async function browserFixture({complete=false,withoutWorkflow=false}={}){
  // The disposable host must create owner-private state; preserve its strict check.
  const previousMask=process.umask(0o077);
  const root=mkdtempSync(join(tmpdir(),'mm-local-browser-ci-')),project=join(root,'project'),setup=join(root,'setup');
@@ -36,7 +36,7 @@ async function browserFixture({complete=false}={}){
    definition.tasks=[{id:'a',title:'Create a synthetic marker',kind:'implementation',role:'implementer',dependsOn:[],
     description:'Write '+fixture+'/a.txt containing A followed by a newline.',acceptanceCriteria:['The isolated marker test passes']}];
   }
-  await host.importWorkflow(definition);
+  if(!withoutWorkflow)await host.importWorkflow(definition);
   if(complete){
    const model={provider:'faux',model:'faux-1',effort:'low'};
    const config={runtime:'durable',managedWorktrees:true,workspaces:{},models:{implementer:model,qc:model,planner:model,architect:model},
@@ -136,5 +136,21 @@ test('local-owner actual browser: import/view/pin local images, read archived ac
   await page.getByRole('button',{name:'Load evidence-linked journal',exact:true}).click();
   await page.locator('.mm-local-journal').getByRole('link',{name:'Local decision',exact:true}).waitFor();
   assert.equal(await page.locator('.mm-local-journal').getByRole('link',{name:'Local decision',exact:true}).getAttribute('href'),href);
+ }finally{await x.close();}
+});
+
+
+test('local-owner actual browser: Journal without a selected Workflow shows an actionable state',
+ {timeout:50000},async()=>{
+ const x=await browserFixture({withoutWorkflow:true});try{
+  const tab=x.page.getByRole('button',{name:'JOURNAL',exact:true});
+  assert.match(await x.page.locator('.mm > aside').innerText(),/can publish\/merge approved work or reclaim/);
+  await tab.click();
+  await x.page.getByRole('heading',{name:'Journal needs a selected Workflow',exact:true}).waitFor();
+  assert.equal(await tab.getAttribute('aria-pressed'),'true');
+  await x.page.getByRole('button',{name:'Create/load demo DAG',exact:true}).click();
+  await x.page.getByRole('button',{name:'Load evidence-linked journal',exact:true}).waitFor();
+  await x.page.getByRole('button',{name:'Load evidence-linked journal',exact:true}).click();
+  await x.page.getByRole('heading',{name:'Task and QC evidence',exact:true}).waitFor();
  }finally{await x.close();}
 });
