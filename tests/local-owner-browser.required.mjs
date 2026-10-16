@@ -9,7 +9,7 @@ import {execFileSync} from 'node:child_process';
 import {randomBytes,createHash} from 'node:crypto';
 import {launchHost} from '../scripts/hosted-e2e-host.mjs';
 
-async function browserFixture({complete=false,withoutWorkflow=false}={}){
+async function browserFixture({complete=false,withoutWorkflow=false,browserLocale='en-US'}={}){
  // The disposable host must create owner-private state; preserve its strict check.
  const previousMask=process.umask(0o077);
  const root=mkdtempSync(join(tmpdir(),'mm-local-browser-ci-')),project=join(root,'project'),setup=join(root,'setup');
@@ -27,7 +27,7 @@ async function browserFixture({complete=false,withoutWorkflow=false}={}){
   seedSha:git('rev-parse','HEAD'),fixture,bare:join(root,'unused-remote.git'),transport};
  let host;
  try{
-  host=await launchHost(trial,{root,project,securityProfile:'local-owner'});
+  host=await launchHost(trial,{root,project,securityProfile:'local-owner',browserLocale});
   const definition={id:'local-ui',title:'Local Journal acceptance',maxQcRounds:2,
    maxParallelByRole:{implementer:1,reviewer:1,architect:1,planner:1},permissions:{default:'deny'},
    tasks:[{id:'task',title:'Unstarted synthetic task',kind:'implementation',role:'implementer',dependsOn:[],description:'Do not launch a model',acceptanceCriteria:['Operator local image UI is available']}]};
@@ -152,5 +152,73 @@ test('local-owner actual browser: Journal without a selected Workflow shows an a
   await x.page.getByRole('button',{name:'Load evidence-linked journal',exact:true}).waitFor();
   await x.page.getByRole('button',{name:'Load evidence-linked journal',exact:true}).click();
   await x.page.getByRole('heading',{name:'Task and QC evidence',exact:true}).waitFor();
+ }finally{await x.close();}
+});
+
+
+test('Japanese browser locale selects Japanese UI, overrides persist, and [μMng] is the real navigation label',
+ {timeout:60000},async()=>{
+ const x=await browserFixture({withoutWorkflow:true,browserLocale:'ja-JP'});try{
+  const page=x.page;
+  await page.getByRole('button',{name:'[μMng]',exact:true}).first().waitFor();
+  const group=page.getByRole('group',{name:'表示言語'});
+  await group.getByRole('button',{name:/自動/}).waitFor();
+  assert.equal(await group.getByRole('button',{name:/自動/}).getAttribute('aria-pressed'),'true');
+  await page.getByRole('button',{name:'再読込',exact:true}).waitFor();
+  assert.doesNotMatch(await page.locator('.mm').innerText(),/First save a project setup|Plan & run authorizes/);
+  await page.getByRole('button',{name:'ジャーナル',exact:true}).click();
+  await page.getByRole('heading',{name:'ジャーナルを表示するにはワークフローの選択が必要です',exact:true}).waitFor();
+  await group.getByRole('button',{name:'ENG',exact:true}).click();
+  await page.getByRole('button',{name:'Reload',exact:true}).waitFor();
+  await page.reload();await page.waitForFunction(()=>Boolean(window.__mmAcceptance));
+  await page.getByRole('button',{name:'Reload',exact:true}).waitFor();
+  const english=page.getByRole('group',{name:'Display language'});
+  assert.equal(await english.getByRole('button',{name:'ENG',exact:true}).getAttribute('aria-pressed'),'true');
+  await english.getByRole('button',{name:'JPN',exact:true}).click();
+  await page.getByRole('button',{name:'再読込',exact:true}).waitFor();
+  await page.getByRole('button',{name:'デモDAGを作成・読込',exact:true}).click();
+  await page.getByRole('button',{name:'ジャーナル',exact:true}).click();
+  await page.getByRole('button',{name:'根拠付きジャーナルを読込',exact:true}).waitFor();
+  const japanese=page.getByRole('group',{name:'表示言語'});
+  await japanese.getByRole('button',{name:/自動/}).click();
+  assert.equal(await japanese.getByRole('button',{name:/自動/}).getAttribute('aria-pressed'),'true');
+  await page.getByRole('button',{name:'再読込',exact:true}).waitFor();
+ }finally{await x.close();}
+});
+
+test('English browser locale auto-selects English but JPN choice overrides across reload',
+ {timeout:50000},async()=>{
+ const x=await browserFixture({withoutWorkflow:true,browserLocale:'en-US'});try{
+  const page=x.page;
+  await page.getByRole('button',{name:'Reload',exact:true}).waitFor();
+  const group=page.getByRole('group',{name:'Display language'});
+  await group.getByRole('button',{name:'JPN',exact:true}).click();
+  await page.getByRole('button',{name:'再読込',exact:true}).waitFor();
+  await page.reload();await page.waitForFunction(()=>Boolean(window.__mmAcceptance));
+  await page.getByRole('button',{name:'再読込',exact:true}).waitFor();
+  const jp=page.getByRole('group',{name:'表示言語'});
+  await jp.getByRole('button',{name:/自動/}).click();
+  await page.getByRole('button',{name:'Reload',exact:true}).waitFor();
+ }finally{await x.close();}
+});
+
+
+test('Japanese local-owner Journal and Orchestra show translated controls after real QC',
+ {timeout:85000},async()=>{
+ const x=await browserFixture({complete:true,browserLocale:'ja-JP'});try{
+  const page=x.page;
+  await page.getByRole('button',{name:'ジャーナル',exact:true}).click();
+  await page.getByRole('button',{name:'根拠付きジャーナルを読込',exact:true}).click();
+  await page.getByRole('heading',{name:'ローカル保存容量',exact:true}).waitFor();
+  const panel=page.locator('.mm-local-journal');
+  await panel.getByLabel('ローカル画像のQC Run',{exact:true}).waitFor();
+  await panel.getByRole('button',{name:'ローカル画像を取り込む',exact:true}).waitFor();
+  await panel.getByRole('button',{name:'GitのADRにリンク',exact:true}).waitFor();
+  const tab=page.getByRole('button',{name:'Orchestra',exact:true}).first();
+  await tab.click();
+  await page.getByRole('heading',{name:'Orchestra・実行中のRun',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Runを更新',exact:true}).waitFor();
+  await page.getByRole('button',{name:'[μMng]',exact:true}).first().click();
+  await page.getByRole('group',{name:'表示言語'}).waitFor();
  }finally{await x.close();}
 });

@@ -14,7 +14,7 @@ import {descendants,isStillRunning,signalRecorded} from './hosted-e2e-processes.
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function port(){const s=net.createServer();await new Promise((r,j)=>s.once('error',j).listen(0,'127.0.0.1',r));const p=s.address().port;await new Promise(r=>s.close(r));return p;}
-export async function launchHost(trial,{root,project,authFile,ghConfig,securityProfile='production'}){
+export async function launchHost(trial,{root,project,authFile,ghConfig,securityProfile='production',browserLocale='en-US'}){
  if(!['production','local-owner'].includes(securityProfile))throw Error('Unsupported test profile');
  if(securityProfile==='local-owner'&&(trial.mode!=='rehearsal'||authFile||ghConfig))
   throw Error('The new local-owner CI adapter is credential-free rehearsal only');
@@ -31,7 +31,7 @@ export async function launchHost(trial,{root,project,authFile,ghConfig,securityP
   'auto.permissions','auto.permission.decide','agents.list','agents.command','agents.history','security.readiness',
   'auto.journal','auto.journal.local.import','auto.journal.local.read','auto.journal.local.pin','auto.journal.adr.link','auto.maintenance.preview','auto.maintenance.run','auto.maintenance.status',
   'auto.worktree.preview','auto.worktree.create','auto.integration.preview','auto.integration.confirm'];
- for(const file of ['browser.js','fleet.js','canvas-layout.js','canvas-preferences.js','local-journal-panel.js'])
+ for(const file of ['browser.js','fleet.js','canvas-layout.js','canvas-preferences.js','local-journal-panel.js','ui-locale.js'])
   copyFileSync(join(REPO_ROOT,'dist/pi-web',file),join(browserRoot,file));
  writeFileSync(join(browserRoot,'entry.js'),`import base from './browser.js';\nexport default {...base,activate(api){\n const live=base.activate(api);\n const panels=live.contributions.workspacePanels.map(panel=>({...panel,render(ctx){\n  window.__mmAcceptance={projectId:ctx.workspace.projectId,workspaceId:ctx.workspace.id,\n   request:(op,input)=>{if(!${JSON.stringify(testOperations)}.includes(op))throw Error('Unsupported test operation');return ctx.peer.request(op,input);}};\n  return panel.render(ctx);\n }}));\n return {...live,contributions:{...live.contributions,workspacePanels:panels}};\n}};\n`,{mode:0o600});
  const trialPath=join(root,'trial.json');writeFileSync(trialPath,JSON.stringify(trial),{mode:0o600});
@@ -108,13 +108,13 @@ export async function launchHost(trial,{root,project,authFile,ghConfig,securityP
   const origin='http://127.0.0.1:'+proxy.address().port;
   if((await fetch(origin)).status!==401)fail('ingress-auth-unproved');
   browser=await chromium.launch({headless:true,chromiumSandbox:true,env:{PATH:'/usr/bin:/bin',HOME:home,LANG:'C.UTF-8'}});
-  context=await browser.newContext({httpCredentials:{username:'acceptance',password,origin}});
+  context=await browser.newContext({httpCredentials:{username:'acceptance',password,origin},locale:browserLocale});
   page=await context.newPage();page.setDefaultTimeout(20000);await page.goto(origin);
   await page.getByRole('button',{name:'Show Actions',exact:true}).click();
   await page.getByTitle('Add Project',{exact:true}).click();
   await page.getByPlaceholder('/path/to/project or ~/code/project').fill(project);
   await page.getByRole('button',{name:'Add project',exact:true}).click();
-  await page.getByRole('button',{name:'Micromanager',exact:true}).first().click();
+  await page.getByRole('button',{name:'[μMng]',exact:true}).first().click();
   await page.waitForFunction(()=>Boolean(window.__mmAcceptance));
   const peer=(op,input)=>page.evaluate(({op,input})=>window.__mmAcceptance.request(op,input),{op,input});
   const readiness=await peer('security.readiness',null);
@@ -130,8 +130,8 @@ export async function launchHost(trial,{root,project,authFile,ghConfig,securityP
    async importWorkflow(def){
     const box=page.locator('.mm-workflow-import');
     if(!await box.evaluate(e=>e.open))await box.locator('summary').click();
-    await page.getByRole('textbox',{name:'Workflow definition JSON'}).fill(JSON.stringify(def));
-    await page.getByRole('button',{name:'Validate and save Workflow',exact:true}).click();
+    await box.locator('textarea[aria-label]').fill(JSON.stringify(def));
+    await box.getByRole('button').click();
     for(let i=0;i<40;i++){try{return await peer('get',def.id);}catch{await sleep(150);}}
     fail('workflow-import-failed');
    }};

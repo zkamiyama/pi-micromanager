@@ -1,3 +1,4 @@
+import {localizedTemplate, uiText, languageChoice, setLanguageChoice, displayLanguage} from "./ui-locale.js";
 /** PI WEB workspace panel: distinct simulation preview and real, opt-in Pi Autopilot. */
 import {createLocalJournalPanel} from "./local-journal-panel.js";
 import { createLiveRunPanel, selectOrchestraTask } from "./fleet.js";
@@ -161,6 +162,7 @@ const plugin: PiWebPlugin = {
   apiVersion: 4,
   name: "pi-micromanager",
   activate({ html, lifetimeSignal, runtimePluginId }) {
+    html = localizedTemplate(html);
     let disposed = false;
     const localJournalPanel=createLocalJournalPanel(html,lifetimeSignal);
     let quickContext:WorkspacePanelContext|undefined;
@@ -835,7 +837,7 @@ const plugin: PiWebPlugin = {
                   @click=${()=>void integrationCommand(context,task.spec.id,"confirm")}>
                   Confirm integration and unblock DAG</button>
               </div>`:null}
-            ${state.integrationStatus?html`<p role="status">${state.integrationStatus}</p>`:null}
+            ${state.integrationStatus?html`<p role="status">${uiText(state.integrationStatus)}</p>`:null}
           </div>`:null}
       </section>`;
     }
@@ -900,14 +902,23 @@ const plugin: PiWebPlugin = {
     return {
       contributions: {
         workspacePanels: [{
-          id: "micromanager", title: "Micromanager", order: 50,
+          id: "micromanager", title: "[μMng]", order: 50,
           render(context) {
             quickContext=context;
             const state = stateFor(context);
             const w = state.selected;
             const tasks = w ? Object.values(w.tasks) : [];
             return html`<style>${styles}</style><section class="mm">
-              <header><h2>pi-micromanager</h2><p>See everything. Hear everything. Steer anything. Welcome to Cognitive Overload!</p></header>
+              <header class="mm-header"><div>
+                <h2>pi-micromanager</h2><p>See everything. Hear everything. Steer anything. Welcome to Cognitive Overload!</p>
+              </div><div class="mm-language" role="group" aria-label=${uiText("Display language")}>
+                ${(["auto","ja","en"] as const).map(choice=>html`<button type="button"
+                  aria-pressed=${String(languageChoice()===choice)}
+                  class=${languageChoice()===choice?"selected":""}
+                  @click=${()=>{setLanguageChoice(choice);context.host.requestRender();}}>
+                  ${choice==="auto"?uiText("Auto (browser)"):choice==="ja"?"JPN":"ENG"}</button>`)}
+                <small role="status">${displayLanguage()==="ja"?"日本語":"English"}</small>
+              </div></header>
               <aside role="note">Demo DAG transition buttons simulate only. Real Autopilot is opt-in and can publish/merge approved work or reclaim controller-owned completed Worktrees when authorized. Do not start Autopilot to inspect the Journal.</aside>
               <div class="toolbar">
                 <button ?disabled=${state.busy} @click=${() => { void refresh(context); }}>Reload</button>
@@ -916,7 +927,7 @@ const plugin: PiWebPlugin = {
                   ${state.workflows.map(x => html`<option value=${x.definition.id} ?selected=${x.definition.id === w?.definition.id}>${x.definition.title}</option>`)}
                 </select>
               </div>
-              <p role="status" aria-live="polite">${state.status}</p>
+              <p role="status" aria-live="polite">${uiText(state.status)}</p>
 
               <section class="mm-quick" aria-label="Natural-language one-command Autopilot">
                 <div class="mm-quick-heading">
@@ -959,12 +970,12 @@ const plugin: PiWebPlugin = {
                 </div>
                 ${state.quickGoals.slice(0,1).map(job=>html`
                   <div class="mm-quick-progress" role="status" aria-live="polite">
-                    <strong>${job.phase==="reserved"?"Queued":job.phase==="planning"?"Sol is planning":
+                    <strong>${uiText(job.phase==="reserved"?"Queued":job.phase==="planning"?"Sol is planning":
                       job.phase==="starting"?"Preparing Worktrees":
                       job.phase==="running"?"Autopilot is running":
                       job.phase==="paused"?"Paused — resume from Autopilot":
                       job.phase==="finished"?"Completed":
-                      job.phase==="cancelled"?"Cancelled":"Needs attention"}</strong>
+                      job.phase==="cancelled"?"Cancelled":"Needs attention")}</strong>
                     <p>${job.message}</p>
                     <p class="mm-quick-ref">Goal: ${job.goal.slice(0,180)}</p>
                     <p class="mm-quick-ref">Saved target:
@@ -978,7 +989,7 @@ const plugin: PiWebPlugin = {
                         <span class=${(job.phase==="finished"?3:
                           job.phase==="running"?2:job.phase==="starting"?1:
                           job.phase==="planning"?0:-1)>=index?
-                          "mm-step-done":""}>${title}</span>`)}
+                          "mm-step-done":""}>${uiText(title)}</span>`)}
                     </div>
                     <div class="mm-actions">
                       ${["reserved","planning","starting"].includes(job.phase)?html`
@@ -992,8 +1003,8 @@ const plugin: PiWebPlugin = {
                     </div>
                   </div>`)}
                 <details class="mm-quick-setup" ?open=${!state.quickProfile}>
-                  <summary>${state.quickProfile?"Project setup / change settings":
-                    "First-time project setup (required)"}</summary>
+                  <summary>${uiText(state.quickProfile?"Project setup / change settings":
+                    "First-time project setup (required)")}</summary>
                   <p>Setup is saved once per selected PI WEB project Workspace.
                     Use a trusted Pi provider and model in the host session daemon.
                     Each new goal gets isolated Git Worktrees.</p>
@@ -1080,7 +1091,7 @@ const plugin: PiWebPlugin = {
                   <button ?disabled=${state.busy}
                     @click=${()=>void configureQuick(context)}>Save project setup</button>
                 </details>
-                <p class="mm-quick-feedback" role="status">${state.quickError}</p>
+                <p class="mm-quick-feedback" role="status">${uiText(state.quickError)}</p>
               </section>
 
               <details class="mm-goal-proposal">
@@ -1113,7 +1124,7 @@ const plugin: PiWebPlugin = {
                   <button ?disabled=${state.busy||!state.goalRef}
                     @click=${()=>void checkGoal(context)}>Check proposal</button>
                 </div>
-                <p role="status" aria-live="polite">${state.goalStatus}</p>
+                <p role="status" aria-live="polite">${uiText(state.goalStatus)}</p>
                 ${state.goalProposalText?html`
                   <label for="mm-goal-preview">Sol's proposed DAG (review before approval)</label>
                   <textarea id="mm-goal-preview" rows="12" readonly spellcheck="false"
@@ -1144,7 +1155,7 @@ const plugin: PiWebPlugin = {
                   directory. PI WEB discovers linked Git Worktrees automatically.
                   In managed Autopilot mode, the Workspace ID is resolved and verified on Start.
                   Manual ID entry remains available for legacy configurations.
-                  No Worktree is deleted automatically.</p>
+                  Only controller-owned completed Worktrees may be reclaimed later after proof checks.</p>
                 <label>Unstarted implementation Task
                   <select aria-label="Task for managed Git Worktree" .value=${state.worktreeTaskId}
                     ?disabled=${state.busy||state.autopilotEnabled}
@@ -1190,11 +1201,11 @@ const plugin: PiWebPlugin = {
                       @click=${()=>setWorktreeWorkspaceId(context)}>
                       Insert ID into Autopilot configuration</button>`:null}
                 </div>`:null}
-                <p role="status" aria-live="polite">${state.worktreeStatus}</p>
+                <p role="status" aria-live="polite">${uiText(state.worktreeStatus)}</p>
               </details>`:null}
               <details class="mm-autopilot">
                 <summary><strong>Autopilot · Real Orchestrator</strong>
-                  <span>${state.autopilotEnabled?"● Running":"○ Paused / offline"}</span></summary>
+                  <span>${uiText(state.autopilotEnabled?"● Running":"○ Paused / offline")}</span></summary>
                 <p>YOLO by default: a configured publication target automatically pushes
                   QC-approved commits and creates Draft GitHub PRs. Workflow permissions can
                   override git.push / github.pr.create to ask or deny. Final PR merge uses the Workflow's merge permission; production
@@ -1237,7 +1248,7 @@ const plugin: PiWebPlugin = {
                   <button ?disabled=${state.busy||!state.autopilotEnabled||!w}
                     @click=${()=>void autopilotCommand(context,"pause")}>Pause admission</button>
                 </div>
-                <p role="status" aria-live="polite">${state.autopilotStatus}</p>
+                <p role="status" aria-live="polite">${uiText(state.autopilotStatus)}</p>
                 <section class="mm-permissions">
                   <strong>Workflow permissions · allow / ask / deny</strong>
                   <p>Default: ${w?.definition.permissions?.default??"allow"} (YOLO).
@@ -1278,7 +1289,7 @@ const plugin: PiWebPlugin = {
                       <p>QC ${x.qcRunId}: <code>${x.sourceSha}</code></p>
                       <p>Target ${x.targetWorkspaceId} · Branch ${x.branch}</p>
                     </article>`)}
-                  <p role="status">${state.permissionStatus}</p>
+                  <p role="status">${uiText(state.permissionStatus)}</p>
                 </section>
               </details>
               <nav aria-label="Views">${(["cockpit", "dag", "kanban", "journal"] as const).map(view => html`
@@ -1288,7 +1299,7 @@ const plugin: PiWebPlugin = {
                     state.view = view;
                     context.host.requestRender();
                     (event.currentTarget as HTMLElement).closest("nav")?.scrollIntoView({block:"start",behavior:"auto"});
-                  }}>${view.toUpperCase()}</button>
+                  }}>${uiText(view.toUpperCase())}</button>
               `)}</nav>
               ${!w ? state.view === "journal" ? html`
                 <section class="mm-journal mm-journal-empty" aria-label="Journal setup" role="status">
@@ -1302,7 +1313,7 @@ const plugin: PiWebPlugin = {
                   <div class="mm-toggles">${roleNames.map(role => html`<label>${role}<select .value=${state.detailByRole[role]}
                      @change=${(e: Event) => { state.detailByRole[role] = (e.target as HTMLSelectElement).value as Detail; context.host.requestRender(); }}>
                     <option value="compact">Compact</option><option value="expanded">Expanded</option></select></label>`)}</div>
-                  <div class="mm-grid">${tasks.map(t => html`<article class="mm-card ${state.selectedTaskId === t.spec.id ? "mm-task-selected" : ""}"><h3>${t.spec.title}</h3><small>${t.spec.role} · ${t.status} · attempt ${t.attempts}</small>
+                  <div class="mm-grid">${tasks.map(t => html`<article class="mm-card ${state.selectedTaskId === t.spec.id ? "mm-task-selected" : ""}"><h3>${t.spec.title}</h3><small>${uiText(t.spec.role)} · ${uiText(t.status)} · attempt ${t.attempts}</small>
                      <button class="mm-intervene" @click=${() => selectTask(context, t.spec.id)}>Intervene in this task</button>
                     ${state.detailByRole[t.spec.role] === "expanded" ? html`<p>Task ${t.spec.id}. Depends on ${t.spec.dependsOn.map(d => `${d.taskId}(${d.gate})`).join(", ") || "nothing"}. QC ${t.qcRounds}/${w.definition.maxQcRounds}.</p>
                     <div class="mm-actions">${actionsFor(context, t, w)}</div>` : null}
@@ -1325,7 +1336,7 @@ const plugin: PiWebPlugin = {
                       <h3>Task and QC evidence</h3>
                       ${state.journal.tasks.map(t=>html`<article class="mm-journal-task">
                         <strong>${t.title}</strong>
-                        <p>${t.id} · ${t.status} · attempts ${t.attempts} · QC ${t.qcRounds}</p>
+                        <p>${t.id} · ${uiText(t.status)} · attempts ${t.attempts} · QC ${t.qcRounds}</p>
                         ${t.lastQc?html`<p>QC ${t.lastQc.verdict}
                           · Run ${t.lastQc.runId}
                           · Git <code>${t.lastQc.headSha}</code></p>`:null}
@@ -1376,11 +1387,11 @@ const plugin: PiWebPlugin = {
                                 alt=${"QC screenshot file "+shot.relativePath}/>`:
                               html`<p>File too large for inline image preview.</p>`):null}
                         </article>`)}
-                      <p role="status">${state.screenshotStatus}</p>
+                      <p role="status">${uiText(state.screenshotStatus)}</p>
                       <h3>One-shot Pi Runs (up to 120)</h3>
                       ${state.journal.runs.map(run=>html`<article class="mm-journal-run">
-                        <strong>${run.seat} · ${run.runId}</strong>
-                        <p>Task ${run.taskId} · ${run.phase} · ${run.updatedAt}</p>
+                        <strong>${uiText(run.seat)} · ${run.runId}</strong>
+                        <p>Task ${run.taskId} · ${uiText(run.phase)} · ${run.updatedAt}</p>
                         ${run.evidence?html`
                           <p>Evidence <code>${run.evidence.ref}</code></p>
                           <p>${run.evidence.summary}</p>
@@ -1408,7 +1419,7 @@ const plugin: PiWebPlugin = {
                             delete state.adrDraft;context.host.requestRender();
                           }}/></label>
                       ${(["filename","title","context","options","decision","consequences"] as const)
-                        .map(key=>html`<label>${key}
+                        .map(key=>html`<label>${uiText(key)}
                           ${key==="filename"||key==="title"?html`
                             <input maxlength=${key==="filename"?"80":"200"}
                               .value=${state.adrFields[key]}
@@ -1449,7 +1460,7 @@ const plugin: PiWebPlugin = {
                             Inspect staged/reserved file</button>
                         </div>
                       </div>`:null}
-                      <p role="status" aria-live="polite">${state.adrStatus}</p>
+                      <p role="status" aria-live="polite">${uiText(state.adrStatus)}</p>
                     </details>
                     <details class="mm-retention">
                       <summary>Review old public activity retention (manual)</summary>
@@ -1477,7 +1488,7 @@ const plugin: PiWebPlugin = {
                         <button ?disabled=${state.busy||state.retentionPreview.state!=="prepared"}
                           @click=${()=>void retentionCommand(context,"confirm")}>
                           Confirm pruning public activity only</button>`:null}
-                      <p role="status">${state.retentionStatus}</p>
+                      <p role="status">${uiText(state.retentionStatus)}</p>
                     </details>
                   </section>` : null}
               `}
@@ -1493,6 +1504,12 @@ const styles = `
   .mm { padding: 16px; color: inherit; line-height: 1.5; min-width: 0; }
   .mm h2 { margin: 0; font-size: 18px; }
   .mm header p { margin: 2px 0 16px; font-size: 12px; color: var(--pi-muted); }
+  .mm-header{display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:8px;}
+  .mm-header>div:first-child{min-width:160px;flex:1;}
+  .mm-language{display:flex;gap:4px;align-items:center;flex-wrap:wrap;font-size:11px;}
+  .mm-language button{font-size:11px;padding:4px 6px;}
+  .mm-language button[aria-pressed="true"]{border-color:var(--pi-accent-border);color:var(--pi-accent);font-weight:700;}
+  .mm-language small{font-size:10px;color:var(--pi-muted);margin-inline:4px;}
   .mm aside { border: 1px solid var(--pi-warning-border); background: var(--pi-warning-surface); padding: 9px; border-radius: 8px; font-size: 12px; }
   .mm button, .mm select { font: inherit; padding: 5px 8px; border: 1px solid var(--pi-border-muted); border-radius: 6px; background: var(--pi-surface); color: inherit; }
   .mm button:hover:not(:disabled) { background: var(--pi-surface-hover); cursor: pointer; }
